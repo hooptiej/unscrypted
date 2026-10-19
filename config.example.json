@@ -46,6 +46,23 @@
       "copyVideo": true,
       "manufacturer": "Foscam",
       "model": "Foscam IP Camera"
+    },
+    {
+      "name": "Garage (ONVIF example)",
+      "rtspMain": "rtsp://admin:CHANGE_ME@192.168.1.52:554/11",
+      "rtspSub": "rtsp://admin:CHANGE_ME@192.168.1.52:554/12",
+      "audio": false,
+      "onvif": {
+        "host": "192.168.1.52",
+        "port": 8080,
+        "username": "admin",
+        "password": "CHANGE_ME_camera_password"
+      },
+      "prebufferSeconds": 4,
+      "hksv": true,
+      "copyVideo": true,
+      "manufacturer": "ONVIF",
+      "model": "Generic XM IP Camera"
     }
   ]
 }

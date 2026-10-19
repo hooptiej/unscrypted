@@ -29,7 +29,14 @@ import { StreamingDelegate } from "./streamingDelegate";
 import { RecordingDelegate } from "./recordingDelegate";
 import { Prebuffer } from "./prebuffer";
 import { FoscamClient, MotionPoller } from "./foscam";
+import { OnvifClient, OnvifMotionSource } from "./onvif";
 import { redactUrl } from "./util";
+
+/** A pluggable motion source: anything with a start/stop lifecycle. */
+interface MotionSource {
+  start(): void;
+  stop(): void;
+}
 
 // Resolutions advertised for live view. [width, height, fps].
 const STREAMING_RESOLUTIONS: [number, number, number][] = [
@@ -59,7 +66,7 @@ export class UnscryptedCamera {
   private readonly streamingDelegate: StreamingDelegate;
   private readonly recordingDelegate?: RecordingDelegate;
   private readonly prebuffer?: Prebuffer;
-  private motionPoller?: MotionPoller;
+  private motionSource?: MotionSource;
   private controller!: CameraController;
 
   constructor(
@@ -151,8 +158,10 @@ export class UnscryptedCamera {
       // trigger.
       controllerOptions.sensors = { motion: true };
     } else {
-      // Non-HKSV camera: still expose a standalone motion sensor if we can poll.
-      controllerOptions.sensors = camera.foscam ? { motion: true } : undefined;
+      // Non-HKSV camera: still expose a standalone motion sensor if we have a
+      // motion source to drive it.
+      const hasMotionSource = Boolean(camera.foscam || camera.onvif);
+      controllerOptions.sensors = hasMotionSource ? { motion: true } : undefined;
     }
 
     this.controller = new CameraController(controllerOptions);
@@ -163,13 +172,13 @@ export class UnscryptedCamera {
 
     this.accessory.configureController(this.controller);
 
+    const motionKind = camera.foscam ? "foscam-cgi" : camera.onvif ? "onvif" : "none";
     log.info(
       `camera "${camera.name}" configured ` +
-        `(main=${redactUrl(camera.rtspMain)}, HKSV=${camera.hksv}, ` +
-        `motion=${camera.foscam ? "foscam-cgi" : "none"})`,
+        `(main=${redactUrl(camera.rtspMain)}, HKSV=${camera.hksv}, motion=${motionKind})`,
     );
 
-    // Wire the Foscam motion poller to the controller's MotionSensor.
+    // Wire the selected motion source to the controller's MotionSensor.
     if (camera.foscam) {
       const client = new FoscamClient(
         {
@@ -179,11 +188,35 @@ export class UnscryptedCamera {
         },
         log.child("foscam"),
       );
-      this.motionPoller = new MotionPoller(
+      this.motionSource = new MotionPoller(
         client,
         {
           pollIntervalMs: camera.foscam.pollIntervalMs ?? 1000,
           cooldownMs: camera.foscam.motionCooldownMs ?? 8000,
+        },
+        (active) => this.setMotion(active),
+        log.child("motion"),
+      );
+    } else if (camera.onvif) {
+      const client = new OnvifClient(
+        {
+          host: camera.onvif.host,
+          port: camera.onvif.port,
+          username: camera.onvif.username,
+          password: camera.onvif.password,
+        },
+        log.child("onvif"),
+      );
+      this.motionSource = new OnvifMotionSource(
+        client,
+        camera.onvif.host,
+        camera.onvif.port,
+        camera.name,
+        {
+          cooldownMs: camera.onvif.motionCooldownMs,
+          pullTimeoutMs: camera.onvif.pollIntervalMs,
+          notifyPort: camera.onvif.notifyPort,
+          notifyHost: camera.onvif.notifyHost,
         },
         (active) => this.setMotion(active),
         log.child("motion"),
@@ -200,14 +233,14 @@ export class UnscryptedCamera {
 
   /** Called after the bridge is published. Starts background pollers. */
   start(): void {
-    this.motionPoller?.start();
+    this.motionSource?.start();
     // We intentionally do NOT eagerly start the prebuffer here — HAP calls
     // updateRecordingActive(true) once the user enables recording, which starts
     // it. This saves CPU when recording is off.
   }
 
   shutdown(): void {
-    this.motionPoller?.stop();
+    this.motionSource?.stop();
     this.prebuffer?.stop();
     this.streamingDelegate.shutdown();
   }

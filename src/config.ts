@@ -28,6 +28,47 @@ export interface FoscamConfig {
   motionCooldownMs?: number;
 }
 
+export interface OnvifConfig {
+  /** Camera host/IP for the ONVIF service, e.g. "10.0.1.3". */
+  host: string;
+  /**
+   * ONVIF service port. Default 80.
+   *
+   * NOTE: many generic XM/Sofia cameras actually serve ONVIF on 8080 (port 80
+   * is the web UI), so set this explicitly if the device service 404s on 80.
+   */
+  port?: number;
+  /** ONVIF account username (often "admin"). */
+  username: string;
+  /** ONVIF account password. Comes from config only — never hardcode. */
+  password: string;
+  /**
+   * For cameras that support PullPoint: how long (ms) each PullMessages call
+   * blocks waiting for events, and the base cadence between pulls. Default
+   * 60000 (a long-poll). Ignored for push/base-notification cameras.
+   */
+  pollIntervalMs?: number;
+  /**
+   * After a motion trigger, how long (ms) to hold the MotionSensor "on" before
+   * clearing if no further triggers arrive. Default 8000.
+   */
+  motionCooldownMs?: number;
+  /**
+   * TCP port the local notification receiver listens on for push
+   * (base-notification) cameras that don't implement PullPoint. Default 0
+   * (ephemeral — a fresh port each boot). Set a fixed port if a firewall sits
+   * between unscrypted and the cameras so you can allow it. A single receiver
+   * is shared across all ONVIF cameras.
+   */
+  notifyPort?: number;
+  /**
+   * Override the local IP advertised to the camera as the notification consumer
+   * address. Default: auto-detected by seeing which local interface routes to
+   * the camera. Set this if auto-detection picks the wrong NIC (e.g. in Docker).
+   */
+  notifyHost?: string;
+}
+
 export interface CameraConfig {
   /** Display name shown in the Home app. Must be unique. */
   name: string;
@@ -49,8 +90,19 @@ export interface CameraConfig {
   rtspMainPath?: string; // default /videoMain
   rtspSubPath?: string; // default /videoSub
 
+  /**
+   * Motion source blocks. A camera may configure AT MOST ONE. If neither is
+   * present the camera has no motion source (motion="none") — live view and
+   * recording still work, but nothing flips the HomeKit MotionSensor, so HKSV
+   * recordings won't be triggered.
+   *   - foscam: Foscam CGI polling (port 88 getDevState).
+   *   - onvif:  ONVIF event subscription (PullPoint, or base-notification push).
+   */
   /** Foscam CGI control block — drives the motion poller. Optional. */
   foscam?: FoscamConfig;
+
+  /** ONVIF event control block — drives the ONVIF motion source. Optional. */
+  onvif?: OnvifConfig;
 
   /** Rolling prebuffer length in seconds (HAP requires >= 4). Default 4. */
   prebufferSeconds?: number;
@@ -139,6 +191,12 @@ export interface ResolvedCamera {
   rtspSub?: string;
   foscam?: Required<Pick<FoscamConfig, "cgiBase" | "username" | "password">> &
     Pick<FoscamConfig, "pollIntervalMs" | "motionCooldownMs">;
+  onvif?: Required<Pick<OnvifConfig, "host" | "port" | "username" | "password">> & {
+    pollIntervalMs: number;
+    motionCooldownMs: number;
+    notifyPort: number;
+    notifyHost?: string;
+  };
   prebufferSeconds: number;
   hksv: boolean;
   maxRecordingSeconds: number;
@@ -202,6 +260,12 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
     }
     const rtspSub = assembleRtsp(cam, "sub");
 
+    if (cam.foscam && cam.onvif) {
+      throw new ConfigError(
+        `cameras[${i}] "${cam.name}": configure at most one motion source — remove either the "foscam" or the "onvif" block`,
+      );
+    }
+
     let foscam: ResolvedCamera["foscam"];
     if (cam.foscam) {
       if (!cam.foscam.cgiBase || !cam.foscam.username || cam.foscam.password == null) {
@@ -218,6 +282,37 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       };
     }
 
+    let onvif: ResolvedCamera["onvif"];
+    if (cam.onvif) {
+      if (!cam.onvif.host || !cam.onvif.username || cam.onvif.password == null) {
+        throw new ConfigError(
+          `cameras[${i}] "${cam.name}": onvif block needs host, username, and a password field (empty string allowed for no-password cameras)`,
+        );
+      }
+      const port = cam.onvif.port ?? 80;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new ConfigError(
+          `cameras[${i}] "${cam.name}": onvif.port must be a valid TCP port (got ${port})`,
+        );
+      }
+      const notifyPort = cam.onvif.notifyPort ?? 0;
+      if (!Number.isInteger(notifyPort) || notifyPort < 0 || notifyPort > 65535) {
+        throw new ConfigError(
+          `cameras[${i}] "${cam.name}": onvif.notifyPort must be 0 (ephemeral) or a valid TCP port (got ${notifyPort})`,
+        );
+      }
+      onvif = {
+        host: cam.onvif.host,
+        port,
+        username: cam.onvif.username,
+        password: cam.onvif.password,
+        pollIntervalMs: cam.onvif.pollIntervalMs ?? 60000,
+        motionCooldownMs: cam.onvif.motionCooldownMs ?? 8000,
+        notifyPort,
+        notifyHost: cam.onvif.notifyHost,
+      };
+    }
+
     const prebufferSeconds = Math.max(4, cam.prebufferSeconds ?? 4);
 
     return {
@@ -225,6 +320,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       rtspMain,
       rtspSub,
       foscam,
+      onvif,
       prebufferSeconds,
       hksv: cam.hksv ?? true,
       maxRecordingSeconds: Math.min(180, cam.maxRecordingSeconds ?? 170),

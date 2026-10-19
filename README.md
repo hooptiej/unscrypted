@@ -49,10 +49,13 @@ Key fields (`config.example.json` has the full shape):
 | `bridge.port` | TCP port for the HAP server (default `51826`). |
 | `cameras[].name` | Unique display name in the Home app. |
 | `cameras[].host` + `rtspUser`/`rtspPassword` | unscrypted assembles `rtsp://user:pass@host:554/videoMain` and `/videoSub`. Or set `rtspMain`/`rtspSub` directly. |
-| `cameras[].foscam` | CGI base (`http://<ip>:88`), username, password → drives the motion poller. Omit to disable motion. |
+| `cameras[].foscam` | Foscam CGI motion source: CGI base (`http://<ip>:88`), username, password → drives the motion poller. |
+| `cameras[].onvif` | ONVIF motion source (for generic/XM cameras with no Foscam CGI): `host`, `port` (default `80`; **XM cameras usually need `8080`**), `username`, `password`. See below. |
 | `cameras[].prebufferSeconds` | Rolling prebuffer length (HAP requires ≥ 4). |
 | `cameras[].hksv` | Enable HomeKit Secure Video recording (default `true`). |
 | `cameras[].copyVideo` | `true` (default) copies the camera's H.264; set `false` to transcode (forces a 4s keyframe cadence — see caveat below). |
+
+A camera configures **at most one** motion source — set either `foscam` or `onvif`, not both (config validation rejects both). Omit both to disable motion for that camera (live view and recording still work, but nothing flips the MotionSensor, so HKSV won't be triggered).
 
 Secrets can also come from env (`UNSCRYPTED_BRIDGE_PIN`, `UNSCRYPTED_BRIDGE_USERNAME`); the camera passwords only come from the config file.
 
@@ -61,6 +64,40 @@ Secrets can also come from env (`UNSCRYPTED_BRIDGE_PIN`, `UNSCRYPTED_BRIDGE_USER
 - RTSP main: `rtsp://<user>:<pw>@<ip>:554/videoMain` (H.264 1280×720@15, G.711/PCMU audio)
 - RTSP sub: `rtsp://<user>:<pw>@<ip>:554/videoSub` (H.264 320×180@10)
 - CGI: `http://<ip>:88/cgi-bin/CGIProxy.fcgi?cmd=<cmd>&usr=<user>&pwd=<pw>`
+
+### ONVIF motion (generic / XM cameras)
+
+For cameras that have no Foscam CGI, unscrypted subscribes to the camera's ONVIF Events service and flips the same HomeKit MotionSensor. Add an `onvif` block instead of `foscam`:
+
+```json
+{
+  "name": "Garage",
+  "rtspMain": "rtsp://admin:PASSWORD@10.0.1.3:554/11",
+  "rtspSub": "rtsp://admin:PASSWORD@10.0.1.3:554/12",
+  "audio": false,
+  "onvif": {
+    "host": "10.0.1.3",
+    "port": 8080,
+    "username": "admin",
+    "password": "PASSWORD"
+  }
+}
+```
+
+| ONVIF field | Meaning |
+|---|---|
+| `host` / `port` | ONVIF device service host and port. Default port `80`. **Generic XM/Sofia cameras serve ONVIF on `8080`** (port 80 is the web UI); set it explicitly if the device service 404s. |
+| `username` / `password` | ONVIF account (WS-Security digest auth). Often the same as the RTSP login. |
+| `pollIntervalMs` | PullPoint long-poll window in ms (default `60000`). Ignored for push cameras. |
+| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `8000`). |
+| `notifyPort` | For push cameras (see below): TCP port the local notification receiver listens on. Default `0` (ephemeral). Set a fixed port if a firewall sits between unscrypted and the cameras. One receiver is shared across all ONVIF cameras. |
+| `notifyHost` | Override the local IP advertised to the camera as the notification consumer address (default: auto-detected). Set this if auto-detection picks the wrong NIC, e.g. in Docker with a custom network. |
+
+unscrypted tries **PullPoint** first (it long-polls the camera, no inbound server needed). If the camera doesn't implement PullPoint — many XM cameras return `ActionNotSupported` — it automatically falls back to **WS-BaseNotification push**: the camera POSTs notifications to a small HTTP receiver unscrypted hosts. The active mode is logged at startup. It accepts the `tns1:RuleEngine/CellMotionDetector/Motion` (`IsMotion`) and `tns1:VideoSource/MotionAlarm` (`State`) topics.
+
+**Probe a camera without pairing:** `node dist/index.js --probe-onvif <host[:port]> [user] [pass]` connects, lists the camera's motion topics, subscribes, and logs motion events for 30s. If user/pass are omitted it reuses credentials from a matching camera in `config.json`. Use it to confirm a new camera's ONVIF port/auth and that motion fires before wiring it into the bridge.
+
+Verified against a generic XM camera (admin on port 8080): PullPoint is unsupported, push works, motion arrives on `tns1:RuleEngine/CellMotionDetector/Motion` with `IsMotion=true/false`.
 
 ## Run
 
@@ -112,7 +149,7 @@ These are **known and unverified** — honest about what a next session with the
 3. **RecordingAudioActive not honoured.** unscrypted always muxes audio into recording fragments; it logs a warning when HomeKit asks for audio-off instead of producing an audio-less pipeline.
 4. **No two-way audio / talkback.**
 5. **Snapshot** pulls a live frame from the sub stream each time (no cached placeholder when the camera is down — HAP just gets an error).
-6. **Motion via CGI polling** (1s). Lower-latency ONVIF event subscription (Foscam port 888) is a future improvement.
+6. **Motion** comes from either Foscam CGI polling (1s) or an ONVIF event subscription (PullPoint long-poll, or WS-BaseNotification push), selected per camera. See the `onvif` config block.
 
 ## License
 

@@ -27,6 +27,7 @@ import { rootLogger, setLogLevel, Logger } from "./logger";
 import { resolveFfmpeg } from "./ffmpeg";
 import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
+import { probeOnvif } from "./onvif";
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -34,6 +35,16 @@ async function main(): Promise<void> {
   const configFlagIdx = argv.indexOf("--config");
   const configPath =
     configFlagIdx >= 0 ? argv[configFlagIdx + 1] : undefined;
+
+  // --probe-onvif <host[:port]> [user] [pass]
+  // Standalone ONVIF connectivity/motion probe. If user/pass are omitted we try
+  // to reuse credentials from a matching camera in config.json (its onvif block,
+  // or the rtsp URL's embedded user:pass), so no secrets need to hit the CLI.
+  const probeIdx = argv.indexOf("--probe-onvif");
+  if (probeIdx >= 0) {
+    await runProbe(argv, probeIdx, configPath);
+    return;
+  }
 
   let config: ResolvedConfig;
   try {
@@ -137,6 +148,79 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+async function runProbe(
+  argv: string[],
+  probeIdx: number,
+  configPath?: string,
+): Promise<void> {
+  const log = rootLogger.child("probe");
+  const target = argv[probeIdx + 1];
+  if (!target) {
+    log.error("usage: --probe-onvif <host[:port]> [username] [password]");
+    process.exit(2);
+  }
+  let [host, portStr] = target.split(":");
+  let port = portStr ? Number.parseInt(portStr, 10) : 80;
+  let username = argv[probeIdx + 2];
+  let password = argv[probeIdx + 3];
+
+  // If creds weren't passed, mine them from config.json for a matching camera.
+  if (!username || password === undefined) {
+    try {
+      const candidates = [
+        configPath,
+        process.env.UNSCRYPTED_CONFIG,
+        path.resolve(process.cwd(), "config.json"),
+      ].filter((p): p is string => Boolean(p));
+      for (const c of candidates) {
+        if (!fs.existsSync(c)) continue;
+        const raw = JSON.parse(fs.readFileSync(c, "utf8")) as {
+          cameras?: Array<Record<string, unknown>>;
+        };
+        for (const cam of raw.cameras ?? []) {
+          const onvif = cam.onvif as
+            | { host?: string; port?: number; username?: string; password?: string }
+            | undefined;
+          if (onvif?.host === host) {
+            username = username ?? onvif.username;
+            password = password ?? onvif.password;
+            if (onvif.port && !portStr) port = onvif.port;
+          }
+          // Reuse rtsp creds if the main URL points at this host.
+          const rtspMain = typeof cam.rtspMain === "string" ? cam.rtspMain : "";
+          const m = new RegExp(`rtsp://([^:]+):([^@]+)@${host.replace(/\./g, "\\.")}[:/]`).exec(
+            rtspMain,
+          );
+          if (m) {
+            username = username ?? m[1];
+            password = password ?? m[2];
+          }
+        }
+        if (username && password !== undefined) break;
+      }
+    } catch (err) {
+      log.warn(`could not read config for credentials: ${(err as Error).message}`);
+    }
+  }
+
+  if (!username || password === undefined) {
+    log.error(
+      "no credentials: pass them as `--probe-onvif <host[:port]> <user> <pass>`, " +
+        "or add the camera to config.json first",
+    );
+    process.exit(2);
+  }
+
+  log.info(`probing ${host}:${port} as "${username}" (password hidden)`);
+  try {
+    const ok = await probeOnvif({ host, port, username, password }, log, 30);
+    process.exit(ok ? 0 : 1);
+  } catch (err) {
+    log.error(`probe failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
 }
 
 function printPairingInfo(
