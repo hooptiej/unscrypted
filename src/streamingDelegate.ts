@@ -263,31 +263,36 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${HOMEKIT_MTU}`,
     );
 
-    // --- Audio (transcode G.711 -> Opus) ---
-    args.push(
-      "-vn",
-      "-c:a",
-      "libopus",
-      "-application",
-      "lowdelay",
-      "-ac",
-      String(audio.channel || 1),
-      "-ar",
-      `${audio.sample_rate}k`,
-      "-b:a",
-      `${audio.max_bit_rate}k`,
-      "-payload_type",
-      String(audio.pt),
-      "-ssrc",
-      String(session.audioSSRC),
-      "-f",
-      "rtp",
-      "-srtp_out_suite",
-      SRTP_SUITE,
-      "-srtp_out_params",
-      audioKeySalt,
-      `srtp://${session.address}:${session.audioPort}?rtcpport=${session.audioPort}&pkt_size=188`,
-    );
+    // --- Audio (transcode -> Opus), ONLY if the camera has an audio track.
+    // A video-only camera has no audio stream to map; emitting an audio output
+    // makes ffmpeg fail ("Output file does not contain any stream") and that
+    // kills the whole live view. HomeKit tolerates a video-only stream. ---
+    if (this.camera.audio) {
+      args.push(
+        "-vn",
+        "-c:a",
+        "libopus",
+        "-application",
+        "lowdelay",
+        "-ac",
+        String(audio.channel || 1),
+        "-ar",
+        `${audio.sample_rate}k`,
+        "-b:a",
+        `${audio.max_bit_rate}k`,
+        "-payload_type",
+        String(audio.pt),
+        "-ssrc",
+        String(session.audioSSRC),
+        "-f",
+        "rtp",
+        "-srtp_out_suite",
+        SRTP_SUITE,
+        "-srtp_out_params",
+        audioKeySalt,
+        `srtp://${session.address}:${session.audioPort}?rtcpport=${session.audioPort}&pkt_size=188`,
+      );
+    }
 
     if (audio.codec !== AudioStreamingCodecType.OPUS) {
       this.log.debug(

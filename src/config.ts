@@ -68,6 +68,13 @@ export interface CameraConfig {
    */
   copyVideo?: boolean;
 
+  /**
+   * Whether the camera provides an audio track. Default true. Set false for
+   * video-only cameras (e.g. the mic is disabled) so ffmpeg doesn't fail trying
+   * to map a non-existent audio stream (which kills the whole live view).
+   */
+  audio?: boolean;
+
   /** Audio sample rate for the camera's source audio. Informational. */
   manufacturer?: string;
   model?: string;
@@ -136,6 +143,7 @@ export interface ResolvedCamera {
   hksv: boolean;
   maxRecordingSeconds: number;
   copyVideo: boolean;
+  audio: boolean;
   manufacturer: string;
   model: string;
   serialNumber: string;
@@ -221,6 +229,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       hksv: cam.hksv ?? true,
       maxRecordingSeconds: Math.min(180, cam.maxRecordingSeconds ?? 170),
       copyVideo: cam.copyVideo ?? true,
+      audio: cam.audio ?? true,
       manufacturer: cam.manufacturer ?? "Foscam",
       model: cam.model ?? "IP Camera",
       serialNumber: cam.serialNumber ?? `unscrypted-${cam.name.replace(/\s+/g, "-")}`,

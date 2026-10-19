@@ -163,20 +163,26 @@ export class Prebuffer {
       );
     }
 
-    // Audio -> AAC for recording (HKSV accepts AAC-LC). aresample=async fixes the
-    // camera's non-monotonic / backward audio timestamps (G.711 source) so the
-    // muxer produces monotonic DTS and HKSV doesn't choke on the fragments.
+    // Audio -> AAC for recording (HKSV accepts AAC-LC), only when the camera has
+    // an audio track. aresample=async fixes non-monotonic/backward audio
+    // timestamps (e.g. G.711 sources) so the muxer DTS stays monotonic.
+    if (cam.audio) {
+      args.push(
+        "-af",
+        "aresample=async=1:first_pts=0",
+        "-c:a",
+        "aac",
+        "-ar",
+        "32000",
+        "-b:a",
+        "32k",
+        "-ac",
+        "1",
+      );
+    } else {
+      args.push("-an");
+    }
     args.push(
-      "-af",
-      "aresample=async=1:first_pts=0",
-      "-c:a",
-      "aac",
-      "-ar",
-      "32000",
-      "-b:a",
-      "32k",
-      "-ac",
-      "1",
       // Fragmented MP4 to stdout. empty_moov+default_base_moof gives us a clean
       // init segment; frag_keyframe forces a new fragment on each keyframe.
       "-f",
