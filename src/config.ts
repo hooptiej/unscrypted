@@ -196,9 +196,9 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
 
     let foscam: ResolvedCamera["foscam"];
     if (cam.foscam) {
-      if (!cam.foscam.cgiBase || !cam.foscam.username || !cam.foscam.password) {
+      if (!cam.foscam.cgiBase || !cam.foscam.username || cam.foscam.password == null) {
         throw new ConfigError(
-          `cameras[${i}] "${cam.name}": foscam block needs cgiBase, username, password`,
+          `cameras[${i}] "${cam.name}": foscam block needs cgiBase, username, and a password field (empty string allowed for no-password cameras)`,
         );
       }
       foscam = {

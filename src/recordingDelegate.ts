@@ -144,11 +144,17 @@ export class RecordingDelegate implements CameraRecordingDelegate {
       );
     }
 
-    const session = this.prebuffer.openSession();
+    // HomeKit can request a clip within a few hundred ms of enabling recording,
+    // before the prebuffer's ffmpeg has connected and produced its init segment.
+    // Make sure it's running and give it a brief window to warm up rather than
+    // aborting on a cold start.
+    await this.prebuffer.start();
+    const warm = await this.prebuffer.waitForInit(8000);
+    const session = warm ? this.prebuffer.openSession() : null;
     if (!session) {
-      // Camera unreachable / prebuffer not warmed up. Fail loudly, not silently.
+      // Camera genuinely unreachable / pipeline not producing. Fail loudly.
       this.log.error(
-        `recording stream ${streamId}: prebuffer has no data (camera unreachable?). Aborting clip.`,
+        `recording stream ${streamId}: prebuffer has no data after warm-up (camera unreachable or ffmpeg not producing). Aborting clip.`,
       );
       return;
     }

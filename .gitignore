@@ -23,3 +23,9 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
+
+# local test artifacts
+qr.png
+*.jpg
+*.mp4
+run.log

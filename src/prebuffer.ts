@@ -78,6 +78,19 @@ export class Prebuffer {
     return this.initSegment !== null;
   }
 
+  /**
+   * Wait up to timeoutMs for the init segment to be ready (ffmpeg connected and
+   * emitted ftyp+moov). Lets a recording request that arrives right after
+   * recording is enabled ride out the ffmpeg warm-up instead of aborting cold.
+   */
+  async waitForInit(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (!this.initSegment && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return this.initSegment !== null;
+  }
+
   async start(): Promise<void> {
     this.wantRunning = true;
     if (this.ffmpeg || this.starting) {
@@ -150,8 +163,12 @@ export class Prebuffer {
       );
     }
 
-    // Audio -> AAC for recording (HKSV accepts AAC-LC).
+    // Audio -> AAC for recording (HKSV accepts AAC-LC). aresample=async fixes the
+    // camera's non-monotonic / backward audio timestamps (G.711 source) so the
+    // muxer produces monotonic DTS and HKSV doesn't choke on the fragments.
     args.push(
+      "-af",
+      "aresample=async=1:first_pts=0",
       "-c:a",
       "aac",
       "-ar",
