@@ -1,0 +1,29 @@
+# unscrypted — docker compose deployment (e.g. on the TrueNAS Docker host).
+#
+# HomeKit discovery relies on mDNS/Bonjour, which does not cross Docker's bridge
+# network — so host networking is REQUIRED. The container shares the host's
+# network stack; config.bridge.port is the TCP port the HAP server listens on.
+#
+# Bring up:   docker compose up -d --build
+# Logs / pairing code:   docker compose logs -f
+# Redeploy after a pull: git pull && docker compose up -d --build
+
+services:
+  unscrypted:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: unscrypted:0.1.0
+    container_name: unscrypted
+    restart: unless-stopped
+    # REQUIRED for HomeKit mDNS discovery. Linux host only.
+    network_mode: host
+    volumes:
+      # Your real config (holds camera passwords) — gitignored, read-only.
+      - ./config.json:/config/config.json:ro
+      # Persistent HAP pairing state. Delete this to force re-pairing.
+      - ./data:/data
+    environment:
+      - UNSCRYPTED_CONFIG=/config/config.json
+      - UNSCRYPTED_PERSIST_DIR=/data/persist
+      - UNSCRYPTED_LOG_LEVEL=info

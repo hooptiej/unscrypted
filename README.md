@@ -1,0 +1,119 @@
+# unscrypted
+
+A from-scratch, self-hosted bridge that exposes IP cameras to **Apple HomeKit**, including **HomeKit Secure Video (HKSV)**. It is a lean replacement for Scrypted's HomeKit plugin for the specific case of RTSP cameras (first target: Foscam).
+
+All of the HomeKit protocol work — pairing, SRTP key exchange, the motion→recording trigger, the HDS data-stream handshake, fMP4-over-HDS delivery to iOS — is handled by the **[HAP-NodeJS](https://github.com/homebridge/HAP-NodeJS)** library (the same one Homebridge uses). unscrypted does **not** reimplement HAP. What unscrypted adds on top:
+
+- an **RTSP video source** per camera (via ffmpeg),
+- a **motion-event source** (polls the Foscam CGI API and flips the HomeKit MotionSensor),
+- an **ffmpeg fragmented-MP4 generator** where every fragment starts on a keyframe,
+- a **rolling prebuffer** so recordings begin a few seconds *before* the motion trigger (HAP-NodeJS does not provide this).
+
+It is **config-driven and multi-camera** — tested with one Foscam, but every camera is just another entry in `config.cameras`.
+
+## Status / honesty
+
+This is a **first working cut**. It compiles cleanly, stands up a pairable HomeKit bridge, and degrades gracefully when a camera or ffmpeg is missing. The media paths (live SRTP, snapshots, HKSV recording + prebuffer) are implemented following the established Homebridge/HAP-NodeJS patterns but **have not been verified end-to-end against a real camera and a real iPhone yet**. See [Current limitations](#current-limitations).
+
+## How it works
+
+```
+                 ┌──────────────────── unscrypted ────────────────────┐
+  Foscam CGI ───►│ MotionPoller ─► HAP MotionSensor (HKSV trigger)      │
+  (port 88)      │                                                      │
+                 │ RTSP main ─► ffmpeg ─► SRTP ──────► live view (HAP)   │◄── iPhone / Home app
+  Camera RTSP ──►│ RTSP main ─► ffmpeg ─► fMP4 ─► Prebuffer ring ─┐      │    (pairs over mDNS)
+  (port 554)     │                                               ▼      │
+                 │                        RecordingDelegate ─► HKSV clip │
+                 └──────────────────────────────────────────────────────┘
+```
+
+- **Live view:** on `prepareStream`, HAP hands us its SRTP keys and target address; ffmpeg emits SRTP straight to that endpoint (video copied if already H.264, audio transcoded G.711 → **Opus**). MTU 1200.
+- **Recording (HKSV):** when you enable recording in the Home app, HAP calls `updateRecordingActive(true)` and unscrypted starts a continuous ffmpeg that produces fragmented MP4 (video copy, audio → **AAC**). Fragments (each starting on a keyframe) are kept in a rolling in-memory ring. On a motion trigger HAP opens a recording stream; unscrypted yields the init segment, then the buffered pre-event fragments, then live fragments until the Home app closes the stream or the max-clip cap is hit.
+- **Motion:** a 1s poll of the Foscam `getDevState` CGI reads `motionDetectAlarm` (`2` = triggered). The MotionSensor is set on, then cleared after a cooldown.
+
+## Configure
+
+Copy the example and edit it. **`config.json` holds your camera passwords and is gitignored — never commit it.**
+
+```bash
+cp config.example.json config.json
+```
+
+Key fields (`config.example.json` has the full shape):
+
+| Field | Meaning |
+|---|---|
+| `bridge.username` | A stable locally-administered MAC-style id for the bridge. Keep it constant across restarts. |
+| `bridge.pin` | 8-digit HomeKit setup code, format `XXX-XX-XXX`. |
+| `bridge.port` | TCP port for the HAP server (default `51826`). |
+| `cameras[].name` | Unique display name in the Home app. |
+| `cameras[].host` + `rtspUser`/`rtspPassword` | unscrypted assembles `rtsp://user:pass@host:554/videoMain` and `/videoSub`. Or set `rtspMain`/`rtspSub` directly. |
+| `cameras[].foscam` | CGI base (`http://<ip>:88`), username, password → drives the motion poller. Omit to disable motion. |
+| `cameras[].prebufferSeconds` | Rolling prebuffer length (HAP requires ≥ 4). |
+| `cameras[].hksv` | Enable HomeKit Secure Video recording (default `true`). |
+| `cameras[].copyVideo` | `true` (default) copies the camera's H.264; set `false` to transcode (forces a 4s keyframe cadence — see caveat below). |
+
+Secrets can also come from env (`UNSCRYPTED_BRIDGE_PIN`, `UNSCRYPTED_BRIDGE_USERNAME`); the camera passwords only come from the config file.
+
+### Foscam FI9803P V2 reference
+
+- RTSP main: `rtsp://<user>:<pw>@<ip>:554/videoMain` (H.264 1280×720@15, G.711/PCMU audio)
+- RTSP sub: `rtsp://<user>:<pw>@<ip>:554/videoSub` (H.264 320×180@10)
+- CGI: `http://<ip>:88/cgi-bin/CGIProxy.fcgi?cmd=<cmd>&usr=<user>&pwd=<pw>`
+
+## Run
+
+### Locally (dev)
+
+```bash
+npm install
+npm run build
+npm start            # or: npm run dev   (ts, no build step)
+```
+
+On start it prints the **HomeKit setup code and a QR code** to the log. In the iOS Home app: **Add Accessory → More options → scan the QR** (or enter the code). unscrypted advertises as a **bridge**; each camera appears as its own accessory.
+
+> ffmpeg must be on `PATH` (or set `ffmpegPath` in the config) for live view, snapshots, and recording. Without it the bridge still publishes and pairs — it just can't show video.
+
+### Self-test (no camera / no iPhone needed)
+
+```bash
+npm run selftest
+```
+
+Runs ffmpeg against a generated test pattern through the real fragmented-MP4 → parser pipeline (the core of the prebuffer/recording path) and reports whether it produced a parseable init segment and keyframe fragments. Requires ffmpeg; it exits non-zero and says so if ffmpeg is missing (it never fakes success).
+
+### Docker (e.g. TrueNAS)
+
+```bash
+cp config.example.json config.json   # edit it
+docker compose up -d --build
+docker compose logs -f                # watch for the pairing QR / code
+```
+
+**Host networking is required** — HomeKit discovery uses mDNS, which does not cross Docker's bridge network. The compose file mounts `./config.json` (read-only) and `./data` (persistent HAP pairing state). Delete `./data` to force re-pairing.
+
+## HomeKit codec constraints (as implemented)
+
+| | Video | Audio |
+|---|---|---|
+| Live | H.264 Main (copied; levels ≤ 4.0), MTU 1200 | Opus (transcoded) |
+| Recording | H.264 (copied) in fragmented MP4, keyframe-aligned | AAC-LC (transcoded) |
+
+Max clip length is capped (~170s, HAP allows ~180). Fragment delivery is pull-paced by HAP so the prebuffer burst doesn't flood the HDS connection.
+
+## Current limitations
+
+These are **known and unverified** — honest about what a next session with the real Foscam + an iPhone still needs to prove:
+
+1. **No end-to-end test yet.** Compiled and smoke-tested (publishes, pairs-ready, graceful degradation), but live view, snapshots, and HKSV recording have not been exercised against a real camera or Home app on this machine (the test Foscam is unplugged, there's no iPhone here, and ffmpeg isn't installed on the dev box).
+2. **Keyframe interval / GOP caveat.** With `copyVideo: true`, a recording fragment's length equals the camera's own keyframe interval. HKSV wants fragments that start on a keyframe and are ≤ the selected fragment length (~4s). If the Foscam's I-frame interval is longer than ~4s, recording may misbehave. Fix: shorten the camera's I-frame interval in its web UI, or set `copyVideo: false` to transcode with a forced 4s GOP (costs CPU).
+3. **RecordingAudioActive not honoured.** unscrypted always muxes audio into recording fragments; it logs a warning when HomeKit asks for audio-off instead of producing an audio-less pipeline.
+4. **No two-way audio / talkback.**
+5. **Snapshot** pulls a live frame from the sub stream each time (no cached placeholder when the camera is down — HAP just gets an error).
+6. **Motion via CGI polling** (1s). Lower-latency ONVIF event subscription (Foscam port 888) is a future improvement.
+
+## License
+
+MIT.

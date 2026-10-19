@@ -1,0 +1,51 @@
+{
+  "bridge": {
+    "name": "Unscrypted",
+    "username": "CC:22:3D:E3:CE:F6",
+    "pin": "031-45-154",
+    "port": 51826,
+    "setupId": "UNSC"
+  },
+  "persistDir": "persist",
+  "ffmpegPath": "ffmpeg",
+  "logLevel": "info",
+  "cameras": [
+    {
+      "name": "Front Door",
+      "host": "192.168.1.50",
+      "rtspPort": 554,
+      "rtspUser": "admin",
+      "rtspPassword": "CHANGE_ME_camera_password",
+      "rtspMainPath": "/videoMain",
+      "rtspSubPath": "/videoSub",
+      "foscam": {
+        "cgiBase": "http://192.168.1.50:88",
+        "username": "admin",
+        "password": "CHANGE_ME_camera_password",
+        "pollIntervalMs": 1000,
+        "motionCooldownMs": 8000
+      },
+      "prebufferSeconds": 4,
+      "hksv": true,
+      "maxRecordingSeconds": 170,
+      "copyVideo": true,
+      "manufacturer": "Foscam",
+      "model": "FI9803P V2"
+    },
+    {
+      "name": "Backyard (full URL example)",
+      "rtspMain": "rtsp://admin:CHANGE_ME@192.168.1.51:554/videoMain",
+      "rtspSub": "rtsp://admin:CHANGE_ME@192.168.1.51:554/videoSub",
+      "foscam": {
+        "cgiBase": "http://192.168.1.51:88",
+        "username": "admin",
+        "password": "CHANGE_ME_camera_password"
+      },
+      "prebufferSeconds": 6,
+      "hksv": true,
+      "copyVideo": true,
+      "manufacturer": "Foscam",
+      "model": "Foscam IP Camera"
+    }
+  ]
+}

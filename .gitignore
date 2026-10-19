@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# runtime / secrets — the real config holds camera passwords, never commit it
+config.json
+config.yaml
+config.yml
+config.local.json
+
+# HAP pairing state (persisted accessory keys + paired-controller data)
+persist/
+*.persist
+
+# logs
+*.log
+logs/
+
+# os / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

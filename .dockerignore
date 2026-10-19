@@ -1,0 +1,11 @@
+node_modules
+dist
+persist
+data
+config.json
+config.local.json
+*.log
+.git
+.gitignore
+.vscode
+.idea
