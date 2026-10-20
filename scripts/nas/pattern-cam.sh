@@ -18,7 +18,7 @@ case "${1:-}" in
     fi
     sudo docker run -d --rm --name "$NAME" --network host \
       -v "$HERE/pattern-cam.yaml:/pattern-cam.yaml:ro" --entrypoint /usr/local/bin/go2rtc "$IMAGE" -config /pattern-cam.yaml
-    echo "$NAME started: rtsp://127.0.0.1:8654/pattern and /pattern_sub"
+    echo "$NAME started: rtsp://127.0.0.1:8654/pattern, /pattern_sub and /pattern_audio (video + G.711 audio)"
     ;;
   stop)
     if sudo docker ps --format '{{.Names}}' | grep -qx "$NAME"; then sudo docker stop "$NAME"; else echo "$NAME isn't running"; fi

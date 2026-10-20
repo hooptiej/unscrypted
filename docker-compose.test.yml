@@ -16,6 +16,9 @@ services:
       - UNSCRYPTED_GO2RTC_API_PORT=1987
       - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8558
       - UNSCRYPTED_GO2RTC_RTSP_PORT=8555
+      # Recording buffers to run without HomeKit, to check the restream (#16): e.g.
+      #   sudo UNSCRYPTED_TEST_PREBUFFER=PatternCam docker compose ... up -d   ("all" = every HKSV camera)
+      - UNSCRYPTED_TEST_PREBUFFER=${UNSCRYPTED_TEST_PREBUFFER:-}
       - UNSCRYPTED_ADMIN_TITLE=unscrypted admin - TEST
       - UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted-test
       - UNSCRYPTED_DASH_PORT=8181

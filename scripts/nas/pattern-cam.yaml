@@ -10,4 +10,6 @@ log:
   level: info
 streams:
   pattern: "exec:ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1920x1080:rate=15 -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -bf 0 -g 30 -f rtsp {output}"
+  # Like Couch Cam (Foscam): video plus G.711 A-law audio, so the --audio / AAC path gets a real test.
+  pattern_audio: "exec:ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=15 -re -f lavfi -i sine=frequency=440:sample_rate=8000 -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -bf 0 -g 30 -c:a pcm_alaw -ar 8000 -ac 1 -f rtsp {output}"
   pattern_sub: "exec:ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=640x360:rate=15 -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -bf 0 -g 30 -f rtsp {output}"
