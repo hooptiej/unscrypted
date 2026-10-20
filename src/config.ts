@@ -211,6 +211,8 @@ export interface ResolvedConfig {
   bridge: Required<Omit<BridgeConfig, never>>;
   cameras: ResolvedCamera[];
   persistDir: string;
+  /** config.persistDir, resolved, when UNSCRYPTED_PERSIST_DIR overrode it (else undefined). */
+  persistDirOverridden?: string;
   ffmpegPath: string;
   logLevel: "debug" | "info" | "warn" | "error";
 }
@@ -332,15 +334,21 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
     };
   });
 
+  // UNSCRYPTED_PERSIST_DIR wins over config.persistDir: in Docker it names the bind-mounted
+  // /data/persist, and a stale config key must not send the pairing keys somewhere that isn't
+  // persisted (#4: "persist" put them in an anonymous volume that a compose down would drop).
+  const configPersistDir = raw.persistDir ? path.resolve(baseDir, raw.persistDir) : undefined;
   const persistDir = path.resolve(
     baseDir,
-    raw.persistDir ?? process.env.UNSCRYPTED_PERSIST_DIR ?? "persist",
+    process.env.UNSCRYPTED_PERSIST_DIR ?? raw.persistDir ?? "persist",
   );
 
   return {
     bridge,
     cameras,
     persistDir,
+    persistDirOverridden:
+      configPersistDir && configPersistDir !== persistDir ? configPersistDir : undefined,
     ffmpegPath: raw.ffmpegPath ?? process.env.UNSCRYPTED_FFMPEG ?? "ffmpeg",
     logLevel: raw.logLevel ?? (process.env.UNSCRYPTED_LOG_LEVEL as ResolvedConfig["logLevel"]) ?? "info",
   };

@@ -13,15 +13,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: unscrypted:0.1.0
+    image: unscrypted:0.1.1
     container_name: unscrypted
     restart: unless-stopped
     # REQUIRED for HomeKit mDNS discovery. Linux host only.
     network_mode: host
     volumes:
-      # Your real config (holds camera passwords) — gitignored, read-only.
-      - ./config.json:/config/config.json:ro
-      # Persistent HAP pairing state. Delete this to force re-pairing.
+      # Config folder: ./config/config.json holds camera passwords (gitignored, never commit it).
+      # A folder, not a single file, so it can be saved atomically later (admin pane, #2).
+      - ./config:/config
+      # HAP pairing state lives in ./data/persist. NEVER delete ./data: losing it means
+      # re-adding every camera in the Home app.
       - ./data:/data
     environment:
       - UNSCRYPTED_CONFIG=/config/config.json

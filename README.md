@@ -124,12 +124,24 @@ Runs ffmpeg against a generated test pattern through the real fragmented-MP4 →
 ### Docker (e.g. TrueNAS)
 
 ```bash
-cp config.example.json config.json   # edit it
+mkdir -p config data
+cp config.example.json config/config.json   # edit it
 docker compose up -d --build
-docker compose logs -f                # watch for the pairing QR / code
+docker compose logs -f                       # watch for the pairing QR / code
 ```
 
-**Host networking is required** — HomeKit discovery uses mDNS, which does not cross Docker's bridge network. The compose file mounts `./config.json` (read-only) and `./data` (persistent HAP pairing state). Delete `./data` to force re-pairing.
+**Host networking is required** — HomeKit discovery uses mDNS, which does not cross Docker's bridge network.
+
+Two folders sit next to the compose file:
+
+| Folder | Mounted at | Holds |
+|---|---|---|
+| `./config` | `/config` | `config.json` (camera passwords: gitignored, never commit it). |
+| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. |
+
+The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir` in `config.json`. If the keys are found in the ignored `persistDir` while `/data/persist` is empty, the bridge refuses to start and says which files to copy where, rather than starting as a new bridge (#4).
+
+**Upgrading from 0.1.0** (config mounted as a single file, keys possibly in an anonymous volume at `/config/persist`): back up the keys from the running container first, then move `config.json` into `./config/` and copy the keys into `./data/persist/` before the first start of the new version. Check `docker inspect unscrypted` for a volume mounted at `/config`.
 
 ## HomeKit codec constraints (as implemented)
 

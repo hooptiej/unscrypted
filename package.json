@@ -1,6 +1,6 @@
 {
   "name": "unscrypted",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A from-scratch, self-hosted bridge that exposes IP cameras to Apple HomeKit, including HomeKit Secure Video (HKSV). A Scrypted replacement.",
   "license": "MIT",
@@ -19,7 +19,8 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "selftest": "tsx src/index.ts --selftest",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "hap-nodejs": "0.14.3",

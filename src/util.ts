@@ -1,6 +1,12 @@
 /** Small shared helpers. */
 
 import * as dgram from "dgram";
+import * as fs from "fs";
+
+/** True when `dir` holds HAP pairing state (hap-nodejs writes AccessoryInfo.<username>.json). */
+export function hasPairingState(dir: string): boolean {
+  return fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.startsWith("AccessoryInfo."));
+}
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
