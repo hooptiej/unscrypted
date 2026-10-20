@@ -55,7 +55,7 @@ ENV UNSCRYPTED_GO2RTC_BIN=/usr/local/bin/go2rtc \
     UNSCRYPTED_GO2RTC_API_PORT=1986 \
     UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted \
     UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password \
-    UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key
+    UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key     UNSCRYPTED_DASH_PORT=8180     UNSCRYPTED_DASH_DIR=/data/dash
 
 # Config (/config) and HAP pairing state (/data/persist) live outside the image as bind
 # mounts (see docker-compose.yml). No VOLUME line on purpose: an anonymous volume at /config
@@ -66,6 +66,8 @@ ENV UNSCRYPTED_GO2RTC_BIN=/usr/local/bin/go2rtc \
 EXPOSE 51826/tcp
 # Admin pane (go2rtc's API stays on 127.0.0.1 and is reached only through the pane).
 EXPOSE 8190/tcp
+# The open, watch-only dashboard (the living-room display).
+EXPOSE 8180/tcp
 
 # Covers the admin pane only. Unhealthy restarts nothing, so the HomeKit bridge is never touched by it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
