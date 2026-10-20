@@ -99,7 +99,12 @@ export function loadSettings(file: string): { settings: DashSettings; warning: s
     };
     return { settings: s, warning: null, mtimeMs };
   } catch (err) {
-    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${(err as Error).message}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs };
+    // The parser's message quotes a piece of the file (hosts, the album link), and this warning is shown on
+    // the open dashboard, so say where, never what.
+    const msg = (err as Error).message;
+    const pos = /position (\d+)/.exec(msg)?.[1];
+    const why = err instanceof SyntaxError ? `it isn't valid JSON${pos ? ` (near character ${pos})` : ""}` : "it isn't a JSON object";
+    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${why}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs };
   }
 }
 
