@@ -249,3 +249,22 @@ test("photos: the list says why it's empty; only published ids are served, with 
     }
   } finally { s.close(); }
 });
+
+test("fonts: only real font files from the fonts folder, with a long cache; no path tricks", async () => {
+  const fdir = tempDir("unscr-dashfonts-");
+  fs.writeFileSync(path.join(fdir, "rMrRHh34w5nN.otf"), "OTTO");
+  fs.writeFileSync(path.join(path.dirname(fdir), "settings.json"), "{}");
+  const s = createDashServer(deps({ fontsDir: fdir }));
+  const b = await listen(s);
+  try {
+    const r = await fetch(b + "/fonts/rMrRHh34w5nN.otf");
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-type"), "font/otf");
+    assert.match(r.headers.get("cache-control")!, /max-age=86400/);
+    for (const bad of ["/fonts/../settings.json", "/fonts/..%2fsettings.json", "/fonts/Gone.otf", "/fonts/names.json"]) {
+      const x = await fetch(b + bad);
+      assert.equal(x.status, 404, bad);
+      assert.match((await x.json()).error.happened, /font|No such page/i);   // fetch itself folds "/fonts/../x" to "/x"
+    }
+  } finally { s.close(); }
+});

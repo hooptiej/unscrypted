@@ -306,7 +306,7 @@ async function pollState() {
     ? (st.weatherErrorSince ? `Weather ${st.weather ? "not updated" : "unavailable"} since ${clockTime(st.weatherErrorSince)}: ${st.weatherError}` : st.weatherError)
     : null;
   renderWeather(st.weather, wxErr);
-  setNotice("settings", st.settingsWarning || null);
+  setNotice("settings", [st.settingsWarning, ...(st.notices || [])].filter(Boolean).join("  ·  ") || null);
   if (seenSettingsVersion === null) seenSettingsVersion = st.settingsVersion;
   else if (st.settingsVersion !== seenSettingsVersion) {
     if ($("full").classList.contains("gone")) location.reload(); else reloadWhenClosed = true;

@@ -137,3 +137,17 @@ test("weather: no place says so; a failure keeps the last forecast and says why;
   assert.equal(calls.filter((c) => c.includes("geocoding")).length, 2, "a new place geocodes again");
   assert.equal((rt.state() as any).weatherError, null);
 });
+
+test("fonts: publicConfig serves the chosen file; a gone file falls back and the page is told why", () => {
+  const rt = runtime();
+  const fdir = path.join(path.dirname(rt.settingsFile), "fonts");
+  fs.mkdirSync(fdir, { recursive: true });
+  fs.writeFileSync(path.join(fdir, "rMrRHh34w5nN.otf"), "OTTO");
+  fs.writeFileSync(path.join(fdir, "names.json"), JSON.stringify({ "rMrRHh34w5nN.otf": "AlbertusMT" }));
+  rt.settings.fonts = { ui: { kind: "file", file: "rMrRHh34w5nN.otf" }, clock: { kind: "system", family: "inherit" } };
+  assert.deepEqual(rt.publicConfig().fonts, { ui: { file: "/fonts/rMrRHh34w5nN.otf", name: "AlbertusMT" }, clock: { inherit: true } });
+  assert.deepEqual((rt.state() as any).notices, []);
+  rt.settings.fonts.clock = { kind: "file", file: "Gone.otf" };
+  assert.equal((rt.publicConfig().fonts.clock as any).family.includes("sans-serif"), true);
+  assert.match((rt.state() as any).notices.join(" "), /clock font "Gone\.otf" isn't in the fonts folder/);
+});

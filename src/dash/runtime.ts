@@ -10,6 +10,7 @@ import { PublicConfig } from "./server";
 import { Logger } from "../logger";
 import { tcpProbe, ServiceWatcher, LightNode } from "./services";
 import { PhotoLibrary } from "./photos";
+import { listFonts, fontOut } from "./fonts";
 import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
@@ -123,13 +124,22 @@ export class DashRuntime {
     return s;
   }
 
+  /** Font output for the page, plus a plain warning for each font that couldn't be used. */
+  private fonts(): { ui: unknown; clock: unknown; notices: string[] } {
+    const l = listFonts(path.join(this.o.dir, "fonts"));
+    const ui = fontOut(this.settings.fonts.ui, "ui", l.fonts);
+    const clock = fontOut(this.settings.fonts.clock, "clock", l.fonts);
+    return { ui: ui.out, clock: clock.out, notices: [l.warning, ui.warning, clock.warning].filter((x): x is string => Boolean(x)) };
+  }
+
   publicConfig(): PublicConfig {
     const s = this.settings;
+    const f = this.fonts();
     return {
       title: this.o.title, env: this.o.env, adminPort: this.o.adminPort,
       idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes,
       cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream })),
-      fonts: { ui: { family: null }, clock: { inherit: true } },   // Task 9 fills this in
+      fonts: { ui: f.ui, clock: f.clock },
     };
   }
 
@@ -137,6 +147,7 @@ export class DashRuntime {
     return { updated: Date.now(), settingsVersion: this.settingsMtime, settingsWarning: this.settingsWarning,
       bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
       services: this.services, servicesAt: this.servicesAt,
-      weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince };
+      weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince,
+      notices: this.fonts().notices };
   }
 }

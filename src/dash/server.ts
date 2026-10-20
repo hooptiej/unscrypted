@@ -13,6 +13,8 @@ import { securityHeaders } from "../admin/server";
 import { Logger } from "../logger";
 import { ClientFrameFilter } from "./wsFilter";
 import { PHOTO_EXT } from "./photos";
+import { FONT_MIME } from "./fonts";
+import { FONT_FILE } from "./settings";
 
 export interface PublicConfig {
   title: string; env: "prod" | "test"; adminPort: number;
@@ -113,6 +115,18 @@ export function createDashServer(d: DashDeps): http.Server {
       if (url.pathname === "/api/config") return json(res, 200, d.publicConfig());
       if (url.pathname === "/api/state") return json(res, 200, d.state());
       if (url.pathname === "/api/photos") return json(res, 200, d.photos());
+      if (url.pathname.startsWith("/fonts/")) {
+        attempted = "Load a dashboard font";
+        const name = url.pathname.slice("/fonts/".length);   // not decoded: a real font name has no % in it
+        const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing; the page uses a system font instead.",
+          next: "Put the file in data/dash/fonts on the NAS, or pick another font in the dashboard settings." }, 404);
+        if (!FONT_FILE.test(name)) throw gone();
+        let body: Buffer;
+        try { body = fs.readFileSync(path.join(d.fontsDir, name)); } catch { throw gone(); }
+        // Fonts never change under the same name; a day's cache keeps the kiosk's reloads light.
+        res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length), "cache-control": "public, max-age=86400" });
+        return res.end(body);
+      }
       if (url.pathname.startsWith("/api/photo/")) {
         attempted = "Load a slideshow photo";
         const id = url.pathname.slice("/api/photo/".length);
