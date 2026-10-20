@@ -145,6 +145,26 @@ The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir
 
 **Upgrading from 0.1.0** (config mounted as a single file, keys possibly in an anonymous volume at `/config/persist`): back up the keys from the running container first, then move `config.json` into `./config/` and copy the keys into `./data/persist/` before the first start of the new version. Check `docker inspect unscrypted` for a volume mounted at `/config`.
 
+## Dashboard
+
+The living-room camera dashboard (formerly the separate Homedash app) runs inside the same container, as its own supervised child process: `http://<host>:8180` (test instance: `http://10.0.1.78:8181`, tab title `Homedash - TEST`). It shows up to four live camera tiles (WebRTC, video only, straight from the bundled go2rtc), service status lights, the weather and a photo slideshow.
+
+- **Open and watch-only, by design.** There's no sign-in: anyone on the LAN can watch the cameras, the same as Homedash. Every non-GET request gets a 405. It never sends passwords, RTSP URLs, camera IPs, the setup code or tokens, and it only opens live video for the cameras in `config.json` (at most 16 viewers at once).
+- **Settings** live in `./data/dash/` (`settings.json`, `fonts/`, the photo cache) and are changed on the admin pane's settings page, behind the admin password (see [Dashboard settings](#dashboard-settings)).
+- **Off switch:** `UNSCRYPTED_DASH=off`. A dashboard crash restarts only the dashboard (backoff 1 s doubling to 60 s); the HomeKit bridge and the admin pane carry on.
+- **Rebuilding the image restarts HomeKit too** (a few seconds of "No Response" in Home, and any recording in progress stops). Batch dashboard changes into as few prod deploys as possible. On the test instance, `web/dash` is bind-mounted read-only, so page-only changes need no rebuild.
+- **The Mac kiosk** that shows it full screen lives in [`scripts/mac-kiosk/`](scripts/mac-kiosk/).
+
+### Its own IP address (so `http://homedash.local` works with no port)
+
+By default the dashboard listens on every address at port 8180. To give it its own address on port 80 (prod `10.0.1.248`, `homedash.local`; test `10.0.1.249`, `homedash-test.local`):
+
+1. **Add the address to the NAS first** (TrueNAS network settings, as a second address on the LAN interface; TrueNAS tests it and reverts on its own if you don't confirm). Reserve it in UniFi, or keep it outside the DHCP pool.
+2. Set `UNSCRYPTED_DASH_HOST=10.0.1.248` and `UNSCRYPTED_DASH_PORT=80` in the compose environment, and `UNSCRYPTED_ADMIN_URL` / `UNSCRYPTED_DASH_URL` (see [Dashboard settings](#dashboard-settings)), then `docker compose up -d`.
+3. The mDNS name (`homedash-mdns` publishing `homedash.local` → `.248`) and the kiosk URL don't change.
+
+If the address isn't on the NAS yet, the dashboard doesn't start and says so plainly in the log and on the admin pane's Status ("The address 10.0.1.248 isn't on this machine (EADDRNOTAVAIL)… Add 10.0.1.248 to the NAS's network"). It keeps retrying (up to once a minute) and starts on its own once the address appears. HomeKit and the admin pane are unaffected either way. HomeKit stays on the NAS's main address.
+
 ## Admin pane
 
 A small web page for the cameras, served by the same container: `http://<host>:8190` (on the NAS, `http://10.0.1.78:8190`).
@@ -170,10 +190,11 @@ The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open
 |---|---|---|
 | `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces |
 | `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces |
+| `8180/tcp` | Dashboard, open and watch-only (`UNSCRYPTED_DASH_PORT`; own IP: port `80` on `UNSCRYPTED_DASH_HOST`) | all interfaces, or `UNSCRYPTED_DASH_HOST` |
 | `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
 | `8557/tcp+udp` | go2rtc WebRTC video for the live preview (`UNSCRYPTED_GO2RTC_WEBRTC_PORT`; `UNSCRYPTED_GO2RTC_WEBRTC=off` turns the preview off) | all interfaces |
 | `8099-8102/tcp` | ONVIF push notifications (`onvif.notifyPort`) | all interfaces |
-| Test instance | admin `8191`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, no HomeKit | |
+| Test instance | admin `8191`, dashboard `8181`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, no HomeKit | |
 
 ### Test instance
 

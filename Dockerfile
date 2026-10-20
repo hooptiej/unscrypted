@@ -55,7 +55,9 @@ ENV UNSCRYPTED_GO2RTC_BIN=/usr/local/bin/go2rtc \
     UNSCRYPTED_GO2RTC_API_PORT=1986 \
     UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted \
     UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password \
-    UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key     UNSCRYPTED_DASH_PORT=8180     UNSCRYPTED_DASH_DIR=/data/dash
+    UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key \
+    UNSCRYPTED_DASH_PORT=8180 \
+    UNSCRYPTED_DASH_DIR=/data/dash
 
 # Config (/config) and HAP pairing state (/data/persist) live outside the image as bind
 # mounts (see docker-compose.yml). No VOLUME line on purpose: an anonymous volume at /config
