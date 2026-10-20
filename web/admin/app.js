@@ -166,12 +166,16 @@ const NEXT = (() => {
   return n && /^\/dash-settings(\?from=dash)?$/.test(n) ? n : null;
 })();
 let loginIdleTimer = null;
-/* Arrived from the kiosk's Settings button: if nobody types, go back to the dashboard. */
+/* Arrived from the kiosk's Settings button: if nobody types, go back to the dashboard.
+   Esc goes back right away (#27); it doesn't count as activity, so it never restarts the wait. */
 function loginIdleReturn(dash) {
   if (!NEXT || !NEXT.endsWith("from=dash") || !dash || !dash.url || loginIdleTimer) return;
   const total = Math.max(15, dash.idleSeconds || 30);
   let last = Date.now();
-  ["pointerdown", "keydown", "input"].forEach((e) => window.addEventListener(e, () => { last = Date.now(); }, { capture: true }));
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && location.hash === "#/login") { e.preventDefault(); location.href = dash.url; }
+  }, { capture: true });
+  ["pointerdown", "keydown", "input"].forEach((e) => window.addEventListener(e, (ev) => { if (ev.key !== "Escape") last = Date.now(); }, { capture: true }));
   const note = el("p", { class: "hint" });
   app.querySelector("form")?.append(note);
   loginIdleTimer = setInterval(() => {
