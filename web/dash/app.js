@@ -138,6 +138,8 @@ function render(t) {
 const renderAll = () => Object.values(tiles).forEach(render);
 setInterval(renderAll, 2000);   // the no-picture watchdog
 
+/* which lights' full reasons are open, so a re-render (a changed poll) keeps them open */
+const openReasons = {};
 function svcNode(node) {
   const wrap = document.createElement("div");
   const line = document.createElement("div");
@@ -155,13 +157,27 @@ function svcNode(node) {
   } else {
     line.append(dot, node.name);
   }
-  if (node.reason) {
-    const why = document.createElement("span");
-    why.className = "why";
-    why.textContent = node.reason;
-    line.append(why);
-  }
   wrap.append(line);
+  // A non-green light always says something: a short one-line label here, the full reason on
+  // hover (title) or a tap, which opens it underneath. An older server sends only `reason`.
+  const full = node.reason || "";
+  const short = node.short || full;
+  if (node.state !== "ok" || short) {
+    const text = short || "no reason given (a bug: please report it)";
+    const why = document.createElement("button");
+    why.type = "button";
+    why.className = "why";
+    why.textContent = text;
+    why.title = full || text;
+    const more = document.createElement("div");
+    more.className = "whyfull";
+    more.textContent = full || text;
+    const setOpen = (open) => { more.hidden = !open; why.setAttribute("aria-expanded", String(open)); openReasons[node.id] = open; };
+    setOpen(Boolean(openReasons[node.id]));
+    why.addEventListener("click", () => setOpen(more.hidden));
+    line.append(why);
+    wrap.append(more);
+  }
   if (node.children && node.children.length) {
     const kids = document.createElement("div");
     kids.className = "kids";
