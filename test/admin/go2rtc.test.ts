@@ -7,6 +7,7 @@ import * as path from "path";
 import { AddressInfo } from "net";
 import { explainGo2rtcFailure, Go2rtcClient, Go2rtcManager, maskSecretsInLine } from "../../src/admin/go2rtc";
 import { Logger } from "../../src/logger";
+import { tempDir } from "../helpers/tmp";
 
 const log = new Logger("test");
 
@@ -27,7 +28,7 @@ test("passwords in URLs are masked in go2rtc log lines", () => {
 });
 
 test("manager with a missing binary reports 'missing' and still writes the yaml", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-g2r-"));
+  const dir = tempDir("unscr-g2r-");
   const m = new Go2rtcManager({ binary: path.join(dir, "no-such-go2rtc"), runtimeDir: path.join(dir, "rt"),
     ports: { api: 1999, webrtc: null }, log });
   m.start({ cameras: [{ name: "Cam", rtspMain: "rtsp://h/1", audio: true }] } as any);
@@ -39,7 +40,7 @@ test("manager with a missing binary reports 'missing' and still writes the yaml"
 });
 
 test("manager reports a yaml write failure instead of throwing", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-g2r-"));
+  const dir = tempDir("unscr-g2r-");
   const blocker = path.join(dir, "file-not-dir");
   fs.writeFileSync(blocker, "x");
   const m = new Go2rtcManager({ binary: "go2rtc", runtimeDir: path.join(blocker, "rt"), ports: { api: 1999, webrtc: null }, log });

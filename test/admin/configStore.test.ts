@@ -7,6 +7,7 @@ import {
   redactCamera, applyCameraEdit, writeConfigAtomic, readRawConfig,
 } from "../../src/admin/configStore";
 import { UserError } from "../../src/admin/errors";
+import { tempDir } from "../helpers/tmp";
 
 const cfg = () => ({
   bridge: { name: "Unscrypted", username: "CC:22:3D:E3:CE:F6", pin: "031-45-154" },
@@ -89,7 +90,7 @@ test("invalid result is refused by the existing validator before any write", () 
 });
 
 test("atomic write: backup of previous version, new content readable", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-"));
+  const dir = tempDir("unscr-");
   const file = path.join(dir, "config.json");
   fs.writeFileSync(file, JSON.stringify(cfg()));
   const next = applyCameraEdit(cfg() as any, "Front", { prebufferSeconds: 6 });
@@ -101,7 +102,7 @@ test("atomic write: backup of previous version, new content readable", () => {
 });
 
 test("backups are pruned to keepBackups", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-"));
+  const dir = tempDir("unscr-");
   const file = path.join(dir, "config.json");
   fs.writeFileSync(file, JSON.stringify(cfg()));
   for (let i = 0; i < 5; i++) writeConfigAtomic(file, cfg() as any, { keepBackups: 3 });
@@ -109,7 +110,7 @@ test("backups are pruned to keepBackups", () => {
 });
 
 test("unreadable config.json is a UserError saying what to do", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-"));
+  const dir = tempDir("unscr-");
   const file = path.join(dir, "config.json");
   fs.writeFileSync(file, "{ not json");
   assert.throws(() => readRawConfig(file), (e: unknown) => e instanceof UserError && e.body.next.length > 0);

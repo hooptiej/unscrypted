@@ -8,12 +8,13 @@ import { loadConfig } from "../../src/config";
 import { UnscryptedCamera } from "../../src/camera";
 import { Logger, setLogLevel } from "../../src/logger";
 import { ToAdmin } from "../../src/admin/ipc";
+import { tempDir } from "../helpers/tmp";
 
 setLogLevel("error");
 const log = new Logger("test");
 
 function setup() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-rt-"));
+  const dir = tempDir("unscr-rt-");
   const file = path.join(dir, "config.json");
   const raw: any = {
     bridge: { name: "Test", username: "CC:22:3D:E3:CE:F6", pin: "031-45-154" },
