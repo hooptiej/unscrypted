@@ -1,0 +1,13 @@
+# Synthetic "camera" for unscrypted-test (#16). Loopback only. Never point prod at it.
+# 1080p/15 fps (and 360p) H.264 test pattern, no B-frames, 2 s GOP, made only while something pulls it.
+api:
+  listen: "127.0.0.1:1988"
+rtsp:
+  listen: "127.0.0.1:8654"
+webrtc:
+  listen: ""
+log:
+  level: info
+streams:
+  pattern: "exec:ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1920x1080:rate=15 -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -bf 0 -g 30 -f rtsp {output}"
+  pattern_sub: "exec:ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=640x360:rate=15 -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -bf 0 -g 30 -f rtsp {output}"
