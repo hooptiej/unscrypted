@@ -29,6 +29,7 @@ import { rootLogger, setLogLevel, Logger } from "./logger";
 import { resolveFfmpeg } from "./ffmpeg";
 import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
+import { SourceSelector } from "./source";
 import { probeOnvif } from "./onvif";
 import { hasPairingState } from "./util";
 
@@ -138,11 +139,22 @@ async function main(): Promise<void> {
   const go2rtcEnabled = process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null;
   // Loopback restream for HomeKit's pipelines (#16). Off = HomeKit reads cameras directly (0.3.0 behaviour).
   const rtspPort = go2rtcEnabled && process.env.UNSCRYPTED_GO2RTC_RTSP !== "off" && go2rtcRtsp.error === null ? go2rtcRtsp.port : null;
+  // Where HomeKit's pipelines read each camera from: go2rtc's restream, or the camera while go2rtc is down (#16).
+  const sources = new SourceSelector({
+    rtspPort,
+    log: log.child("source"),
+    offReason: !go2rtcEnabled
+      ? (go2rtcApi.error ? `go2rtc is off because ${go2rtcApi.error}` : "go2rtc is switched off in this instance (UNSCRYPTED_GO2RTC=off)")
+      : process.env.UNSCRYPTED_GO2RTC_RTSP === "off"
+        ? "go2rtc's RTSP restream is switched off (UNSCRYPTED_GO2RTC_RTSP=off)"
+        : go2rtcRtsp.error ?? undefined,
+  });
+  sources.setCameras(config.cameras);
 
   const cameras: UnscryptedCamera[] = [];
   for (const camConfig of config.cameras) {
     try {
-      const cam = new UnscryptedCamera(camConfig, config.ffmpegPath, log);
+      const cam = new UnscryptedCamera(camConfig, config.ffmpegPath, log, sources);
       bridge.addBridgedAccessory(cam.accessory);
       cameras.push(cam);
     } catch (err) {
@@ -162,6 +174,11 @@ async function main(): Promise<void> {
   process.on("unhandledRejection", (e) => {
     log.error(`unhandled rejection (bridge kept running): ${(e as Error)?.stack ?? e}`);
   });
+
+  const testPrebuffer = (process.env.UNSCRYPTED_TEST_PREBUFFER ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (hapEnabled && testPrebuffer.length) {
+    log.warn("UNSCRYPTED_TEST_PREBUFFER is ignored: HomeKit is on, and HomeKit decides when recording buffers run");
+  }
 
   if (hapEnabled) {
     // Publish the bridge (starts the HAP server + mDNS advertisement).
@@ -192,6 +209,12 @@ async function main(): Promise<void> {
       "HAP disabled (UNSCRYPTED_HAP=off): this instance is NOT visible to HomeKit. " +
         `${cameras.length} camera(s) configured for status and feed checks only; motion sources not started.`,
     );
+    if (testPrebuffer.length) {
+      const started = cameras.filter((c) => (testPrebuffer.includes("all") || testPrebuffer.includes(c.name)) && c.startPrebufferForTest()).map((c) => c.name);
+      const missing = testPrebuffer.filter((n) => n !== "all" && !started.includes(n));
+      log.warn(`test instance: recording buffer started without HomeKit for ${started.join(", ") || "no camera"} (UNSCRYPTED_TEST_PREBUFFER), to check the go2rtc restream` +
+        (missing.length ? `; not started for ${missing.join(", ")} (no such camera, or HKSV is off for it)` : ""));
+    }
   }
 
   const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
@@ -201,6 +224,7 @@ async function main(): Promise<void> {
     configPath: resolvedConfigPath,
     bridge: hapEnabled ? bridge : null,
     cameras,
+    sources,
     log,
     ffmpegPath: config.ffmpegPath,
     version: (require("../package.json") as { version: string }).version,

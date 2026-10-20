@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as net from "net";
-import { BridgeRuntime, probeRtsp } from "../../src/bridgeRuntime";
+import { BridgeRuntime } from "../../src/bridgeRuntime";
 import { loadConfig } from "../../src/config";
 import { UnscryptedCamera } from "../../src/camera";
 import { Logger, setLogLevel } from "../../src/logger";
@@ -115,11 +115,16 @@ test("reload-go2rtc without go2rtc says why", async () => {
   assert.equal(rt.status().go2rtc.state, "stopped");
 });
 
-test("probeRtsp reports an unparseable URL and a closed port", async () => {
-  assert.match((await probeRtsp("not a url")).err ?? "", /can't be parsed/);
-  const r = await probeRtsp("rtsp://127.0.0.1:1/x", 1000);
-  assert.equal(r.ok, false);
-  assert.ok(r.err);
+test("go2rtc off: HomeKit reads the cameras directly and the status says so, with no probe fields", () => {
+  const { rt } = setup();
+  const s = rt.status();
+  assert.equal(s.homekitSource.mode, "off");
+  assert.match(s.homekitSource.text, /HomeKit reads the cameras directly/);
+  assert.equal(s.cameras[0].via, "camera");
+  assert.equal(s.cameras[0].feed, null);
+  assert.equal(s.cameras[0].direct, null);
+  assert.deepEqual(s.cameras[0].prebuffer, { running: false, via: null, lastFragmentAt: null });
+  assert.ok(!("reachable" in s.cameras[0]), "the TCP camera probe is gone (#16)");
 });
 
 test("dashboard switched off: says so, and the status shows it stopped with the reason", async () => {
