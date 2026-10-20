@@ -96,6 +96,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.link { background: none; border: none; color: var(--accent); font-weight: 600; cursor: pointer; padding: 0; }
 .why { font-size: 13px; color: var(--muted); }
 
+/* Camera logins (#18): olive-edged box under the facts. */
+.logins { border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; display: grid; gap: 4px; }
+.logins .secret { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; user-select: all; }
+button.secondary.small { padding: 3px 10px; font-size: 13px; }
+.copybuf { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; }
+
 form.edit { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 12px; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 10px; margin: 0; min-width: 0; }
 legend { font-weight: 600; padding: 0 4px; }
