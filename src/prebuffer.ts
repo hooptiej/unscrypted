@@ -31,6 +31,83 @@ import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg } from "./ffmpeg";
 import { FragmentedMp4Parser } from "./mp4";
 import { ResolvedCamera } from "./config";
 
+/**
+ * The continuous fragmented-MP4 pipeline's ffmpeg args. The input URL is the only per-source
+ * difference: go2rtc's loopback restream or the camera itself (fallback), the same args either way.
+ * The self-test (`--selftest --source`) runs exactly these args, so it proves what HomeKit gets.
+ */
+export function buildPrebufferArgs(cam: Pick<ResolvedCamera, "copyVideo" | "audio">, inputUrl: string): string[] {
+  const args: string[] = [
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-fflags",
+    "+genpts",
+    "-rtsp_transport",
+    "tcp",
+    // Socket I/O timeout (µs): a wedged go2rtc or camera makes ffmpeg exit, so the prebuffer restarts instead of hanging.
+    "-timeout",
+    "10000000",
+    "-i",
+    inputUrl,
+  ];
+
+  // Video
+  if (cam.copyVideo) {
+    args.push("-c:v", "copy");
+  } else {
+    // Transcode and force a 4s keyframe cadence so fragments stay short.
+    args.push(
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-profile:v",
+      "main",
+      "-pix_fmt",
+      "yuv420p",
+      "-force_key_frames",
+      "expr:gte(t,n_forced*4)",
+      "-g",
+      "60",
+    );
+  }
+
+  // Audio -> AAC for recording (HKSV accepts AAC-LC), only when the camera has
+  // an audio track. aresample=async fixes non-monotonic/backward audio
+  // timestamps (e.g. G.711 sources) so the muxer DTS stays monotonic.
+  if (cam.audio) {
+    args.push(
+      "-af",
+      "aresample=async=1:first_pts=0",
+      "-c:a",
+      "aac",
+      "-ar",
+      "32000",
+      "-b:a",
+      "32k",
+      "-ac",
+      "1",
+    );
+  } else {
+    args.push("-an");
+  }
+  args.push(
+    // Fragmented MP4 to stdout. empty_moov+default_base_moof gives us a clean
+    // init segment; frag_keyframe forces a new fragment on each keyframe.
+    "-f",
+    "mp4",
+    "-movflags",
+    "frag_keyframe+empty_moov+default_base_moof",
+    // Also cap fragment duration so a long GOP still yields bounded fragments
+    // when transcoding (ignored meaningfully for pure copy, harmless).
+    "-frag_duration",
+    "4000000",
+    "pipe:1",
+  );
+  return args;
+}
+
 interface StoredFragment {
   data: Buffer;
   ts: number; // Date.now() when captured
@@ -128,78 +205,12 @@ export class Prebuffer {
   }
 
   /** Build the args for the continuous fragmented-mp4 pipeline. */
-  private buildArgs(): string[] {
-    const cam = this.camera;
-    const args: string[] = [
-      "-hide_banner",
-      "-loglevel",
-      "warning",
-      "-fflags",
-      "+genpts",
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      cam.rtspMain,
-    ];
-
-    // Video
-    if (cam.copyVideo) {
-      args.push("-c:v", "copy");
-    } else {
-      // Transcode and force a 4s keyframe cadence so fragments stay short.
-      args.push(
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-profile:v",
-        "main",
-        "-pix_fmt",
-        "yuv420p",
-        "-force_key_frames",
-        "expr:gte(t,n_forced*4)",
-        "-g",
-        "60",
-      );
-    }
-
-    // Audio -> AAC for recording (HKSV accepts AAC-LC), only when the camera has
-    // an audio track. aresample=async fixes non-monotonic/backward audio
-    // timestamps (e.g. G.711 sources) so the muxer DTS stays monotonic.
-    if (cam.audio) {
-      args.push(
-        "-af",
-        "aresample=async=1:first_pts=0",
-        "-c:a",
-        "aac",
-        "-ar",
-        "32000",
-        "-b:a",
-        "32k",
-        "-ac",
-        "1",
-      );
-    } else {
-      args.push("-an");
-    }
-    args.push(
-      // Fragmented MP4 to stdout. empty_moov+default_base_moof gives us a clean
-      // init segment; frag_keyframe forces a new fragment on each keyframe.
-      "-f",
-      "mp4",
-      "-movflags",
-      "frag_keyframe+empty_moov+default_base_moof",
-      // Also cap fragment duration so a long GOP still yields bounded fragments
-      // when transcoding (ignored meaningfully for pure copy, harmless).
-      "-frag_duration",
-      "4000000",
-      "pipe:1",
-    );
-    return args;
+  private buildArgs(url: string): string[] {
+    return buildPrebufferArgs(this.camera, url);
   }
 
   private spawn(ffmpegPath: string): void {
-    const args = this.buildArgs();
+    const args = this.buildArgs(this.camera.rtspMain);
     this.initSegment = null;
     this.ring = [];
     this.parser = new FragmentedMp4Parser(

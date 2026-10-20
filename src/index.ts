@@ -77,7 +77,19 @@ async function main(): Promise<void> {
   }
 
   if (selftest) {
-    const ok = await runSelfTest(config.ffmpegPath, log);
+    // --selftest [--source <rtsp url> [--seconds N] [--audio]]: the source mode runs the real prebuffer args (#16).
+    const argValue = (flag: string) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
+    const source = argValue("--source");
+    if (argv.includes("--source") && (!source || source.startsWith("--"))) {
+      log.error("SELF-TEST NOT RUN: --source needs an RTSP URL after it, e.g. --source rtsp://127.0.0.1:8554/<stream>.");
+      process.exit(2);
+    }
+    const secs = Number(argValue("--seconds") ?? 12);
+    const ok = await runSelfTest(config.ffmpegPath, log, {
+      source,
+      seconds: Number.isFinite(secs) && secs > 0 ? secs : 12,
+      audio: argv.includes("--audio"),
+    });
     process.exit(ok ? 0 : 1);
   }
 
