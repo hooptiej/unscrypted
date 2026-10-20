@@ -9,6 +9,7 @@ import { DashSettings, loadSettings, effectiveCameras } from "./settings";
 import { PublicConfig } from "./server";
 import { Logger } from "../logger";
 import { tcpProbe, ServiceWatcher, LightNode } from "./services";
+import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
 
@@ -27,6 +28,11 @@ export class DashRuntime {
   services: LightNode[] = [];
   servicesAt: number | null = null;
   private watcher = new ServiceWatcher();
+  /** The last good forecast stays up through a failure; the error line says how old it is. */
+  weather: Weather | null = null;
+  weatherError: string | null = null;
+  weatherErrorSince: number | null = null;
+  private wxLoc: { key: string; loc: { lat: number; lon: number; label: string } | null } | null = null;
 
   constructor(private readonly o: DashRuntimeOptions) {
     this.settingsFile = path.join(o.dir, "settings.json");
@@ -73,6 +79,37 @@ export class DashRuntime {
     this.servicesAt = Date.now();
   }
 
+  /** One weather round. Returns the seconds until the next one (60 after an error or with no place). Never throws. */
+  async refreshWeather(fetchJson: FetchJson = defaultFetchJson): Promise<number> {
+    const w = this.settings.weather;
+    const key = JSON.stringify([w.place, w.lat, w.lon]);
+    const fail = (msg: string) => {
+      if (this.weatherError === null || this.weatherErrorSince === null) this.weatherErrorSince = Date.now();
+      this.weatherError = msg;
+    };
+    try {
+      if (!this.wxLoc || this.wxLoc.key !== key) {
+        this.wxLoc = null;
+        if (this.weather && this.weather.place !== w.place) this.weather = null;   // don't show the old town's weather
+        this.wxLoc = { key, loc: await resolveLocation(w, fetchJson) };
+      }
+      const loc = this.wxLoc.loc;
+      if (!loc) {
+        this.weather = null; this.weatherErrorSince = null;
+        this.weatherError = "No weather place is set. Add one in the dashboard settings (admin password needed).";
+        return 60;
+      }
+      this.weather = { ...(await fetchWeather(loc.lat, loc.lon, w.unit, fetchJson)), place: loc.label };
+      this.weatherError = null; this.weatherErrorSince = null;
+      return Math.max(60, w.refreshSeconds || 600);
+    } catch (err) {
+      const msg = (err as Error).message;
+      fail(`${msg}. Retrying every minute.`);
+      this.o.log.warn(`weather: ${msg} (retrying in 60 s)`);
+      return 60;
+    }
+  }
+
   allowedStreams(): Set<string> {
     const s = new Set<string>();
     for (const c of this.cameras) { s.add(c.main); if (c.sub) s.add(c.sub); }
@@ -92,6 +129,7 @@ export class DashRuntime {
   state(): Record<string, unknown> {
     return { updated: Date.now(), settingsVersion: this.settingsMtime, settingsWarning: this.settingsWarning,
       bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
-      services: this.services, servicesAt: this.servicesAt };
+      services: this.services, servicesAt: this.servicesAt,
+      weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince };
   }
 }

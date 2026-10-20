@@ -103,3 +103,37 @@ test("service lights reach /api/state with their reasons and a timestamp", async
   const reasons = JSON.stringify(st.services, (k, v) => (k === "link" ? undefined : v));
   assert.doesNotMatch(reasons, /\b\d+\.\d+\.\d+\.\d+\b/, "no addresses in the reasons");
 });
+
+test("weather: no place says so; a failure keeps the last forecast and says why; a place change re-geocodes", async () => {
+  const rt = runtime();
+  assert.equal(await rt.refreshWeather(async () => { throw new Error("should not be called"); }), 60);
+  assert.match((rt.state() as any).weatherError, /No weather place is set/);
+
+  const fc = { current: { temperature_2m: 50, weather_code: 0 }, daily: { temperature_2m_max: [60], temperature_2m_min: [30], sunrise: ["x T07:00"], sunset: ["x T18:00"] } };
+  const calls: string[] = [];
+  let fail = false;
+  const fj = async (u: string) => {
+    calls.push(u.split("?")[0]);
+    if (fail) throw new Error("Open-Meteo answered 503");
+    return u.includes("geocoding") ? { results: [{ latitude: 1, longitude: 2, name: "Sterling" }] } : fc;
+  };
+  rt.settings.weather.place = "Sterling, CO";
+  assert.equal(await rt.refreshWeather(fj), 600);
+  let st = rt.state() as any;
+  assert.deepEqual({ t: st.weather.temp, place: st.weather.place, err: st.weatherError }, { t: 50, place: "Sterling", err: null });
+
+  fail = true;
+  assert.equal(await rt.refreshWeather(fj), 60);
+  st = rt.state() as any;
+  assert.equal(st.weather.temp, 50, "the last forecast stays up");
+  assert.match(st.weatherError, /Open-Meteo answered 503\. Retrying every minute\./);
+  assert.equal(typeof st.weatherErrorSince, "number");
+
+  fail = false;
+  await rt.refreshWeather(fj);
+  assert.equal(calls.filter((c) => c.includes("geocoding")).length, 1, "geocoded once");
+  rt.settings.weather.place = "Denver";
+  await rt.refreshWeather(fj);
+  assert.equal(calls.filter((c) => c.includes("geocoding")).length, 2, "a new place geocodes again");
+  assert.equal((rt.state() as any).weatherError, null);
+});

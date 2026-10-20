@@ -63,6 +63,26 @@ const serviceLoop = async (): Promise<void> => {
 };
 setTimeout(() => void serviceLoop(), 700).unref();
 
+// Weather: refreshSeconds after a good round, a minute after an error or with no place. A place
+// change shows up within 5 s (refreshWeather re-geocodes when place/lat/lon differ).
+let wxKey = "";
+let wxTimer: NodeJS.Timeout | null = null;
+const weatherLoop = async (): Promise<void> => {
+  wxTimer = null;   // null while a round runs, so the change watcher below can't start a second one
+  const w = rt.settings.weather;
+  wxKey = JSON.stringify([w.place, w.lat, w.lon, w.unit]);
+  let next = 60;
+  try { next = await rt.refreshWeather(); }
+  catch (err) { log.error(`weather round failed unexpectedly (retrying in 60 s): ${(err as Error).stack ?? err}`); }
+  wxTimer = setTimeout(() => void weatherLoop(), next * 1000);
+  wxTimer.unref();
+};
+setInterval(() => {
+  const w = rt.settings.weather;
+  if (wxTimer && JSON.stringify([w.place, w.lat, w.lon, w.unit]) !== wxKey) { clearTimeout(wxTimer); wxTimer = null; void weatherLoop(); }
+}, 5000).unref();
+setTimeout(() => void weatherLoop(), 1000).unref();
+
 const server = createDashServer({
   webRoot: path.join(__dirname, "..", "..", "web", "dash"), title,
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
