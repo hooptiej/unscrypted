@@ -216,3 +216,29 @@ test("owner eye-check: live clock preview, 'Dashboard stream' with its hint, a s
   const labelCol = camCol - fixed - 4 * 12;
   assert.ok(labelCol >= 300, `label column is ${Math.round(labelCol)} design px`);
 });
+
+test("signing out (the kiosk's idle return does this first) kills that session on the server, not just the cookie", async () => {
+  const s = await login();
+  assert.equal((await fetch(base + "/api/dash/settings", { headers: { cookie: s.cookie } })).status, 200);
+  const out = await fetch(base + "/api/logout", { method: "POST", headers: { cookie: s.cookie, "x-csrf-token": s.csrf, "content-type": "application/json" }, body: "{}" });
+  assert.equal(out.status, 200);
+  assert.match(out.headers.get("set-cookie")!, /Max-Age=0/);
+  const again = await fetch(base + "/api/dash/settings", { headers: { cookie: s.cookie } });
+  assert.equal(again.status, 401, "the old cookie no longer works");
+  assert.ok(four(await again.json()));
+  assert.equal((await fetch(base + "/dash-settings?from=dash", { headers: { cookie: s.cookie }, redirect: "manual" })).status, 302, "the page sends it back to sign-in");
+  // a fresh sign-in still works, and the revocation survives an admin pane restart (same key file)
+  const s2 = await login();
+  assert.equal((await fetch(base + "/api/dash/settings", { headers: { cookie: s2.cookie } })).status, 200);
+  const re = createAdminServer({
+    configPath: path.join(dir, "config.json"), passwordFile: path.join(dir, "pw"), go2rtcApi: "",
+    sessionKeyFile: path.join(dir, "admin-session.key"), webRoot: path.join(__dirname, "../../web/admin"), title: "t",
+    dash: { dir: dashDir, port: 8181, url: null }, bridge: { status: () => null, request: async () => null },
+  });
+  await new Promise<void>((r) => re.listen(0, "127.0.0.1", () => r()));
+  try {
+    const b = `http://127.0.0.1:${(re.address() as AddressInfo).port}`;
+    assert.equal((await fetch(b + "/api/dash/settings", { headers: { cookie: s.cookie } })).status, 401, "still signed out after a restart");
+    assert.equal((await fetch(b + "/api/dash/settings", { headers: { cookie: s2.cookie } })).status, 200);
+  } finally { re.closeAllConnections(); re.close(); }
+});
