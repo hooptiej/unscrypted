@@ -1,7 +1,7 @@
 /**
  * Bridge-side runtime for the admin pane: keeps the camera registry, applies saved camera
- * changes at runtime, builds the status snapshot, and supervises the two children (go2rtc and
- * the admin web server). Nothing here may take the HomeKit bridge down: every child is
+ * changes at runtime, builds the status snapshot, and supervises the three children (go2rtc,
+ * the admin web server and the open dashboard). Nothing here may take the HomeKit bridge down: every child is
  * supervised, and every message from the admin child is handled inside a try/catch whose
  * failure goes back to the pane as a plain-words error.
  */
@@ -19,6 +19,7 @@ import { Go2rtcManager } from "./admin/go2rtc";
 import { streamNames } from "./admin/go2rtcConfig";
 import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
 import { UserError, toErrorJson } from "./admin/errors";
+import { dashCameras, ToDash } from "./dash/ipc";
 
 export interface RuntimeOptions {
   config: ResolvedConfig;
@@ -31,6 +32,8 @@ export interface RuntimeOptions {
   version: string;
   admin: { port: number; enabled: boolean; disabledReason?: string };
   go2rtc: { binary: string; apiPort: number; webrtcPort: number | null; runtimeDir: string; enabled: boolean; disabledReason?: string };
+  /** The open, watch-only dashboard (a third supervised child). */
+  dash: { host: string; port: number; enabled: boolean; dir: string; title?: string; disabledReason?: string };
   /** Graceful shutdown; Docker's restart policy brings the bridge back. */
   requestRestart: (reason: string) => void;
 }
@@ -44,6 +47,15 @@ function resolveAdminEntry(): string | null {
   return null;
 }
 
+/** The dashboard child's entry, resolved the same way as the admin pane's. */
+function resolveDashEntry(): string | null {
+  const js = path.join(__dirname, "dash", "main.js");
+  if (fs.existsSync(js)) return js;
+  const ts = path.join(__dirname, "dash", "main.ts");
+  if (__filename.endsWith(".ts") && fs.existsSync(ts)) return ts;
+  return null;
+}
+
 export class BridgeRuntime {
   private readonly cams = new Map<string, UnscryptedCamera>();
   private readonly pendingRestart = new Set<string>();
@@ -52,6 +64,10 @@ export class BridgeRuntime {
   private go2rtc: Go2rtcManager | null = null;
   private go2rtcOff: string | null = null;
   private admin: Supervisor | null = null;
+  private dash: Supervisor | null = null;
+  private dashOff: string | null = null;
+  /** Why the dashboard couldn't listen (from the child, in plain words); cleared once it listens. */
+  private dashListenError: string | null = null;
   private readonly startedAt = Date.now();
   private timers: NodeJS.Timeout[] = [];
   private probing = false;
@@ -101,6 +117,8 @@ export class BridgeRuntime {
               UNSCRYPTED_ADMIN_PORT: String(a.port),
               UNSCRYPTED_CONFIG: this.o.configPath,
               UNSCRYPTED_GO2RTC_API: this.go2rtc?.apiBase() ?? "",
+              // The dashboard settings page edits this folder's settings.json.
+              UNSCRYPTED_DASH_DIR: this.o.dash.dir, UNSCRYPTED_DASH_PORT: String(this.o.dash.port), UNSCRYPTED_DASH_HOST: this.o.dash.host,
               // Sign-in key lives beside the pairing state so sign-ins survive restarts.
               UNSCRYPTED_ADMIN_KEY_FILE: process.env.UNSCRYPTED_ADMIN_KEY_FILE
                 || path.join(path.dirname(this.o.config.persistDir), "admin-session.key"),
@@ -115,7 +133,37 @@ export class BridgeRuntime {
       log.info(`admin pane starting on port ${a.port}`);
     }
 
-    this.timers.push(setInterval(() => this.pushStatus(), 2000));
+    const dz = this.o.dash;
+    const dashEntry = dz.enabled ? resolveDashEntry() : null;
+    if (!dz.enabled) {
+      this.dashOff = dz.disabledReason ?? "disabled (UNSCRYPTED_DASH=off)";
+      log.info(`dashboard not started: ${this.dashOff}.`);
+    } else if (!dashEntry) {
+      this.dashOff = `this build has no dashboard server (${path.join(__dirname, "dash", "main.js")} is missing)`;
+      log.warn(`dashboard not started: ${this.dashOff}. The HomeKit bridge is unaffected.`);
+    } else {
+      this.dash = new Supervisor({
+        name: "dash", log: log.child("dash"), onState: () => this.pushStatus(),
+        start: () => {
+          // An allowlisted env, not ...process.env: the open dashboard process gets no secret paths.
+          const pick = (k: string) => (process.env[k] !== undefined ? { [k]: process.env[k] as string } : {});
+          const child = fork(dashEntry, [], { env: {
+            ...pick("PATH"), ...pick("TZ"), ...pick("NODE_ENV"), ...pick("UNSCRYPTED_LOG_LEVEL"), ...pick("UNSCRYPTED_HAP"), ...pick("UNSCRYPTED_ADMIN_URL"),
+            UNSCRYPTED_DASH_HOST: dz.host, UNSCRYPTED_DASH_PORT: String(dz.port), UNSCRYPTED_DASH_DIR: dz.dir,
+            ...(dz.title ? { UNSCRYPTED_DASH_TITLE: dz.title } : {}),
+            UNSCRYPTED_ADMIN_PORT: String(this.o.admin.port),
+            UNSCRYPTED_GO2RTC_API: this.go2rtc?.apiBase() ?? "",
+          } });
+          child.on("message", (m: unknown) => this.onDashMessage(m));
+          setTimeout(() => this.pushDash(true), 200);
+          return child;
+        },
+      });
+      this.dash.start();
+      log.info(`dashboard starting on ${dz.host}:${dz.port}`);
+    }
+
+    this.timers.push(setInterval(() => { this.pushStatus(); this.pushDash(false); }, 2000));
     this.timers.push(setInterval(() => void this.probeAll(), 30_000));
     void this.probeAll();
   }
@@ -142,6 +190,25 @@ export class BridgeRuntime {
     };
   }
 
+  private onDashMessage(raw: unknown): void {
+    const m = raw as { type?: unknown; error?: { happened?: unknown; next?: unknown } } | null;
+    if (m?.type === "listening") { this.dashListenError = null; return; }
+    if (m?.type === "listen-failed" && m.error && typeof m.error.happened === "string") {
+      this.dashListenError = `${m.error.happened} ${typeof m.error.next === "string" ? m.error.next : ""}`.trim();
+      return;
+    }
+    this.o.log.warn(`ignored a malformed message from the dashboard: ${JSON.stringify(raw)?.slice(0, 200)}`);
+  }
+
+  private dashStatus(): ChildStatus {
+    if (this.dash) {
+      const s = this.dash.status();
+      // "exited with code 1" says nothing; the child's own reason says what to do.
+      return this.dashListenError ? { ...s, lastError: this.dashListenError } : s;
+    }
+    return { name: "dash", state: "stopped", restarts: 0, lastError: this.dashOff, nextRetryAt: null, since: this.startedAt };
+  }
+
   status(): BridgeStatus {
     const names = streamNames(this.config.cameras);
     const b = this.o.bridge;
@@ -162,7 +229,7 @@ export class BridgeRuntime {
       bridgeName: this.config.bridge.name, pin: this.config.bridge.pin,
       setupURI: b ? b.setupURI() : "", paired: Boolean(b?._accessoryInfo?.paired()),
       hapPort: b ? this.config.bridge.port : null, hapEnabled: Boolean(b),
-      cameras, go2rtc: this.go2rtcStatus(), startedAt: this.startedAt, version: this.o.version,
+      cameras, go2rtc: this.go2rtcStatus(), dash: this.dashStatus(), startedAt: this.startedAt, version: this.o.version,
     };
   }
 
@@ -175,6 +242,29 @@ export class BridgeRuntime {
       });
     } catch (err) {
       this.o.log.warn(`couldn't send "${m.type}" to the admin pane: ${(err as Error).message}`);
+    }
+  }
+
+  /** Tell the dashboard child the bridge's public status (and, when asked, the camera list). Never throws. */
+  private pushDash(withCameras: boolean): void {
+    const c = this.dash?.child();
+    if (!c?.connected) return;   // not running: it gets everything again 200 ms after each (re)start
+    const msgs: ToDash[] = [];
+    try {
+      const g = this.go2rtcStatus();
+      msgs.push({ type: "bridge", bridge: { hapEnabled: Boolean(this.o.bridge), paired: Boolean(this.o.bridge?._accessoryInfo?.paired()),
+        go2rtc: { state: g.state, lastError: g.lastError, nextRetryAt: g.nextRetryAt } } });
+      if (withCameras) msgs.push({ type: "cameras", cameras: dashCameras(this.config) });
+    } catch (err) {
+      this.o.log.warn(`couldn't build the dashboard's status update (it keeps the last one): ${(err as Error).message}`);
+      return;
+    }
+    for (const m of msgs) {
+      try {
+        c.send(m, (err) => { if (err) this.o.log.warn(`couldn't send "${m.type}" to the dashboard: ${err.message}`); });
+      } catch (err) {
+        this.o.log.warn(`couldn't send "${m.type}" to the dashboard: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -288,6 +378,7 @@ export class BridgeRuntime {
     }
     this.send({ type: "applied", reqId, ok: true, mode, message });
     this.pushStatus();
+    this.pushDash(true);   // a new or edited camera reaches the dashboard's allowlist and tiles
   }
 
   private addCamera(after: ResolvedCamera): { mode: ApplyMode; message: string } {
@@ -316,7 +407,7 @@ export class BridgeRuntime {
   async stop(): Promise<void> {
     this.timers.forEach(clearInterval);
     this.timers = [];
-    const results = await Promise.allSettled([this.admin?.stop(), this.go2rtc?.stop()]);
+    const results = await Promise.allSettled([this.admin?.stop(), this.dash?.stop(), this.go2rtc?.stop()]);
     for (const r of results) {
       if (r.status === "rejected") this.o.log.warn(`error stopping a child process during shutdown: ${(r.reason as Error)?.message ?? r.reason}`);
     }

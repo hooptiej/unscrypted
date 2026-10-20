@@ -159,15 +159,35 @@ async function route() {
 
 // ---------- sign-in ----------
 
+// After sign-in, go back where the visitor was sent from. Only the dashboard settings page is a
+// valid target, so a crafted link can't bounce someone off to another site.
+const NEXT = (() => {
+  const n = new URLSearchParams(location.search).get("next");
+  return n && /^\/dash-settings(\?from=dash)?$/.test(n) ? n : null;
+})();
+let loginIdleTimer = null;
+/* Arrived from the kiosk's Settings button: if nobody types, go back to the dashboard. */
+function loginIdleReturn(dash) {
+  if (!NEXT || !NEXT.endsWith("from=dash") || !dash || !dash.url || loginIdleTimer) return;
+  const total = Math.max(15, dash.idleSeconds || 30);
+  let last = Date.now();
+  ["pointerdown", "keydown", "input"].forEach((e) => window.addEventListener(e, () => { last = Date.now(); }, { capture: true }));
+  const note = el("p", { class: "hint" });
+  app.querySelector("form")?.append(note);
+  loginIdleTimer = setInterval(() => {
+    const left = Math.max(0, total - Math.floor((Date.now() - last) / 1000));
+    note.textContent = `Back to the dashboard in ${left}s if nobody signs in.`;
+    if (left <= 0) location.href = dash.url;
+  }, 1000);
+}
+
 async function renderLogin(setupError) {
   document.getElementById("nav").hidden = true;
   banners.replaceChildren();
   document.getElementById("g2dot").hidden = true;
-  if (setupError === undefined) {
-    const s = await api("GET", "/api/session");
-    if (s.signedIn) { csrf = s.csrf; location.hash = "#/cameras"; return; }
-    setupError = s.setupError;
-  }
+  const s = await api("GET", "/api/session");
+  if (s.signedIn) { csrf = s.csrf; if (NEXT) location.href = NEXT; else location.hash = "#/cameras"; return; }
+  if (setupError === undefined) setupError = s.setupError;
   const out = el("div");
   const pw = el("input", { type: "password", id: "pw", autocomplete: "current-password", required: true });
   const btn = el("button", { type: "submit", class: "primary" }, "Sign in");
@@ -181,9 +201,10 @@ async function renderLogin(setupError) {
     if (r.error) { out.replaceChildren(errorBox(r.error)); return; }
     csrf = r.csrf;
     pw.value = "";
+    if (NEXT) { location.href = NEXT; return; }
     location.hash = "#/cameras";
   } },
-  el("h1", {}, "Sign in"),
+  el("h1", {}, NEXT ? "Sign in for the dashboard settings" : "Sign in"),
   el("label", { class: "field", for: "pw" }, "Admin password", pw),
   btn,
   el("p", { class: "hint" }, "The password is in secrets/admin_password next to the container's compose file. Signing in keeps you signed in on this browser for 30 days, or until the bridge restarts."),
@@ -191,6 +212,7 @@ async function renderLogin(setupError) {
   if (setupError) out.append(errorBox(setupError));
   app.replaceChildren(form);
   pw.focus();
+  loginIdleReturn(s.dash);
 }
 
 document.getElementById("logout").addEventListener("click", async () => {
@@ -523,6 +545,12 @@ async function renderStatus() {
   add("Paired", s.hapEnabled ? (s.paired ? "yes" : "not yet") : "n/a (HomeKit off)");
   add("go2rtc", `${s.go2rtc.state}, ${s.go2rtc.restarts} restart${s.go2rtc.restarts === 1 ? "" : "s"}`);
   add("go2rtc last error", s.go2rtc.lastError || "none");
+  if (s.dash) {
+    add("Dashboard", `${s.dash.state}, ${s.dash.restarts} restart${s.dash.restarts === 1 ? "" : "s"}`);
+    add("Dashboard last error", s.dash.lastError || "none");
+  } else {
+    add("Dashboard", "not reported by this bridge version");
+  }
   add("Cameras", String(s.cameras.length));
   app.replaceChildren(el("h1", {}, "Status"), facts, el("h2", {}, "Notes"),
     ...(s.notices && s.notices.length ? s.notices.map((n) => msgBox("amber", n)) : [el("p", { class: "muted" }, "Nothing to report.")]));

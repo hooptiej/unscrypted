@@ -1,0 +1,96 @@
+/* All sizes are multiples of --u, one design pixel on a 2560 x 1440 canvas,
+   so the whole page scales uniformly. Non-16:9 screens letterbox. */
+html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#e8ecd8;
+  font-family:var(--font-ui,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif)}
+/* the glow is painted on #stage (the whole window), so letterbox margins carry it too */
+#stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0b0d08}
+#canvas{container-type:inline-size;width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;
+  position:relative;overflow:hidden}
+.in{--u:calc(100cqw/2560);position:absolute;inset:0;padding:calc(20*var(--u));
+  display:grid;grid-template-columns:calc(2188*var(--u)) 1fr;grid-template-rows:auto 1fr;
+  column-gap:calc(12*var(--u));row-gap:calc(12*var(--u));line-height:1.2}
+.mute{color:#8b9275}
+.acc{color:#a3b83f}
+.gone{display:none!important}
+
+.left{grid-column:1;grid-row:1;min-height:0}
+.cams{display:grid;grid-template-columns:1fr 1fr;gap:calc(8*var(--u))}
+.cam{position:relative;aspect-ratio:16/9;background:#151a0e;border:calc(2*var(--u)) solid #232818;
+  border-radius:calc(10*var(--u));overflow:hidden;cursor:pointer}
+.cam:hover{border-color:#8a9a3b}
+.cam video-stream,.full video-stream{position:absolute;inset:0;display:block;width:100%;height:100%}
+.cam video,.full video{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
+video::-webkit-media-controls,video::-webkit-media-controls-enclosure,video::-webkit-media-controls-panel{display:none!important}
+video-stream .info,video-stream .controls,video-stream .mode,video-stream .status{display:none!important}
+.cam .n{position:absolute;left:calc(14*var(--u));bottom:calc(10*var(--u));font-size:calc(20*var(--u));
+  color:#e8ecd8;background:#0b0d08;padding:0 calc(7*var(--u));border-radius:calc(4*var(--u));z-index:2}
+.cam .s{position:absolute;right:calc(14*var(--u));top:calc(10*var(--u));font-size:calc(16*var(--u));
+  color:#a3b83f;z-index:2}
+.cam .off{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:#151a0e;color:#d9a441;font-size:calc(26*var(--u));z-index:1}
+.cam.is-off .s{color:#d9a441}
+
+.band{grid-column:1 / -1;grid-row:2;display:flex;align-items:center;gap:calc(36*var(--u));padding:0 calc(28*var(--u));
+  background:#151a0e;border:calc(2*var(--u)) solid #232818;border-radius:calc(10*var(--u))}
+.clock{font-size:calc(104*var(--u));line-height:1;white-space:nowrap;font-family:var(--font-clock,var(--font-ui,inherit))}
+.day{font-size:calc(50*var(--u));line-height:1.15}
+.date{font-size:calc(38*var(--u))}
+.wx{margin-left:auto;text-align:right}
+.wx .wxt{font-size:calc(60*var(--u));line-height:1}
+.wx .wxl{font-size:calc(26*var(--u));color:#8b9275;line-height:1.25}
+
+.right{grid-column:2;grid-row:1;display:grid;grid-template-rows:auto auto 1fr;row-gap:calc(12*var(--u));
+  align-content:start;min-height:0}
+.photo{aspect-ratio:3/4;background:#1c2312;border:calc(2*var(--u)) solid #232818;
+  border-radius:calc(10*var(--u));overflow:hidden}
+.photo{position:relative}
+.photo img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1.5s ease}
+.photo img.on{opacity:1}
+.photo .cap{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:calc(6*var(--u)) calc(12*var(--u));
+  font-size:calc(22*var(--u));color:#c9d0b4;background:#0b0d08}
+.svc{align-self:start;padding:calc(14*var(--u)) calc(16*var(--u));color:#8b9275;font-size:calc(24*var(--u));line-height:1.45;
+  background:#151a0e;border:calc(2*var(--u)) solid #232818;border-radius:calc(10*var(--u))}
+.svc .dot{display:inline-block;width:calc(12*var(--u));height:calc(12*var(--u));border-radius:50%;
+  margin-right:calc(10*var(--u));background:#7fb23a}
+.svc a{color:inherit;text-decoration:none;border-bottom:calc(2*var(--u)) dotted #3f4a28}
+.svc a:hover,.svc a:focus-visible{color:#a3b83f;border-bottom-color:#a3b83f}
+.svc .dot.down{background:#d9453a}
+.svc .dot.warn{background:#e0832a}
+.svc .kids{margin-left:calc(5*var(--u));padding-left:calc(14*var(--u));border-left:calc(2*var(--u)) solid #2a2f1c}
+.svc .kids .kids{margin-left:calc(4*var(--u))}
+.svc .kids .kids .sline{font-size:calc(21*var(--u));color:#6f765c}
+.settings-btn{grid-row:3;align-self:end;display:block;text-align:center;text-decoration:none;
+  padding:calc(14*var(--u)) calc(16*var(--u));font-size:calc(24*var(--u));color:#8b9275;
+  background:#151a0e;border:calc(2*var(--u)) solid #232818;border-radius:calc(10*var(--u))}
+.settings-btn:hover,.settings-btn:focus-visible{color:#a3b83f;border-color:#8a9a3b}
+.placeholder{display:flex;align-items:center;justify-content:center;color:#3f4a28;
+  font-size:calc(34*var(--u))}
+.svc.placeholder{height:calc(180*var(--u));border:calc(2*var(--u)) dashed #232818;border-radius:calc(14*var(--u))}
+
+.full{position:absolute;inset:0;z-index:5;background:#0b0d08;display:flex;flex-direction:column;
+  padding:calc(20*var(--u))}
+.full .v{flex:1;position:relative;background:#151a0e;border-radius:calc(10*var(--u));overflow:hidden;cursor:pointer}
+.full .fback{position:absolute;left:calc(30*var(--u));top:calc(24*var(--u));z-index:3;cursor:pointer;
+  font:inherit;font-size:calc(48*var(--u));color:#e8ecd8;background:#0b0d08;border:calc(2*var(--u)) solid #3f4a28;
+  border-radius:calc(10*var(--u));padding:calc(8*var(--u)) calc(28*var(--u))}
+.full .fback:hover{border-color:#8a9a3b;color:#a3b83f}
+.full .fname{position:absolute;left:calc(260*var(--u));top:calc(24*var(--u));font-size:calc(26*var(--u));z-index:2;
+  background:#0b0d08;padding:calc(6*var(--u)) calc(10*var(--u));border-radius:calc(6*var(--u))}
+.full .flive{position:absolute;right:calc(30*var(--u));top:calc(24*var(--u));font-size:calc(20*var(--u));
+  color:#a3b83f;z-index:2}
+.fbarwrap{padding-top:calc(24*var(--u))}
+.frow{display:flex;justify-content:space-between;margin-bottom:calc(14*var(--u));font-size:calc(40*var(--u));color:#8b9275}
+.ftrack{height:calc(10*var(--u));background:#232818;border-radius:calc(5*var(--u))}
+#fbar{height:100%;width:100%;background:#8a9a3b;border-radius:calc(5*var(--u))}
+
+/* settings, bridge and connection warnings: never silent, never a blank tile */
+.notice{position:absolute;left:50%;top:calc(8*var(--u));transform:translateX(-50%);z-index:6;max-width:calc(1800*var(--u));
+  background:#2a1d0c;color:#e0b54d;border:calc(2*var(--u)) solid #6b4a12;border-radius:calc(8*var(--u));
+  padding:calc(6*var(--u)) calc(16*var(--u));font-size:calc(22*var(--u))}
+.cam .off{text-align:center;padding:0 calc(30*var(--u))}
+/* a non-green light: one short line on the wall; tap (or hover) for the full reason underneath */
+.svc .sline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc .why{margin-left:calc(10*var(--u));font:inherit;font-size:calc(18*var(--u));color:#8b6f4a;background:none;border:0;padding:0;
+  cursor:pointer;border-bottom:calc(2*var(--u)) dotted #4a3d28}
+.svc .why:hover,.svc .why:focus-visible{color:#c49a5c}
+.svc .whyfull{margin:calc(2*var(--u)) 0 calc(6*var(--u)) calc(22*var(--u));font-size:calc(17*var(--u));line-height:1.35;color:#a08560;white-space:normal}
