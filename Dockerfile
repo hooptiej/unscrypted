@@ -38,8 +38,9 @@ COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
-# Config (read-only) and pairing state (persistent) live outside the image.
-VOLUME ["/config", "/data"]
+# Config (/config) and HAP pairing state (/data/persist) live outside the image as bind
+# mounts (see docker-compose.yml). No VOLUME line on purpose: an anonymous volume at /config
+# is where the pairing keys got trapped (#4), and a compose down would have dropped them.
 
 # HAP server port (also set in config.bridge.port). With host networking this is
 # informational; mDNS uses the host network directly.

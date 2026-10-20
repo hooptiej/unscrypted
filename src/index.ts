@@ -28,6 +28,7 @@ import { resolveFfmpeg } from "./ffmpeg";
 import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
 import { probeOnvif } from "./onvif";
+import { hasPairingState } from "./util";
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -77,7 +78,31 @@ async function main(): Promise<void> {
   }
 
   // Persist directory for HAP pairing state.
+  if (config.persistDirOverridden) {
+    log.warn(
+      `config.persistDir (${config.persistDirOverridden}) is ignored: ` +
+        `UNSCRYPTED_PERSIST_DIR (${config.persistDir}) takes precedence.`,
+    );
+    // Guard (#4): never start under a fresh identity while the real pairing keys sit in the
+    // ignored folder. Home would see a new, unpaired bridge and every camera would need re-adding.
+    if (hasPairingState(config.persistDirOverridden) && !hasPairingState(config.persistDir)) {
+      log.error(
+        `Not starting: the HAP pairing keys are in ${config.persistDirOverridden}, but ` +
+          `${config.persistDir} (the folder in use) is empty. Starting now would make Home see a ` +
+          `new, unpaired bridge. Nothing was changed. Copy the files from ` +
+          `${config.persistDirOverridden} into ${config.persistDir}, then start again.`,
+      );
+      process.exit(2);
+    }
+  }
   fs.mkdirSync(config.persistDir, { recursive: true });
+  if (!hasPairingState(config.persistDir)) {
+    log.warn(
+      `No HAP pairing state in ${config.persistDir}: starting as a NEW bridge. ` +
+        "Pair it in the Home app with the setup code below. If this bridge was paired before, " +
+        "stop it and restore its pairing files into this folder instead.",
+    );
+  }
   HAPStorage.setCustomStoragePath(config.persistDir);
   log.info(`HAP pairing state: ${config.persistDir}`);
 

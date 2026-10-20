@@ -29,3 +29,12 @@ qr.png
 *.jpg
 *.mp4
 run.log
+
+# deployment folders (real config + pairing state) and local pairing artifacts
+config/
+data/
+run.*
+qr*.png
+
+# agent worktrees
+.claude/

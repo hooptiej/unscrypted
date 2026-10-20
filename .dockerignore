@@ -9,3 +9,9 @@ config.local.json
 .gitignore
 .vscode
 .idea
+config
+test
+docs
+.claude
+run.*
+qr*.png
