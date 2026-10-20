@@ -340,6 +340,11 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     }
   }
 
+  /** How many Home app live views are open right now (admin pane status). */
+  liveSessionCount(): number {
+    return this.activeSessions.size;
+  }
+
   /** Tear everything down (process shutdown). */
   shutdown(): void {
     for (const id of [...this.activeSessions.keys()]) {

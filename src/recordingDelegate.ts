@@ -89,6 +89,11 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     private readonly log: Logger,
   ) {}
 
+  /** Whether HomeKit currently has recording switched on for this camera (admin pane status). */
+  isRecordingActive(): boolean {
+    return this.recordingActive;
+  }
+
   updateRecordingActive(active: boolean): void {
     this.recordingActive = active;
     this.log.info(`recording ${active ? "ENABLED" : "disabled"} by HomeKit`);

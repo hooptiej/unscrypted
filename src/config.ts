@@ -354,7 +354,8 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
   };
 }
 
-export function loadConfig(explicitPath?: string): ResolvedConfig {
+/** Which config file loadConfig() would read. Throws ConfigError if none exists. */
+export function findConfigPath(explicitPath?: string): string {
   const candidates = explicitPath
     ? [explicitPath]
     : [
@@ -365,16 +366,7 @@ export function loadConfig(explicitPath?: string): ResolvedConfig {
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
-      const text = fs.readFileSync(candidate, "utf8");
-      let parsed: Config;
-      try {
-        parsed = JSON.parse(text) as Config;
-      } catch (err) {
-        throw new ConfigError(
-          `failed to parse ${candidate}: ${(err as Error).message}`,
-        );
-      }
-      return resolveConfig(parsed, path.dirname(candidate));
+      return path.resolve(candidate);
     }
   }
 
@@ -382,4 +374,16 @@ export function loadConfig(explicitPath?: string): ResolvedConfig {
     `no config file found. Looked in: ${candidates.join(", ")}. ` +
       `Copy config.example.json to config.json and fill in your cameras.`,
   );
+}
+
+export function loadConfig(explicitPath?: string): ResolvedConfig {
+  const file = findConfigPath(explicitPath);
+  const text = fs.readFileSync(file, "utf8");
+  let parsed: Config;
+  try {
+    parsed = JSON.parse(text) as Config;
+  } catch (err) {
+    throw new ConfigError(`failed to parse ${file}: ${(err as Error).message}`);
+  }
+  return resolveConfig(parsed, path.dirname(file));
 }

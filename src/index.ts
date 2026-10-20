@@ -22,7 +22,9 @@ import {
   MDNSAdvertiser,
   uuid,
 } from "hap-nodejs";
-import { loadConfig, ConfigError, ResolvedConfig } from "./config";
+import * as os from "os";
+import { loadConfig, findConfigPath, ConfigError, ResolvedConfig } from "./config";
+import { BridgeRuntime } from "./bridgeRuntime";
 import { rootLogger, setLogLevel, Logger } from "./logger";
 import { resolveFfmpeg } from "./ffmpeg";
 import { UnscryptedCamera } from "./camera";
@@ -48,8 +50,10 @@ async function main(): Promise<void> {
   }
 
   let config: ResolvedConfig;
+  let resolvedConfigPath: string;
   try {
-    config = loadConfig(configPath);
+    resolvedConfigPath = findConfigPath(configPath);
+    config = loadConfig(resolvedConfigPath);
   } catch (err) {
     if (err instanceof ConfigError) {
       rootLogger.error(`config error: ${err.message}`);
@@ -95,8 +99,11 @@ async function main(): Promise<void> {
       process.exit(2);
     }
   }
+  // HAP-off mode is for the test instance: it must never collide with prod's HomeKit identity.
+  const hapEnabled = process.env.UNSCRYPTED_HAP !== "off";
+
   fs.mkdirSync(config.persistDir, { recursive: true });
-  if (!hasPairingState(config.persistDir)) {
+  if (hapEnabled && !hasPairingState(config.persistDir)) {
     log.warn(
       `No HAP pairing state in ${config.persistDir}: starting as a NEW bridge. ` +
         "Pair it in the Home app with the setup code below. If this bridge was paired before, " +
@@ -131,27 +138,75 @@ async function main(): Promise<void> {
     process.exit(3);
   }
 
-  // Publish the bridge (starts the HAP server + mDNS advertisement).
-  await bridge.publish({
-    username: config.bridge.username,
-    pincode: config.bridge.pin,
-    port: config.bridge.port,
-    category: Categories.BRIDGE,
-    setupID: config.bridge.setupId,
-    advertiser: MDNSAdvertiser.CIAO,
+  // A stray async error in the bridge's own code must be loud, never a silent exit.
+  process.on("unhandledRejection", (e) => {
+    log.error(`unhandled rejection (bridge kept running): ${(e as Error)?.stack ?? e}`);
   });
 
-  printPairingInfo(log, config, bridge);
+  if (hapEnabled) {
+    // Publish the bridge (starts the HAP server + mDNS advertisement).
+    await bridge.publish({
+      username: config.bridge.username,
+      pincode: config.bridge.pin,
+      port: config.bridge.port,
+      category: Categories.BRIDGE,
+      setupID: config.bridge.setupId,
+      advertiser: MDNSAdvertiser.CIAO,
+    });
 
-  // Start background work (motion pollers). The prebuffer starts on demand when
-  // HomeKit enables recording.
-  for (const cam of cameras) {
-    cam.start();
+    printPairingInfo(log, config, bridge);
+
+    // Start background work (motion pollers). The prebuffer starts on demand when
+    // HomeKit enables recording.
+    for (const cam of cameras) {
+      cam.start();
+    }
+
+    log.info(
+      `unscrypted is up: ${cameras.length} camera(s) bridged on port ${config.bridge.port}`,
+    );
+  } else {
+    // Motion sources stay off too: they'd take camera event subscriptions and the shared ONVIF
+    // notify port that the real (HAP-on) bridge on the same host is already using.
+    log.warn(
+      "HAP disabled (UNSCRYPTED_HAP=off): this instance is NOT visible to HomeKit. " +
+        `${cameras.length} camera(s) configured for status and feed checks only; motion sources not started.`,
+    );
   }
 
-  log.info(
-    `unscrypted is up: ${cameras.length} camera(s) bridged on port ${config.bridge.port}`,
-  );
+  const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
+  const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
+  const runtime = new BridgeRuntime({
+    config,
+    configPath: resolvedConfigPath,
+    bridge: hapEnabled ? bridge : null,
+    cameras,
+    log,
+    ffmpegPath: config.ffmpegPath,
+    version: (require("../package.json") as { version: string }).version,
+    admin: {
+      port: admin.port,
+      enabled: process.env.UNSCRYPTED_ADMIN !== "off" && admin.error === null,
+      disabledReason: admin.error ?? undefined,
+    },
+    go2rtc: {
+      binary: process.env.UNSCRYPTED_GO2RTC_BIN ?? "/usr/local/bin/go2rtc",
+      apiPort: go2rtcApi.port,
+      webrtcPort: null,
+      runtimeDir: process.env.UNSCRYPTED_RUNTIME_DIR ?? path.join(os.tmpdir(), "unscrypted"),
+      enabled: process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null,
+      disabledReason: go2rtcApi.error ?? undefined,
+    },
+    requestRestart: (reason) => void shutdown(reason),
+  });
+  try {
+    runtime.start();
+  } catch (err) {
+    // The pane and go2rtc are extras: failing to start them must not stop HomeKit.
+    log.error(
+      `admin pane / go2rtc failed to start (HomeKit bridge keeps running without them): ${(err as Error).stack ?? err}`,
+    );
+  }
 
   // Graceful shutdown.
   let shuttingDown = false;
@@ -161,18 +216,40 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     log.info(`received ${signal}, shutting down...`);
+    try {
+      await runtime.stop();
+    } catch (err) {
+      log.warn(`error stopping the admin pane / go2rtc: ${(err as Error).message}`);
+    }
     for (const cam of cameras) {
       cam.shutdown();
     }
-    try {
-      await bridge.unpublish();
-    } catch (err) {
-      log.warn(`error during unpublish: ${(err as Error).message}`);
+    if (hapEnabled) {
+      try {
+        await bridge.unpublish();
+      } catch (err) {
+        log.warn(`error during unpublish: ${(err as Error).message}`);
+      }
     }
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+/** A TCP port from the environment, or the default. A bad value disables that child, loudly. */
+function envPort(name: string, def: number, log: Logger): { port: number; error: string | null } {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return { port: def, error: null };
+  }
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    const error = `${name}="${raw}" is not a valid TCP port (1-65535)`;
+    log.error(`${error}; that service is disabled until it's fixed. The HomeKit bridge is unaffected.`);
+    return { port: def, error };
+  }
+  return { port, error: null };
 }
 
 async function runProbe(
