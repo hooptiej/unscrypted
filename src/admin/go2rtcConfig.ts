@@ -1,12 +1,22 @@
 /**
  * Builds go2rtc's YAML from the bridge's resolved config. Pure functions: the manager in
- * go2rtc.ts writes the result to disk. go2rtc only ever serves the admin pane's previews;
- * HomeKit's own ffmpeg pipelines don't go through it.
+ * go2rtc.ts writes the result to disk. go2rtc serves the admin pane's previews, the dashboard,
+ * and (since 0.4.0) HomeKit's pipelines through its loopback RTSP restream.
  */
 
 import { ResolvedCamera, ResolvedConfig } from "../config";
 
-export interface Go2rtcPorts { api: number; webrtc: number | null }
+export interface Go2rtcPorts { api: number; webrtc: number | null; rtsp: number | null }
+
+/** go2rtc's loopback restream address for one stream (HomeKit's ffmpeg reads this). */
+export function restreamUrl(rtspPort: number, stream: string): string {
+  return `rtsp://127.0.0.1:${rtspPort}/${stream}`;
+}
+
+/** go2rtc source flags: video-only cameras get #media=video; nobody uses two-way audio (Q2). */
+export function sourceSuffix(c: Pick<ResolvedCamera, "audio">): string {
+  return (c.audio ? "" : "#media=video") + "#backchannel=0";
+}
 
 export function streamSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "camera";
@@ -41,7 +51,8 @@ export function buildGo2rtcYaml(cfg: Pick<ResolvedConfig, "cameras">, ports: Go2
     "api:",
     `  listen: ${q(`127.0.0.1:${ports.api}`)}`,
     "rtsp:",
-    '  listen: ""',
+    // Loopback only: HomeKit's ffmpeg pipelines re-stream from here (#16). Never on the LAN.
+    `  listen: ${q(ports.rtsp ? `127.0.0.1:${ports.rtsp}` : "")}`,
     "webrtc:",
     `  listen: ${q(ports.webrtc ? `:${ports.webrtc}` : "")}`,
     "log:",
@@ -50,7 +61,7 @@ export function buildGo2rtcYaml(cfg: Pick<ResolvedConfig, "cameras">, ports: Go2
   ];
   for (const c of cfg.cameras) {
     const n = names.get(c.name)!;
-    const suffix = c.audio ? "" : "#media=video";
+    const suffix = sourceSuffix(c);
     lines.push(`  ${n.main}: ${q(c.rtspMain + suffix)}`);
     if (n.sub && c.rtspSub) lines.push(`  ${n.sub}: ${q(c.rtspSub + suffix)}`);
   }

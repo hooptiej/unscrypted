@@ -92,7 +92,7 @@ export class BridgeRuntime {
       );
     } else {
       this.go2rtc = new Go2rtcManager({
-        binary: g.binary, runtimeDir: g.runtimeDir, ports: { api: g.apiPort, webrtc: g.webrtcPort },
+        binary: g.binary, runtimeDir: g.runtimeDir, ports: { api: g.apiPort, webrtc: g.webrtcPort, rtsp: null },
         log: log.child("go2rtc"), onState: () => this.pushStatus(),
       });
       this.go2rtc.start(this.config);

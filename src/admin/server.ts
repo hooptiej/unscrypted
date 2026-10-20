@@ -25,7 +25,7 @@ import {
   loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
 } from "./auth";
 import { Logger } from "../logger";
-import { streamNames } from "./go2rtcConfig";
+import { streamNames, sourceSuffix } from "./go2rtcConfig";
 import { loadSettings, saveSettings, applySettingsEdit, effectiveCameras, GRID_MAX, FONT_FILE } from "../dash/settings";
 import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
 
@@ -481,7 +481,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         }
         const stream = `check_${crypto.randomBytes(4).toString("hex")}`;
         try {
-          await g2.addTempStream(stream, cam.rtspMain + (cam.audio ? "" : "#media=video"));
+          await g2.addTempStream(stream, cam.rtspMain + sourceSuffix(cam));
         } catch (err) {
           throw new UserError({ attempted, happened: `go2rtc wouldn't take the test stream: ${(err as Error).message}`, changed: "Nothing was saved; this was only a test.", next: "Try again; if it repeats, check `docker logs unscrypted` for go2rtc lines." }, 502);
         }
