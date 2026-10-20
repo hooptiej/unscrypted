@@ -268,3 +268,37 @@ test("fonts: only real font files from the fonts folder, with a long cache; no p
     }
   } finally { s.close(); }
 });
+
+test("watch only on the video path too: a non-GET upgrade is a 405 and go2rtc never sees it", async () => {
+  const { s, port } = await proxyServer();
+  try {
+    const n = g2Seen.length;
+    const r = await new Promise<string>((resolve, reject) => {
+      const sock = net.connect(port, "127.0.0.1", () => sock.write(
+        `POST /go2rtc/api/ws?src=dogcamtest HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n`));
+      let buf = "";
+      sock.on("data", (d) => { buf += d.toString("latin1"); });
+      sock.on("close", () => resolve(buf));
+      sock.on("error", reject);
+    });
+    assert.match(r, /^HTTP\/1\.1 405/);
+    assert.match(r, /watch-only/);
+    assert.equal(g2Seen.length, n);
+  } finally { s.close(); }
+});
+
+test("feed-check names are refused even if a camera's stream had that name; extensions aren't negotiated", async () => {
+  const { s, port } = await proxyServer({ allowedStreams: () => new Set(["dogcamtest", "check_1234abcd"]) });
+  try {
+    const n = g2Seen.length;
+    const a = await upgrade(port, "/go2rtc/api/ws?src=check_1234abcd");
+    assert.match(a.head, /^HTTP\/1\.1 403/);
+    assert.equal(g2Seen.length, n);
+    a.sock.destroy();
+    const b = await upgrade(port, "/go2rtc/api/ws?src=dogcamtest", "Sec-WebSocket-Extensions: permessage-deflate\r\n");
+    assert.match(b.head, /^HTTP\/1\.1 101/);
+    assert.equal(g2Seen[n].headers["sec-websocket-extensions"], undefined, "no compression: the filter reads plain frames");
+    b.sock.destroy();
+  } finally { s.close(); }
+});

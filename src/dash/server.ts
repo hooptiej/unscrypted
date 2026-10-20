@@ -165,9 +165,13 @@ export function createDashServer(d: DashDeps): http.Server {
       socket.end(`HTTP/1.1 ${code}\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${why}\n`);
     };
     socket.on("error", () => socket.destroy());   // a browser that vanished mid-handshake
+    // Node hands any method carrying "Upgrade" here, past the request handler's 405: watch-only here too.
+    if (req.method !== "GET") return refuse("405 Method Not Allowed", "the dashboard is watch-only: a live view is a GET");
     const src = url.searchParams.get("src") ?? "";
     if (url.pathname !== "/go2rtc/api/ws") return refuse("404 Not Found", "only /go2rtc/api/ws is a WebSocket here");
-    if (!STREAM_NAME.test(src)) return refuse("400 Bad Request", `"${src}" isn't a stream name`);
+    if (!STREAM_NAME.test(src)) return refuse("400 Bad Request", `${JSON.stringify(src.slice(0, 80))} isn't a stream name`);
+    // The admin pane's feed-check streams are never the dashboard's, whatever a camera is called.
+    if (src.startsWith("check_")) return refuse("403 Forbidden", `"${src}" is an admin feed check, not a dashboard camera`);
     if (!d.allowedStreams().has(src)) return refuse("403 Forbidden", `"${src}" isn't one of the cameras in config.json`);
     if (!go2rtcUp()) return refuse("503 Service Unavailable", go2rtcWhy());
     if (open >= maxStreams) return refuse("503 Service Unavailable", `too many live views open at once (${maxStreams}); close one and the tile retries`);
@@ -180,7 +184,8 @@ export function createDashServer(d: DashDeps): http.Server {
     const up = net.connect(Number(target.port), target.hostname, () => {
       const lines = [`GET /api/ws?src=${encodeURIComponent(src)} HTTP/1.1`];
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        if (/^(host|cookie|origin|authorization)$/i.test(req.rawHeaders[i])) continue;   // the admin cookie never leaves
+        // the admin cookie never leaves; no compression either, so the filter reads plain frames
+        if (/^(host|cookie|origin|authorization|sec-websocket-extensions)$/i.test(req.rawHeaders[i])) continue;
         lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
       }
       lines.push(`Host: ${target.host}`, "", "");

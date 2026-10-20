@@ -23,6 +23,8 @@ export class ClientFrameFilter {
       const b0 = this.buf[0], b1 = this.buf[1];
       const fin = (b0 & 0x80) !== 0, op = b0 & 0x0f;
       if ((b1 & 0x80) === 0) return { reject: "an unmasked frame (not sent by a browser)" };
+      if (b0 & 0x70) return { reject: "a compressed or extended frame (RSV bits set; none was negotiated)" };
+      if (op >= 0x8 && (!fin || (b1 & 0x7f) > 125)) return { reject: "a malformed control frame (fragmented, or over 125 bytes)" };
       let len = b1 & 0x7f, off = 2;
       if (len === 126) { if (this.buf.length < 4) break; len = this.buf.readUInt16BE(2); off = 4; }
       else if (len === 127) {
