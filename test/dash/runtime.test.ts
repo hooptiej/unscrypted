@@ -151,3 +151,21 @@ test("fonts: publicConfig serves the chosen file; a gone file falls back and the
   assert.equal((rt.publicConfig().fonts.clock as any).family.includes("sans-serif"), true);
   assert.match((rt.state() as any).notices.join(" "), /clock font "Gone\.otf" isn't in the fonts folder/);
 });
+
+test("a saved settings change reaches the open page; a garbage file falls back to defaults and says so", async () => {
+  const rt = runtime();
+  rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null, probe: null }];
+  const v0 = (rt.state() as any).settingsVersion;
+  await new Promise((r) => setTimeout(r, 20));   // a distinct mtime
+  saveSettings(rt.settingsFile, { ...rt.settings, cameras: [{ camera: "DogCamTest", label: "The Dogs", shown: true, stream: "main" }] });
+  assert.equal(rt.reloadSettingsIfChanged(fs.statSync(rt.settingsFile).mtimeMs), true);
+  assert.equal(rt.publicConfig().cameras[0].label, "The Dogs");
+  assert.notEqual((rt.state() as any).settingsVersion, v0);
+  assert.equal(rt.reloadSettingsIfChanged(fs.statSync(rt.settingsFile).mtimeMs), false, "unchanged file: no reload");
+
+  await new Promise((r) => setTimeout(r, 20));
+  fs.writeFileSync(rt.settingsFile, "{garbage");
+  assert.equal(rt.reloadSettingsIfChanged(fs.statSync(rt.settingsFile).mtimeMs), true);
+  assert.deepEqual(rt.publicConfig().cameras, [], "defaults: nothing shown");
+  assert.match((rt.state() as any).settingsWarning, /couldn't be read .*default dashboard settings/);
+});
