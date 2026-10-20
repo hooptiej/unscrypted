@@ -1,0 +1,18 @@
+# Test instance: HomeKit OFF (no second bridge in the family's Home app), its own ports and its
+# own ./config, ./data and ./secrets (run it from a separate folder, ~/unscrypted-test on the NAS).
+# HAP off also keeps motion sources (and the ONVIF notify port) off, so it can't fight prod.
+#
+#   sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypted-test up -d --build
+#
+# Admin pane: http://<host>:8191 (live preview video on go2rtc WebRTC port 8558), tab title "unscrypted admin - TEST". Rebuild to test changes.
+services:
+  unscrypted:
+    image: unscrypted:0.2.0-test
+    container_name: unscrypted-test
+    environment:
+      - UNSCRYPTED_HAP=off
+      - UNSCRYPTED_ADMIN_PORT=8191
+      - UNSCRYPTED_GO2RTC_API_PORT=1987
+      - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8558
+      - UNSCRYPTED_ADMIN_TITLE=unscrypted admin - TEST
+      - UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted-test

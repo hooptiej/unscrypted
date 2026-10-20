@@ -6,14 +6,15 @@
 #
 # Bring up:   docker compose up -d --build
 # Logs / pairing code:   docker compose logs -f
-# Redeploy after a pull: git pull && docker compose up -d --build
+# Redeploy: copy the new files in, then docker compose up -d --build
+# Admin pane: http://<host>:8190 (password in ./secrets/admin_password).
 
 services:
   unscrypted:
     build:
       context: .
       dockerfile: Dockerfile
-    image: unscrypted:0.1.1
+    image: unscrypted:0.2.0
     container_name: unscrypted
     restart: unless-stopped
     # REQUIRED for HomeKit mDNS discovery. Linux host only.
@@ -25,7 +26,17 @@ services:
       # HAP pairing state lives in ./data/persist. NEVER delete ./data: losing it means
       # re-adding every camera in the Home app.
       - ./data:/data
+      # Admin pane password: one line in ./secrets/admin_password (gitignored, mode 600).
+      # The folder is mounted, not the file, so a missing file is a clear "no password" message
+      # in the pane instead of Docker quietly creating a folder named admin_password.
+      - ./secrets:/run/secrets:ro
     environment:
       - UNSCRYPTED_CONFIG=/config/config.json
       - UNSCRYPTED_PERSIST_DIR=/data/persist
       - UNSCRYPTED_LOG_LEVEL=info
+      - UNSCRYPTED_ADMIN_PORT=8190
+      - UNSCRYPTED_GO2RTC_API_PORT=1986
+      # go2rtc WebRTC media (tcp+udp, all interfaces) for the pane's live preview.
+      - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8557
+      - UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password
+      - UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key

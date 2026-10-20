@@ -68,6 +68,10 @@ export class UnscryptedCamera {
   private readonly prebuffer?: Prebuffer;
   private motionSource?: MotionSource;
   private controller!: CameraController;
+  private readonly log: Logger;
+  private started = false;
+  private motionActive = false;
+  private lastMotionAt: number | null = null;
 
   constructor(
     private readonly camera: ResolvedCamera,
@@ -75,6 +79,7 @@ export class UnscryptedCamera {
     parentLog: Logger,
   ) {
     const log = parentLog.child(camera.name);
+    this.log = log;
 
     this.accessory = new Accessory(
       camera.name,
@@ -178,7 +183,13 @@ export class UnscryptedCamera {
         `(main=${redactUrl(camera.rtspMain)}, HKSV=${camera.hksv}, motion=${motionKind})`,
     );
 
-    // Wire the selected motion source to the controller's MotionSensor.
+    this.motionSource = this.buildMotionSource();
+  }
+
+  /** Wire the selected motion source (from the current camera config) to the MotionSensor. */
+  private buildMotionSource(): MotionSource | undefined {
+    const camera = this.camera;
+    const log = this.log;
     if (camera.foscam) {
       const client = new FoscamClient(
         {
@@ -188,7 +199,7 @@ export class UnscryptedCamera {
         },
         log.child("foscam"),
       );
-      this.motionSource = new MotionPoller(
+      return new MotionPoller(
         client,
         {
           pollIntervalMs: camera.foscam.pollIntervalMs ?? 1000,
@@ -207,7 +218,7 @@ export class UnscryptedCamera {
         },
         log.child("onvif"),
       );
-      this.motionSource = new OnvifMotionSource(
+      return new OnvifMotionSource(
         client,
         camera.onvif.host,
         camera.onvif.port,
@@ -222,17 +233,107 @@ export class UnscryptedCamera {
         log.child("motion"),
       );
     }
+    return undefined;
   }
 
   private setMotion(active: boolean): void {
+    this.motionActive = active;
+    if (active) {
+      this.lastMotionAt = Date.now();
+    }
     const svc = this.controller.motionService;
     if (svc) {
       svc.updateCharacteristic(Characteristic.MotionDetected, active);
     }
   }
 
+  get name(): string {
+    return this.camera.name;
+  }
+
+  get resolved(): ResolvedCamera {
+    return this.camera;
+  }
+
+  snapshotStatus(): {
+    hksv: boolean;
+    motionKind: "foscam-cgi" | "onvif" | "none";
+    liveSessions: number;
+    recordingActive: boolean;
+    motionActive: boolean;
+    lastMotionAt: number | null;
+  } {
+    return {
+      hksv: this.camera.hksv,
+      motionKind: this.camera.foscam ? "foscam-cgi" : this.camera.onvif ? "onvif" : "none",
+      liveSessions: this.streamingDelegate.liveSessionCount(),
+      recordingActive: this.recordingDelegate?.isRecordingActive() ?? false,
+      motionActive: this.motionActive,
+      lastMotionAt: this.lastMotionAt,
+    };
+  }
+
+  /**
+   * Apply a "live" change (URLs, logins, motion timings) without touching what HomeKit sees.
+   * The delegates and prebuffer hold this same camera object, so new values apply on their next
+   * ffmpeg spawn (open live views keep their current stream until closed). Only the parts whose
+   * settings actually changed are restarted: the motion source if its block changed, the
+   * prebuffer (if running) if the main URL, audio or copy mode changed.
+   */
+  reconfigure(next: ResolvedCamera): { restarted: string[] } {
+    if (next.name !== this.camera.name) {
+      throw new Error(`reconfigure cannot rename a camera ("${this.camera.name}" -> "${next.name}")`);
+    }
+    const prev = { ...this.camera };
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const motionChanged = !same(prev.foscam, next.foscam) || !same(prev.onvif, next.onvif);
+    const prebufferChanged =
+      prev.rtspMain !== next.rtspMain || prev.audio !== next.audio || prev.copyVideo !== next.copyVideo;
+    const restarted: string[] = [];
+
+    if (motionChanged) {
+      this.motionSource?.stop();
+      if (this.motionActive) {
+        this.setMotion(false); // don't leave Home showing motion that nothing will ever clear
+      }
+    }
+    const prebufferWasRunning = prebufferChanged && (this.prebuffer?.isRunning() ?? false);
+    if (prebufferWasRunning) {
+      this.prebuffer?.stop();
+    }
+
+    Object.assign(this.camera, next);
+    // Object.assign copies undefined values too, but drop removed optional keys outright so
+    // the object matches what a fresh load of config.json would produce.
+    if (!next.foscam) delete this.camera.foscam;
+    if (!next.onvif) delete this.camera.onvif;
+    if (!next.rtspSub) delete this.camera.rtspSub;
+
+    if (motionChanged) {
+      this.motionSource = this.buildMotionSource();
+      if (this.started) {
+        this.motionSource?.start();
+        restarted.push("motion source");
+      }
+    }
+    if (prebufferWasRunning && this.prebuffer) {
+      restarted.push("prebuffer");
+      this.prebuffer.start().catch((err) => {
+        this.log.error(
+          `prebuffer didn't restart after a config change: ${(err as Error).message}. ` +
+            "HKSV recording for this camera won't work until it does; restart the bridge if this repeats.",
+        );
+      });
+    }
+    this.log.info(
+      `applied a live config change${restarted.length ? ` (restarted: ${restarted.join(", ")})` : ""}`,
+    );
+    return { restarted };
+  }
+
   /** Called after the bridge is published. Starts background pollers. */
   start(): void {
+    this.started = true;
     this.motionSource?.start();
     // We intentionally do NOT eagerly start the prebuffer here — HAP calls
     // updateRecordingActive(true) once the user enables recording, which starts
