@@ -1505,7 +1505,19 @@ Already built in Tasks 2 and 5 (mtime watch, `settingsVersion`, the page reloads
 - 2026-10-20: live video is WebRTC video-only through go2rtc's player ("we should just copy what works").
 - 2026-10-20: `unscrypted-test` stays up for this work.
 - 2026-10-20 09:25: "no sign in on the kiosk, free viewing, require the password to view the admin" (guardrails in Global Constraints).
-- (record answers to the questions below here)
+- **2026-10-20 09:43, answers to the 12 questions** (relayed verbatim from the owner's Mac session): "1c, 2a, 3a, 4b, 5a, 6a, 7a, 8b, 9a, 10A, 11a, 12a". These answers override the "(recommended)" marks below.
+  - **Q1 c:** no extra network on the other apps. The Constructicon, Constructicon-test, Questlog and Questlog-dev lights show red, with the reason "can't be checked from the NAS's own network yet (ipvlan)". A follow-up issue tracks it.
+  - **Q2 a:** the Scrypted light becomes a "HomeKit bridge" light, from unscrypted's own status.
+  - **Q3 a:** copy the three cached Constructicon font files once into `./data/dash/fonts`; no token.
+  - **Q4 b:** re-point the kiosk to `http://10.0.1.78:8180` AND re-point `homedash.local` at the NAS (10.0.1.78), so the kiosk URL must carry `:8180`. A bare `http://homedash.local` would open the TrueNAS login, so say so in the README and the cutover notes. Ports 8180 (prod) / 8181 (test) taken as OK (implied by 4b). The mDNS and kiosk changes happen only in Phase 7, after the prod go-ahead.
+  - **Q5 a:** the 2x2 grid with today's four cameras. Couch Cam is listed but off, and a fifth is refused with a clear message.
+  - **Q6 a:** Homedash's labels as dashboard-only labels; the HomeKit names are untouched.
+  - **Q7 a:** keep the Settings button. It asks for the admin password, and idling back to the dash signs that browser out.
+  - **Q8 b (not the recommendation):** port Homedash's own one-screen, no-scroll settings page (#16) as its own page behind the admin sign-in, instead of a Dashboard tab in the pane. **Phase 5 changes accordingly.**
+  - **Q9 a:** move the kiosk scripts into unscrypted and fold in homedash#24's fix.
+  - **Q10 a:** after 3 clean days, stop (not remove) the old Homedash containers and disable their two mDNS units. Deleting waits for a later word.
+  - **Q11 a:** bind-mount `web/dash` read-only into `unscrypted-test` only.
+  - **Q12 a:** main 1080p streams, with sub selectable per camera.
 
 ## Open questions for the owner
 
