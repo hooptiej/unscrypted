@@ -20,7 +20,7 @@
     "dev": "tsx src/index.ts",
     "selftest": "tsx src/index.ts --selftest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "hap-nodejs": "0.14.3",
