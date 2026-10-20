@@ -156,11 +156,41 @@ export function createAdminServer(d: AdminDeps): http.Server {
   const tempStreams = new Map<string, NodeJS.Timeout>();
   const g2 = d.go2rtcApi ? new Go2rtcClient(d.go2rtcApi) : null;
 
+  // Signed-out sessions. A session is a signed, stateless cookie, so clearing the cookie alone left a
+  // copied one working for 30 days; signing out (the kiosk's idle return does) now kills it on the
+  // server too. Kept beside the key (hashes and expiry times only), so it survives a restart.
+  const revokedFile = d.sessionKeyFile + ".revoked";
+  const revoked = new Map<string, number>();
+  const sessionHash = (c: string) => crypto.createHash("sha256").update(c).digest("base64url");
+  try {
+    const raw = JSON.parse(fs.readFileSync(revokedFile, "utf8")) as Record<string, unknown>;
+    for (const [h, exp] of Object.entries(raw)) if (typeof exp === "number" && exp > Date.now()) revoked.set(h, exp);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn(`couldn't read the signed-out sessions list ${revokedFile} (${(err as Error).message}); sessions signed out before this restart work again until they expire. Signing out still works from now on.`);
+    }
+  }
+  /** Returns an error message when the list couldn't be saved (the session is still revoked until a restart). */
+  const revoke = (c: string): string | null => {
+    const now = Date.now();
+    for (const [h, exp] of revoked) if (exp <= now) revoked.delete(h);
+    revoked.set(sessionHash(c), Number(c.split(".")[0]) || now + SESSION_DAYS * 864e5);
+    try {
+      const tmp = `${revokedFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(revoked)), { mode: 0o600 });
+      fs.renameSync(tmp, revokedFile);
+      return null;
+    } catch (err) {
+      log.warn(`signed out, but couldn't save ${revokedFile} (${(err as Error).message}); that session would work again after a restart.`);
+      return (err as Error).message;
+    }
+  };
+
   const cookieOf = (req: http.IncomingMessage) =>
     (req.headers.cookie ?? "").split(";").map((s) => s.trim()).find((s) => s.startsWith(COOKIE + "="))?.slice(COOKIE.length + 1);
   const sessionOf = (req: http.IncomingMessage): string | null => {
     const c = cookieOf(req);
-    return c && !keyError && verifySession(c, secret) ? c : null;
+    return c && !keyError && verifySession(c, secret) && !revoked.has(sessionHash(c)) ? c : null;
   };
   const json = (res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
     res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
@@ -329,7 +359,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
       }
 
       if (url.pathname === "/api/logout" && method === "POST") {
-        return json(res, 200, { ok: true }, { "set-cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+        const saveErr = revoke(session);
+        return json(res, 200, { ok: true, ...(saveErr ? { warning: `Signed out. The sign-out couldn't be saved to disk (${saveErr}), so this session would work again after the admin pane restarts.` } : {}) },
+          { "set-cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
       }
 
       if (url.pathname === "/api/dash/settings" && (method === "GET" || method === "PUT")) {
