@@ -37,4 +37,7 @@ services:
       - UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key
       # The open, watch-only living-room dashboard (no sign-in). Its settings live in ./data/dash.
       # UNSCRYPTED_DASH_HOST picks one address (default 0.0.0.0, every address); UNSCRYPTED_DASH=off turns it off.
+      # Its settings page is <admin>/dash-settings (admin password). When the dash and the admin pane
+      # live on different addresses, set UNSCRYPTED_ADMIN_URL (the Settings button's target, e.g.
+      # http://10.0.1.78:8190) and UNSCRYPTED_DASH_URL (e.g. http://10.0.1.248/). Unset = same host.
       - UNSCRYPTED_DASH_PORT=8180

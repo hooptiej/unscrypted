@@ -169,3 +169,13 @@ test("a saved settings change reaches the open page; a garbage file falls back t
   assert.deepEqual(rt.publicConfig().cameras, [], "defaults: nothing shown");
   assert.match((rt.state() as any).settingsWarning, /couldn't be read .*default dashboard settings/);
 });
+
+test("the Settings button's target comes from config, and a bad UNSCRYPTED_ADMIN_URL is said on the page", () => {
+  const dir = tempDir("unscr-dashrt-");
+  const plain = new DashRuntime({ dir, title: "T", env: "test", adminPort: 8191, log });
+  assert.equal(plain.publicConfig().settingsUrl, null, "unset: the page uses this host and the admin port");
+  const set = new DashRuntime({ dir, title: "T", env: "prod", adminPort: 8190, log, adminUrl: "http://10.0.1.78:8190" });
+  assert.equal(set.publicConfig().settingsUrl, "http://10.0.1.78:8190/dash-settings?from=dash");
+  const bad = new DashRuntime({ dir, title: "T", env: "prod", adminPort: 8190, log, adminUrl: null, adminUrlError: "UNSCRYPTED_ADMIN_URL (\"x\") isn't a web address" });
+  assert.match((bad.state() as any).notices.join(" "), /UNSCRYPTED_ADMIN_URL/);
+});

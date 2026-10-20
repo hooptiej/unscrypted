@@ -11,6 +11,7 @@ import { UserError } from "../admin/errors";
 import { DashRuntime } from "./runtime";
 import { checkToDash } from "./ipc";
 import { Logger } from "../logger";
+import { parseBaseUrl } from "./settings";
 
 const log = new Logger("dash");
 const hapOff = process.env.UNSCRYPTED_HAP === "off";
@@ -18,7 +19,10 @@ const port = Number(process.env.UNSCRYPTED_DASH_PORT ?? 8180);
 const host = process.env.UNSCRYPTED_DASH_HOST || "0.0.0.0";
 const dir = process.env.UNSCRYPTED_DASH_DIR || "/data/dash";
 const title = process.env.UNSCRYPTED_DASH_TITLE || (hapOff ? "Homedash - TEST" : "Homedash");
-const rt = new DashRuntime({ dir, title, env: hapOff ? "test" : "prod", adminPort: Number(process.env.UNSCRYPTED_ADMIN_PORT ?? 8190), log });
+const adminUrl = parseBaseUrl("UNSCRYPTED_ADMIN_URL", process.env.UNSCRYPTED_ADMIN_URL);
+if (adminUrl.error) log.warn(adminUrl.error);
+const rt = new DashRuntime({ dir, title, env: hapOff ? "test" : "prod", adminPort: Number(process.env.UNSCRYPTED_ADMIN_PORT ?? 8190), log,
+  adminUrl: adminUrl.url, adminUrlError: adminUrl.error });
 
 process.on("message", (raw: unknown) => {
   const m = checkToDash(raw);

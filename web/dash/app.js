@@ -426,7 +426,8 @@ setInterval(loadPhotos, 15 * 60 * 1000);
 
 /* the Settings button opens the admin side, which asks for the admin password */
 const settingsBtn = document.querySelector(".settings-btn");
-settingsBtn.href = `http://${location.hostname}:${cfg.adminPort}/#/dash?from=dash`;
+// From config (UNSCRYPTED_ADMIN_URL) when the dashboard and the admin pane live on different addresses.
+settingsBtn.href = cfg.settingsUrl || `http://${location.hostname}:${cfg.adminPort}/dash-settings?from=dash`;
 settingsBtn.textContent = "Settings";
 
 /* self-refresh so new deployments appear on their own; never while a camera is fullscreen */

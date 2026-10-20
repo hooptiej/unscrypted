@@ -17,7 +17,7 @@ const webRoot = tempDir("unscr-dashweb-");
 function deps(over: Partial<DashDeps> = {}): DashDeps {
   return {
     webRoot, title: "Homedash - TEST", go2rtcApi: "",
-    publicConfig: () => ({ title: "Homedash - TEST", env: "test", adminPort: 8191, idleSeconds: 30, pollSeconds: 4, reloadMinutes: 20, cameras: [], fonts: { ui: { family: "x" }, clock: { inherit: true } } }),
+    publicConfig: () => ({ title: "Homedash - TEST", env: "test", adminPort: 8191, settingsUrl: null, idleSeconds: 30, pollSeconds: 4, reloadMinutes: 20, cameras: [], fonts: { ui: { family: "x" }, clock: { inherit: true } } }),
     state: () => ({ updated: 1 }),
     allowedStreams: () => new Set<string>(),
     go2rtcInfo: () => ({ state: "running", lastError: null, nextRetryAt: null }),

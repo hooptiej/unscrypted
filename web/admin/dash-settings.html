@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<link rel="stylesheet" href="/dash-settings.css">
+<script type="module" src="/dash-settings.js"></script>
+</head>
+<body>
+<div id="stage"><div id="canvas"><div class="in">
+
+  <header class="top">
+    <div>
+      <h1>Homedash settings <span class="env" id="env" hidden>TEST</span></h1>
+      <p class="sub">Saved changes reach the dashboard within a few seconds; it reloads itself. These need the admin password; the dashboard itself stays watch-only.</p>
+    </div>
+    <div class="idle" id="idlebar" hidden>
+      <div class="txt" id="idletxt"><span id="idlemsg"></span><span>any click or key press stays</span></div>
+      <div class="track"><div class="fill" id="idlefill"></div></div>
+    </div>
+  </header>
+
+  <div class="col">
+    <section>
+      <h2>Fonts</h2>
+      <div class="row"><label for="fontUi">Interface font</label><select id="fontUi"></select></div>
+      <div class="row"><label for="fontClock">Clock font</label><select id="fontClock"></select></div>
+      <div class="preview" id="preview">7:42 AM<small id="previewName"></small></div>
+      <p class="hint">"Fonts folder" lists the font files in data/dash/fonts on the NAS (names from names.json there). To add one, drop the file in that folder and reload this page.</p>
+    </section>
+    <section>
+      <h2>Display</h2>
+      <div class="row"><label for="idle">Fullscreen timeout (s)</label><input type="number" id="idle" min="5" max="600"></div>
+      <div class="row"><label for="reload">Page refresh (min)</label><input type="number" id="reload" min="1" max="1440"></div>
+      <div class="row"><label for="poll">Status checks every (s)</label><input type="number" id="poll" min="2" max="60"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>Cameras</h2>
+      <div class="camhead"><span>Label on the dashboard</span><span>HomeKit name</span><span>Shown</span><span>Stream</span><span></span></div>
+      <div id="cams"></div>
+      <p class="hint" id="gridhint"></p>
+      <p class="hint">Labels show only on the dashboard; each camera's HomeKit name stays as it is. Cameras and their addresses are edited in the admin pane's Cameras tab.</p>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>Photo slideshow</h2>
+      <div class="row"><label for="phSource">Source</label>
+        <select id="phSource"><option value="icloud">iCloud shared album</option><option value="folder">Folder on the NAS</option></select></div>
+      <div class="row"><label for="phUrl">iCloud album link</label><input type="text" id="phUrl" placeholder="https://www.icloud.com/sharedalbum/#..."></div>
+      <div class="row"><label for="phFolder">Folder</label><input type="text" id="phFolder" placeholder="/data/dash/photos"></div>
+      <div class="row"><label for="phSecs">Seconds per photo</label><input type="number" id="phSecs" min="3" max="600"></div>
+      <div class="row"><label for="phCap">Caption</label><input type="text" id="phCap" maxlength="80" placeholder="blank = album name"></div>
+    </section>
+    <section>
+      <h2>Weather</h2>
+      <div class="row"><label for="wxPlace">Place</label><input type="text" id="wxPlace" placeholder="Sterling, CO"></div>
+      <div class="row"><label for="wxUnit">Units</label>
+        <select id="wxUnit"><option value="fahrenheit">Fahrenheit</option><option value="celsius">Celsius</option></select></div>
+      <div class="row"><label for="wxLat">Latitude</label><input type="text" id="wxLat" inputmode="decimal"></div>
+      <div class="row"><label for="wxLon">Longitude</label><input type="text" id="wxLon" inputmode="decimal"></div>
+      <p class="hint">Changing the place clears the pinned coordinates and looks it up again.</p>
+    </section>
+  </div>
+
+  <footer class="bar">
+    <button id="save" type="button" disabled>Save and back</button>
+    <a class="btn" id="back" href="/">Back to the dashboard</a>
+    <button id="signout" type="button" class="link">Sign out</button>
+    <div id="msg" role="status"></div>
+  </footer>
+
+</div></div></div>
+</body>
+</html>

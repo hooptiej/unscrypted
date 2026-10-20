@@ -1,0 +1,67 @@
+/* Homedash's one-screen settings page (Homedash #16), moved out of its inline <style> because the
+   admin CSP is style-src 'self'. Same scaling canvas as the dashboard: one design pixel (--u) on a
+   2560 x 1440 canvas, scaled to fit the window, so the page fits on one screen and never scrolls. */
+:root{--bg:#0b0d08;--card:#151a0e;--line:#232818;--text:#e8ecd8;--mute:#8b9275;--acc:#a3b83f;--olive:#8a9a3b;--warn:#e0832a;--bad:#d9453a}
+*{box-sizing:border-box}
+/* an author `display` rule would otherwise beat the browser's [hidden]; make the attribute always win */
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg)}
+#canvas{container-type:inline-size;width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;position:relative;overflow:hidden}
+.in{--u:calc(100cqw/2560);position:absolute;inset:0;padding:calc(20*var(--u));display:grid;
+  grid-template-columns:1fr 1.15fr 1fr;grid-template-rows:auto 1fr auto;gap:calc(12*var(--u));line-height:1.25}
+.top{grid-column:1/-1;display:flex;align-items:flex-end;justify-content:space-between;gap:calc(40*var(--u));
+  padding:0 calc(8*var(--u))}
+h1{font-size:calc(50*var(--u));font-weight:500;margin:0}
+.sub{font-size:calc(27*var(--u));color:var(--mute);margin:calc(4*var(--u)) 0 0}
+.env{display:inline-block;background:var(--warn);color:#0b0d08;border-radius:calc(8*var(--u));
+  padding:0 calc(14*var(--u));font-size:calc(27*var(--u));font-weight:600;margin-left:calc(16*var(--u));vertical-align:middle}
+.col{display:flex;flex-direction:column;gap:calc(12*var(--u));min-height:0;overflow-y:auto;scrollbar-width:thin;
+  scrollbar-color:#3f4a28 transparent}
+section{background:var(--card);border:calc(2*var(--u)) solid var(--line);border-radius:calc(10*var(--u));
+  padding:calc(20*var(--u)) calc(26*var(--u))}
+h2{font-size:calc(33*var(--u));font-weight:500;color:var(--acc);margin:0 0 calc(12*var(--u))}
+.row{display:grid;grid-template-columns:calc(275*var(--u)) 1fr;gap:calc(10*var(--u)) calc(16*var(--u));
+  align-items:center;margin:calc(12*var(--u)) 0}
+.row>label{color:var(--mute);font-size:calc(28*var(--u))}
+input[type=text],input[type=number],select{width:100%;background:var(--bg);color:var(--text);
+  border:calc(2*var(--u)) solid var(--line);border-radius:calc(8*var(--u));padding:calc(10*var(--u)) calc(15*var(--u));
+  font:inherit;font-size:calc(31*var(--u))}
+input:focus,select:focus,button:focus-visible{outline:calc(3*var(--u)) solid var(--acc);outline-offset:calc(1*var(--u))}
+input[type=checkbox]{width:calc(33*var(--u));height:calc(33*var(--u));accent-color:var(--acc)}
+input:disabled,select:disabled{opacity:.45;cursor:not-allowed}
+.camhead,.cam{display:grid;grid-template-columns:1fr calc(230*var(--u)) calc(90*var(--u)) calc(150*var(--u)) calc(110*var(--u));
+  gap:calc(12*var(--u));align-items:center}
+.camhead{font-size:calc(22*var(--u));color:var(--mute)}
+.cam{margin:calc(12*var(--u)) 0}
+.cam .key{color:var(--mute);font-size:calc(24*var(--u));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cam .shown{display:flex;justify-content:center}
+.cam .moves{display:flex;gap:calc(8*var(--u))}
+.cam .moves button{padding:calc(6*var(--u)) calc(14*var(--u));font-size:calc(26*var(--u));background:var(--bg);color:var(--text);
+  border:calc(2*var(--u)) solid var(--line)}
+.cam .moves button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+.cam.missing{opacity:.5}
+.cam .why{grid-column:1/-1;font-size:calc(22*var(--u));color:#8b6f4a;margin-top:calc(-6*var(--u))}
+.preview{margin:calc(14*var(--u)) 0 0;padding:calc(20*var(--u)) calc(24*var(--u));border:calc(2*var(--u)) dashed var(--line);
+  border-radius:calc(8*var(--u));font-size:calc(105*var(--u));line-height:1.1;white-space:nowrap;overflow:hidden}
+.preview small{display:block;font-size:calc(24*var(--u));color:var(--mute);font-family:system-ui,sans-serif;margin-top:calc(8*var(--u));white-space:normal}
+.hint{color:var(--mute);font-size:calc(24*var(--u));margin:calc(10*var(--u)) 0 0}
+.hint.warn{color:var(--warn)}
+.bar{grid-column:1/-1;display:flex;gap:calc(20*var(--u));align-items:center;padding:calc(6*var(--u)) calc(8*var(--u)) 0}
+button{background:var(--acc);color:#0b0d08;border:0;border-radius:calc(10*var(--u));padding:calc(16*var(--u)) calc(46*var(--u));
+  font:inherit;font-size:calc(33*var(--u));font-weight:500;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+button.link{background:transparent;color:var(--mute);padding:calc(14*var(--u)) calc(20*var(--u));text-decoration:underline}
+a.btn{display:inline-block;background:transparent;color:var(--text);border:calc(2*var(--u)) solid var(--line);
+  border-radius:calc(10*var(--u));padding:calc(14*var(--u)) calc(42*var(--u));font-size:calc(33*var(--u));font-weight:500;text-decoration:none}
+a.btn:hover,a.btn:focus-visible{border-color:var(--acc);color:var(--acc)}
+#msg{font-size:calc(26*var(--u));flex:1;min-width:0}
+#msg.ok{color:var(--acc)}
+#msg.err{color:var(--bad)}
+#msg p{margin:0}
+.idle{width:calc(900*var(--u))}
+.idle .txt{display:flex;justify-content:space-between;gap:calc(12*var(--u));font-size:calc(24*var(--u));color:var(--mute)}
+.idle .txt.warn{color:var(--warn)}
+.idle .track{margin-top:calc(6*var(--u));height:calc(8*var(--u));background:var(--line);border-radius:calc(4*var(--u))}
+.idle .fill{height:100%;width:100%;background:var(--olive);border-radius:calc(4*var(--u))}

@@ -9,6 +9,7 @@ import { randomUUID } from "crypto";
 import { createAdminServer } from "./server";
 import { BridgeStatus, ToAdmin, ToBridge } from "./ipc";
 import { Logger } from "../logger";
+import { parseBaseUrl } from "../dash/settings";
 
 const log = new Logger("admin");
 let latest: BridgeStatus | null = null;
@@ -34,6 +35,8 @@ process.on("uncaughtException", (e) => {
 });
 
 const hapOff = process.env.UNSCRYPTED_HAP === "off";
+const dashUrl = parseBaseUrl("UNSCRYPTED_DASH_URL", process.env.UNSCRYPTED_DASH_URL);
+if (dashUrl.error) log.warn(dashUrl.error);
 const port = Number(process.env.UNSCRYPTED_ADMIN_PORT ?? 8190);
 const host = process.env.UNSCRYPTED_ADMIN_HOST || "0.0.0.0";
 const server = createAdminServer({
@@ -45,6 +48,8 @@ const server = createAdminServer({
   webRoot: path.join(__dirname, "..", "..", "web", "admin"),
   // The test instance runs with HAP off, so it gets the " - TEST" tab label even if the title env is unset.
   title: process.env.UNSCRYPTED_ADMIN_TITLE || (hapOff ? "unscrypted admin - TEST" : "unscrypted admin"),
+  // The bridge passes the dashboard's folder and port; UNSCRYPTED_DASH_URL only when it lives elsewhere.
+  dash: { dir: process.env.UNSCRYPTED_DASH_DIR || "/data/dash", port: Number(process.env.UNSCRYPTED_DASH_PORT ?? 8180), url: dashUrl.url },
   log,
   bridge: {
     status: () => latest,
