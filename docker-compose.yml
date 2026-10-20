@@ -36,5 +36,7 @@ services:
       - UNSCRYPTED_LOG_LEVEL=info
       - UNSCRYPTED_ADMIN_PORT=8190
       - UNSCRYPTED_GO2RTC_API_PORT=1986
+      # go2rtc WebRTC media (tcp+udp, all interfaces) for the pane's live preview.
+      - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8557
       - UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password
       - UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key

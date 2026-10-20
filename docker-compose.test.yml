@@ -4,7 +4,7 @@
 #
 #   sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypted-test up -d --build
 #
-# Admin pane: http://<host>:8191, tab title "unscrypted admin - TEST". Rebuild to test changes.
+# Admin pane: http://<host>:8191 (live preview video on go2rtc WebRTC port 8558), tab title "unscrypted admin - TEST". Rebuild to test changes.
 services:
   unscrypted:
     image: unscrypted:0.2.0-test
@@ -13,5 +13,6 @@ services:
       - UNSCRYPTED_HAP=off
       - UNSCRYPTED_ADMIN_PORT=8191
       - UNSCRYPTED_GO2RTC_API_PORT=1987
+      - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8558
       - UNSCRYPTED_ADMIN_TITLE=unscrypted admin - TEST
       - UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted-test

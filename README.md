@@ -150,7 +150,7 @@ The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir
 A small web page for the cameras, served by the same container: `http://<host>:8190` (on the NAS, `http://10.0.1.78:8190`).
 
 - **Sign-in:** the password is the one line in `./secrets/admin_password`. Sessions last 30 days and survive restarts (the signing key is kept in `./data/admin-session.key`). Five wrong passwords from one computer pause sign-in there for 5 minutes. If the password file is missing or empty, or the key file is unreadable or the wrong size, the pane says so and what to do; the HomeKit bridge keeps running either way.
-- **What it does:** list cameras (passwords are never sent to the browser; they show as set, and URLs show `rtsp://user:***@host/...`), check a feed (a test frame through the bundled go2rtc), a live preview (MSE), edit a camera, add a camera, and show the pairing code and bridge status.
+- **What it does:** list cameras (passwords are never sent to the browser; they show as set, and URLs show `rtsp://user:***@host/...`), check a feed (a test frame through the bundled go2rtc), a live preview (WebRTC, the way Homedash plays these cameras: they don't play over MSE), edit a camera, add a camera, and show the pairing code and bridge status.
 - **How changes take effect:** logins, stream addresses and motion timings apply live to that one camera. New cameras are added live. Changes that Home itself sees (HKSV on/off, prebuffer, motion source type, model) are saved and wait for **Restart bridge** (about 30 seconds of "No Response" in Home).
 - **Don't rename cameras.** A camera's name is its identity in Home: renaming it would make Home see a new camera and drop the old one's room, settings and recordings. The pane refuses renames and warns that a new camera's name is permanent. Don't rename them by hand in `config.json` either.
 - **go2rtc** (1.9.14, pinned by version and SHA-256 in the Dockerfile) runs inside the container for feed checks and previews only. Its API listens on `127.0.0.1` and is reached only through the signed-in pane. HomeKit streaming doesn't use it.
@@ -163,8 +163,9 @@ A small web page for the cameras, served by the same container: `http://<host>:8
 | `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces |
 | `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces |
 | `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
+| `8557/tcp+udp` | go2rtc WebRTC video for the live preview (`UNSCRYPTED_GO2RTC_WEBRTC_PORT`; `UNSCRYPTED_GO2RTC_WEBRTC=off` turns the preview off) | all interfaces |
 | `8099-8102/tcp` | ONVIF push notifications (`onvif.notifyPort`) | all interfaces |
-| Test instance | admin `8191`, go2rtc API `127.0.0.1:1987`, no HomeKit | |
+| Test instance | admin `8191`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, no HomeKit | |
 
 ### Test instance
 

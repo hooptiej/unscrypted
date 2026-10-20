@@ -1839,7 +1839,7 @@ Owner, 2026-10-20 06:20 MDT: "go !" (accepting the recommendations offered for q
 - **Q2:** (a) password file + sign-in page + 30-day cookie + lockout after 5 bad tries.
 - **Q3:** (a) logins/URLs/motion timings apply live; new cameras are added live; HAP-shape changes wait for a "Restart bridge" button.
 - **Q4:** (a) test instance runs with HomeKit OFF.
-- **Q8:** (a) no camera delete in #2 (file it as its own issue); MSE-only preview.
+- **Q8:** (a) no camera delete in #2 (file it as its own issue); MSE-only preview. **Changed 2026-10-20 08:19:** these cameras don't play over MSE in Chrome (go2rtc's own MSE player fails on them too; WebRTC plays). Owner: "home dash is moving in here, so its not an option in the future, how is that displaying video.. we should just copy what works". So the preview uses WebRTC, video only, like Homedash: go2rtc WebRTC on 8557 (prod) / 8558 (test), signalling through the pane's signed-in WebSocket proxy.
 - **Q9:** admin pane on 8190 (prod), 8191 (test).
 - **Admin server:** a separate supervised child process in the same container (the "Your call" in the planning report).
 - **Sign-in key (2026-10-20):** "keep the sign-in key in ./data so sign-ins survive restarts." The session-signing key is made once (32 random bytes, mode 0600) at `<persistDir's parent>/admin-session.key` (`/data/admin-session.key` in Docker; `UNSCRYPTED_ADMIN_KEY_FILE` overrides) and read on every start. A key file that can't be read or has the wrong length is refused with a 503 saying what to do (delete it and restart), never quietly replaced; HomeKit is unaffected. The key is never logged.

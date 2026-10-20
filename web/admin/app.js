@@ -297,7 +297,11 @@ async function watchLive(check, tile, btn) {
     const mod = await import("/go2rtc/video-rtc.js");
     if (!customElements.get("video-rtc")) customElements.define("video-rtc", mod.VideoRTC);
     const v = document.createElement("video-rtc");
-    v.mode = "mse";
+    // WebRTC, video only: exactly how Homedash plays these cameras. Their streams don't play over
+    // MSE in Chrome (go2rtc's own MSE player fails on them too). Signalling goes through the
+    // pane's signed-in WebSocket proxy; the video itself comes from go2rtc's WebRTC port.
+    v.mode = "webrtc";
+    v.media = "video";
     v.background = true;
     v.src = new URL(check.wsUrl, location.href).href;
     tile.replaceChildren(v);
