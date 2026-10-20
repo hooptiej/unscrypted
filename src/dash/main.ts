@@ -27,7 +27,9 @@ const rt = new DashRuntime({ dir, title, env: hapOff ? "test" : "prod", adminPor
 process.on("message", (raw: unknown) => {
   const m = checkToDash(raw);
   if (typeof m === "string") { log.warn(`ignored a malformed message from the bridge: ${m}`); return; }
-  if (m.type === "cameras") rt.cameras = m.cameras; else rt.bridge = m.bridge;
+  if (m.type === "cameras") rt.cameras = m.cameras;
+  else if (m.type === "feeds") rt.setFeeds(m.feeds);
+  else rt.bridge = m.bridge;
 });
 process.on("disconnect", () => { log.warn("lost the connection to the bridge; exiting (the bridge restarts the dashboard)"); process.exit(0); });
 process.on("unhandledRejection", (e) => log.error(`unhandled rejection in the dashboard (kept running): ${(e as Error)?.stack ?? e}`));
@@ -41,18 +43,7 @@ setInterval(() => {
   }
 }, 2000).unref();
 
-// Camera reachability, every pollSeconds (re-read each round so a settings change takes effect).
-let probing = false;
-const probeLoop = async (): Promise<void> => {
-  if (!probing) {
-    probing = true;
-    try { await rt.probeCameras(); }
-    catch (err) { log.error(`camera reachability check failed (tiles keep their last state): ${(err as Error).stack ?? err}`); }
-    finally { probing = false; }
-  }
-  setTimeout(() => void probeLoop(), Math.max(2, rt.settings.pollSeconds || 4) * 1000).unref();
-};
-setTimeout(() => void probeLoop(), 500).unref();   // after the bridge's first camera list
+// Camera state comes from the bridge (go2rtc's own feed state, every 2 s); the dash never probes a camera (#16).
 
 // Service lights, on the same interval; a round that's still running is never doubled up.
 let checking = false;

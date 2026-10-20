@@ -17,10 +17,10 @@ import { Supervisor, ChildStatus } from "./admin/supervisor";
 import { Go2rtcClient, Go2rtcManager, maskSecretsInLine } from "./admin/go2rtc";
 import { streamNames } from "./admin/go2rtcConfig";
 import { Go2rtcWatcher } from "./admin/go2rtcWatch";
-import { cameraDirectText, isHealthy, SourceSelector, sourceText } from "./source";
+import { cameraDirectText, SourceSelector, sourceText } from "./source";
 import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
 import { UserError, toErrorJson } from "./admin/errors";
-import { dashCameras, ToDash } from "./dash/ipc";
+import { dashCameras, dashFeed, ToDash } from "./dash/ipc";
 
 export interface RuntimeOptions {
   config: ResolvedConfig;
@@ -273,6 +273,12 @@ export class BridgeRuntime {
       msgs.push({ type: "bridge", bridge: { hapEnabled: Boolean(this.o.bridge), paired: Boolean(this.o.bridge?._accessoryInfo?.paired()),
         go2rtc: { state: g.state, lastError: g.lastError, nextRetryAt: g.nextRetryAt } } });
       if (withCameras) msgs.push({ type: "cameras", cameras: dashCameras(this.config) });
+      // go2rtc's feed state for every configured stream (fixed reasons only: no addresses reach the dash).
+      const h = this.watcher?.health();
+      const ok = Boolean(h && h.supervisor === "running" && h.apiOk);
+      const feeds = this.watcher?.feeds();
+      const streams = [...streamNames(this.config.cameras).values()].flatMap((n) => [n.main, ...(n.sub ? [n.sub] : [])]);
+      msgs.push({ type: "feeds", feeds: Object.fromEntries(streams.map((s) => [s, dashFeed(feeds?.get(s), ok)])) });
     } catch (err) {
       this.o.log.warn(`couldn't build the dashboard's status update (it keeps the last one): ${(err as Error).message}`);
       return;

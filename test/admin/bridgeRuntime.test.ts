@@ -127,6 +127,18 @@ test("go2rtc off: HomeKit reads the cameras directly and the status says so, wit
   assert.ok(!("reachable" in s.cameras[0]), "the TCP camera probe is gone (#16)");
 });
 
+test("the dashboard gets a feed state for every stream, address-free (unknown while go2rtc isn't watched)", () => {
+  const { rt } = setup();
+  const got: any[] = [];
+  (rt as any).dash = { child: () => ({ connected: true, send: (m: any) => got.push(m) }) };
+  (rt as any).pushDash(true);
+  const feeds = got.find((m) => m.type === "feeds");
+  assert.deepEqual(Object.keys(feeds.feeds), ["garage"]);
+  assert.equal(feeds.feeds.garage.state, "unknown");
+  assert.equal(feeds.feeds.garage.up, true);
+  assert.doesNotMatch(JSON.stringify(got), /127\.0\.0\.1|rtsp:/);
+});
+
 test("dashboard switched off: says so, and the status shows it stopped with the reason", async () => {
   const { rt } = setup();
   rt.start();

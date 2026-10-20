@@ -1,19 +1,17 @@
 /**
- * The dash child's state: the bridge's public camera list and status, the settings file, and
- * (later tasks) the probe, status, weather and photo loops. Builds /api/config and /api/state.
+ * The dash child's state: the bridge's public camera list, status and go2rtc feed states, the
+ * settings file, and the service-light, weather and photo loops. Builds /api/config and /api/state.
  */
 
 import * as path from "path";
-import { DashBridgeInfo, DashCamera } from "./ipc";
+import { DashBridgeInfo, DashCamera, DashFeed } from "./ipc";
 import { DashSettings, loadSettings, effectiveCameras } from "./settings";
 import { PublicConfig } from "./server";
 import { Logger } from "../logger";
-import { tcpProbe, ServiceWatcher, LightNode } from "./services";
+import { ServiceWatcher, LightNode } from "./services";
 import { PhotoLibrary } from "./photos";
 import { listFonts, fontOut } from "./fonts";
 import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
-
-export interface CamState { up: boolean; reason: string | null; since: number }
 
 export interface DashRuntimeOptions {
   dir: string; title: string; env: "prod" | "test"; adminPort: number; log: Logger;
@@ -28,8 +26,8 @@ export class DashRuntime {
   settingsWarning: string | null;
   settingsMtime: number;
   readonly settingsFile: string;
-  /** Per tile (keyed by the camera's main stream name): can we reach its RTSP port? */
-  private camState = new Map<string, CamState>();
+  /** go2rtc's feed state per stream name, pushed by the bridge every 2 s (never a probe of the camera). */
+  private feeds: Record<string, DashFeed> = {};
   /** The service-light tree from the last status round, and when it finished (null = not yet). */
   services: LightNode[] = [];
   servicesAt: number | null = null;
@@ -68,18 +66,12 @@ export class DashRuntime {
       });
   }
 
-  /** TCP-probe every shown camera's RTSP port. Never throws; a reason never names an address. */
-  async probeCameras(): Promise<void> {
-    const shown = this.shown();
-    await Promise.all(shown.map(async ({ cam }) => {
-      const why = cam.probe ? await tcpProbe(cam.probe.host, cam.probe.port) : "the camera's address in config.json can't be read";
-      const up = why === null;
-      const prev = this.camState.get(cam.main);
-      this.camState.set(cam.main, { up, reason: up ? null : cam.probe ? `Camera not answering at its RTSP port (${why})` : `Camera can't be checked: ${why}`,
-        since: prev && prev.up === up ? prev.since : Date.now() });
-    }));
-    const keep = new Set(shown.map((x) => x.cam.main));
-    for (const k of [...this.camState.keys()]) if (!keep.has(k)) this.camState.delete(k);
+  setFeeds(f: Record<string, DashFeed>): void { this.feeds = f; }
+
+  /** Each shown tile's state (keyed by the camera's main stream name), from the stream the tile plays. */
+  private tileStates(): Record<string, DashFeed> {
+    return Object.fromEntries(this.shown().map((x) => [x.cam.main,
+      this.feeds[x.stream] ?? { state: "unknown", up: true, reason: null, since: Date.now() }]));
   }
 
   /** One round of service checks. Never throws (every check turns its failure into a reason). */
@@ -152,7 +144,7 @@ export class DashRuntime {
 
   state(): Record<string, unknown> {
     return { updated: Date.now(), settingsVersion: this.settingsMtime, settingsWarning: this.settingsWarning,
-      bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
+      bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: this.tileStates(),
       services: this.services, servicesAt: this.servicesAt,
       weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince,
       notices: [...(this.o.adminUrlError ? [this.o.adminUrlError] : []), ...this.fonts().notices] };
