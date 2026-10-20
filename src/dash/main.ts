@@ -37,6 +37,19 @@ setInterval(() => {
   }
 }, 2000).unref();
 
+// Camera reachability, every pollSeconds (re-read each round so a settings change takes effect).
+let probing = false;
+const probeLoop = async (): Promise<void> => {
+  if (!probing) {
+    probing = true;
+    try { await rt.probeCameras(); }
+    catch (err) { log.error(`camera reachability check failed (tiles keep their last state): ${(err as Error).stack ?? err}`); }
+    finally { probing = false; }
+  }
+  setTimeout(() => void probeLoop(), Math.max(2, rt.settings.pollSeconds || 4) * 1000).unref();
+};
+setTimeout(() => void probeLoop(), 500).unref();   // after the bridge's first camera list
+
 const server = createDashServer({
   webRoot: path.join(__dirname, "..", "..", "web", "dash"), title,
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
