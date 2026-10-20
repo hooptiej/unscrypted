@@ -21,6 +21,7 @@ function deps(over: Partial<DashDeps> = {}): DashDeps {
     state: () => ({ updated: 1 }),
     allowedStreams: () => new Set<string>(),
     go2rtcInfo: () => ({ state: "running", lastError: null, nextRetryAt: null }),
+    photos: () => ({ items: [], album: "", rotateSeconds: 20, error: "No iCloud album link is set." }),
     photoFile: () => null, fontsDir: tempDir("unscr-dashfonts-"),
     ...over,
   };
@@ -223,4 +224,28 @@ test("go2rtc off: the socket and the scripts say why (503), naming its state", a
     assert.equal(o.status, 503);
     assert.match((await o.json()).error.happened, /switched off in this instance/);
   } finally { restarting.s.close(); off.s.close(); }
+});
+
+test("photos: the list says why it's empty; only published ids are served, with their type", async () => {
+  const pdir = tempDir("unscr-dashphotos-");
+  const jpg = path.join(pdir, "a.jpg");
+  fs.writeFileSync(jpg, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  const s = createDashServer(deps({
+    photos: () => ({ items: [{ id: "0123456789ab", v: 1 }], album: "Family", rotateSeconds: 15, error: null }),
+    photoFile: (id) => (id === "0123456789ab" ? jpg : null),
+  }));
+  const b = await listen(s);
+  try {
+    assert.match((await (await fetch(base + "/api/photos")).json()).error, /No iCloud album link is set/);
+    assert.deepEqual(await (await fetch(b + "/api/photos")).json(), { items: [{ id: "0123456789ab", v: 1 }], album: "Family", rotateSeconds: 15, error: null });
+    const r = await fetch(b + "/api/photo/0123456789ab?v=1");
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-type"), "image/jpeg");
+    assert.equal((await r.arrayBuffer()).byteLength, 4);
+    for (const bad of ["/api/photo/ffffffffffff", "/api/photo/..%2f..%2fsettings.json", "/api/photo/"]) {
+      const x = await fetch(b + bad);
+      assert.equal(x.status, 404, bad);
+      assert.match((await x.json()).error.happened, /photo/i);
+    }
+  } finally { s.close(); }
 });
