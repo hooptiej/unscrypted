@@ -299,7 +299,9 @@ if (params.has("tune")) {
 applyBackground();
 
 /* state poll: camera reachability, go2rtc, settings changes; a lost server is said out loud */
-const pollMs = (cfg.pollSeconds || 4) * 1000;
+// Capped at 3 s (#20): /api/state is cheap and carries settingsVersion, so a saved setting shows up
+// within seconds; "Status checks every (s)" (pollSeconds) only paces the server-side checks.
+const pollMs = Math.min((cfg.pollSeconds || 3) * 1000, 3000);
 let seenSettingsVersion = null, reloadWhenClosed = false;
 async function pollState() {
   let st;
