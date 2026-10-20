@@ -8,7 +8,7 @@
 # Admin pane: http://<host>:8191 (live preview video on go2rtc WebRTC port 8558), tab title "unscrypted admin - TEST". Rebuild to test changes.
 services:
   unscrypted:
-    image: unscrypted:0.3.1-test
+    image: unscrypted:0.3.2-test
     container_name: unscrypted-test
     environment:
       - UNSCRYPTED_HAP=off

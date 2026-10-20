@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: unscrypted:0.3.1
+    image: unscrypted:0.3.2
     container_name: unscrypted
     restart: unless-stopped
     # REQUIRED for HomeKit mDNS discovery. Linux host only.
