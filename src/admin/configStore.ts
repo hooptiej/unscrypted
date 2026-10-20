@@ -63,6 +63,35 @@ export function redactCamera(cam: CameraConfig): PublicCamera {
   return out;
 }
 
+export type Login = { user: string; password: string };
+/** One camera's logins, for the signed-in admin's Show button only (#18). Never in the camera list. */
+export type CameraLogins = { name: string; rtsp: Login | null; foscam: Login | null; onvif: Login | null; webUi: string | null };
+
+const URL_LOGIN = /^rtsp:\/\/([^:/@]+):([^@]*)@/i;
+const decode = (s: string): string => { try { return decodeURIComponent(s); } catch { return s; } };
+
+/** The RTSP login: the rtspUser/rtspPassword parts, or else the user:pass in rtspMain (then rtspSub). URLs are percent-decoded, as the bridge encodes them. */
+function rtspLogin(cam: CameraConfig): Login | null {
+  if (cam.rtspUser !== undefined || cam.rtspPassword !== undefined) return { user: cam.rtspUser ?? "", password: cam.rtspPassword ?? "" };
+  for (const u of [cam.rtspMain, cam.rtspSub]) {
+    const m = u ? URL_LOGIN.exec(u) : null;
+    if (m) return { user: decode(m[1]), password: decode(m[2]) };
+  }
+  return null;
+}
+
+export function cameraLogins(cam: CameraConfig): CameraLogins {
+  const webUi = cam.foscam?.cgiBase || (cam.host ? `http://${cam.host}` : null)
+    || (cam.onvif?.host ? `http://${cam.onvif.host}:${cam.onvif.port ?? 80}` : null);
+  return {
+    name: cam.name,
+    rtsp: rtspLogin(cam),
+    foscam: cam.foscam ? { user: cam.foscam.username ?? "", password: cam.foscam.password ?? "" } : null,
+    onvif: cam.onvif ? { user: cam.onvif.username ?? "", password: cam.onvif.password ?? "" } : null,
+    webUi,
+  };
+}
+
 export function redactConfig(raw: Config): { cameras: PublicCamera[] } {
   return { cameras: raw.cameras.map(redactCamera) };
 }
