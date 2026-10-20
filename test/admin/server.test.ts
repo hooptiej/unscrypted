@@ -25,7 +25,9 @@ const status = (over: Partial<BridgeStatus> = {}): BridgeStatus => ({
   bridgeName: "U", pin: "031-45-154", setupURI: "X-HM://0023ISYWYUNSC", paired: false, hapPort: 51826, hapEnabled: true,
   cameras: [], startedAt: Date.now(), version: "test",
   go2rtc: { name: "go2rtc", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 },
-  dash: { name: "dash", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 }, ...over,
+  dash: { name: "dash", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 },
+  homekitSource: { mode: "go2rtc", since: 0, reason: null, downSince: null, healthySince: 0, unhealthySince: null, returnAt: null,
+    text: "HomeKit reads every camera through go2rtc: one connection per camera stream." }, ...over,
 });
 let currentStatus: BridgeStatus | null = status();
 
@@ -307,6 +309,25 @@ test("status hides the pin and explains HAP-off", async () => {
     const p = await fetch(base + "/api/pairing", { headers: { cookie: s.cookie } });
     assert.equal(p.status, 409);
   } finally { currentStatus = status(); }
+});
+
+test("status says when HomeKit reads the cameras directly, with local-time tokens; quiet in go2rtc mode", async () => {
+  const s = await login();
+  const get = async () => (await (await fetch(base + "/api/status", { headers: { cookie: s.cookie } })).json()).notices.join(" | ");
+  assert.doesNotMatch(await get(), /HomeKit is reading/);
+  currentStatus = status({
+    go2rtc: { name: "go2rtc", state: "backoff", restarts: 3, lastError: "exited with code 1", nextRetryAt: null, since: 0 },
+    homekitSource: { mode: "direct", since: 25_000, reason: "go2rtc isn't running (backoff: exited with code 1)", downSince: 10_000, healthySince: null, unhealthySince: 10_000, returnAt: null,
+      text: "HomeKit is reading the cameras directly because go2rtc is down (since {{t:10000}}): go2rtc isn't running (backoff: exited with code 1). Cameras may see an extra connection each until go2rtc is back. HomeKit switches back on its own once go2rtc has been healthy for a minute." },
+  });
+  try {
+    const n = await get();
+    assert.match(n, /HomeKit is reading the cameras directly because go2rtc is down \(since \{\{t:\d+\}\}\)/);
+    assert.match(n, /dashboard's video are unavailable\. HomeKit falls back to reading the cameras directly after 15 s/);
+    assert.doesNotMatch(n, /HomeKit is unaffected/);
+  } finally { currentStatus = status(); }
+  currentStatus = status({ cameras: [{ name: "Garage", direct: { since: 1, until: 2, reason: "x", text: 'HomeKit is reading "Garage" directly (since {{t:1}}): x.' } } as any] });
+  try { assert.match(await get(), /HomeKit is reading "Garage" directly/); } finally { currentStatus = status(); }
 });
 
 test("pairing returns a QR image and the code", async () => {

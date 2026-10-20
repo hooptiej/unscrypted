@@ -32,7 +32,7 @@ import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
 import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
 
-/** ffmpeg socket I/O timeout (µs): a wedged go2rtc or camera ends the read instead of hanging it. */
+/** ffmpeg socket I/O timeout (Âµs): a wedged go2rtc or camera ends the read instead of hanging it. */
 const RTSP_TIMEOUT_US = "10000000";
 const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "the camera directly");
 

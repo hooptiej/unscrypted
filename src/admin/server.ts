@@ -239,8 +239,12 @@ export function createAdminServer(d: AdminDeps): http.Server {
     if (!s.hapEnabled) {
       notes.push("HomeKit is off on this instance (UNSCRYPTED_HAP=off): it isn't visible in Home, and motion sources aren't started, so \"last motion\" stays at \"never\" and nothing records. That's expected for a test instance.");
     }
+    // Where HomeKit reads from (#16). Times are {{t:<ms>}} tokens the page turns into the viewer's local time.
+    if (s.homekitSource && s.homekitSource.mode !== "go2rtc") notes.push(s.homekitSource.text);
+    for (const c of s.cameras ?? []) if (c.direct) notes.push(c.direct.text);
     if (s.go2rtc.state !== "running") {
-      notes.push(`go2rtc is ${s.go2rtc.state}${s.go2rtc.lastError ? ` (${s.go2rtc.lastError})` : ""}: snapshots, feed checks and live previews are unavailable. HomeKit is unaffected.`);
+      notes.push(`go2rtc is ${s.go2rtc.state}${s.go2rtc.lastError ? ` (${s.go2rtc.lastError})` : ""}: snapshots in the pane, feed checks, live previews and the dashboard's video are unavailable. ` +
+        (s.homekitSource?.mode === "off" ? "HomeKit reads the cameras directly in this instance, so it's unaffected." : "HomeKit falls back to reading the cameras directly after 15 s (see the line above, once it has)."));
     }
     if (s.dash && s.dash.state !== "running") {
       notes.push(`The dashboard is ${s.dash.state}${s.dash.lastError ? ` (${s.dash.lastError})` : ""}: the living-room display can't load until it's back. HomeKit is unaffected.`);

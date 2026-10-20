@@ -246,10 +246,26 @@ function snapshotTile(stream) {
   return tile;
 }
 
-function reachText(c) {
-  if (c.reachable === null) return el("span", { class: "muted" }, "not checked yet");
-  if (c.reachable) return el("span", { class: "good" }, "reachable");
-  return el("span", { class: "badtext" }, `unreachable: ${c.reachError || "no reason given"}`);
+// The bridge writes times in status text as {{t:<ms>}}; show them in this viewer's local time.
+const clockTime = (ms) => new Date(Number(ms)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const localTimes = (s) => String(s).replace(/\{\{t:(\d+)\}\}/g, (_, ms) => clockTime(ms));
+
+// go2rtc's view of a stream (#16): read from go2rtc's own state, never by probing the camera.
+function feedText(f) {
+  if (!f) return el("span", { class: "muted" }, "unknown: go2rtc isn't running, so the camera's state can't be read");
+  switch (f.state) {
+    case "streaming": return el("span", { class: "good" }, `video flowing (${f.consumers} viewer${f.consumers === 1 ? "" : "s"} through go2rtc)`);
+    case "starting": return el("span", { class: "muted" }, "connecting...");
+    case "idle": return el("span", { class: "muted" }, f.lastVideoAt ? `idle: nobody is watching (last video ${clockTime(f.lastVideoAt)})` : "idle: nobody has watched it since the bridge started");
+    case "stalled": case "down": return el("span", { class: "badtext" }, `${f.reason} (since ${clockTime(f.since)})`);
+    default: return el("span", { class: "muted" }, f.reason || "unknown");
+  }
+}
+const viaText = (v) => (v === "go2rtc" ? "through go2rtc" : "the camera directly");
+function bufferText(p) {
+  if (!p.running) return "off (HomeKit hasn't turned recording on)";
+  const age = p.lastFragmentAt ? `, last fragment ${Math.max(0, Math.round((Date.now() - p.lastFragmentAt) / 1000))} s ago` : ", no video yet";
+  return `running, reading ${viaText(p.via)}${age}`;
 }
 
 const MOTION_LABEL = { "foscam-cgi": "Foscam CGI", onvif: "ONVIF", none: "none" };
@@ -364,7 +380,10 @@ async function renderCameras() {
     } else {
       add("Motion source", MOTION_LABEL[s.motionKind] || s.motionKind);
       add("HKSV", s.hksv ? "on" : "off");
-      add("Network", reachText(s));
+      add("Video", feedText(s.feed));
+      if (s.subFeed) add("Sub stream", feedText(s.subFeed));
+      add("HomeKit reads", s.direct ? el("span", { class: "badtext" }, `the camera directly until ${clockTime(s.direct.until)}: ${s.direct.reason}`) : viaText(s.via));
+      if (s.prebuffer) add("Recording buffer", bufferText(s.prebuffer));
       add("Live viewers", String(s.liveSessions));
       add("Recording", s.recordingActive ? "on" : "off");
       add("Last motion", ago(s.lastMotionAt));
@@ -384,8 +403,8 @@ async function renderCameras() {
       go2rtcRunning() ? null : el("p", { class: "why" }, go2rtcWhy()),
       checkOut));
   }
-  const notes = lastStatus && lastStatus.notices ? lastStatus.notices.filter((n) => /HomeKit is off/.test(n)) : [];
-  app.replaceChildren(el("h1", {}, "Cameras"), ...notes.map((n) => msgBox("amber", n)),
+  const notes = lastStatus && lastStatus.notices ? lastStatus.notices.filter((n) => /HomeKit is off|HomeKit is reading/.test(n)) : [];
+  app.replaceChildren(el("h1", {}, "Cameras"), ...notes.map((n) => msgBox("amber", localTimes(n))),
     r.cameras.length ? grid : el("p", { class: "muted" }, "No cameras in config.json yet. Use Add camera."));
 }
 
@@ -648,8 +667,9 @@ async function renderStatus() {
     add("Dashboard", "not reported by this bridge version");
   }
   add("Cameras", String(s.cameras.length));
+  if (s.homekitSource) add("HomeKit reads", s.homekitSource.mode === "go2rtc" ? localTimes(s.homekitSource.text) : el("span", { class: "badtext" }, "the cameras directly (see Notes)"));
   app.replaceChildren(el("h1", {}, "Status"), facts, el("h2", {}, "Notes"),
-    ...(s.notices && s.notices.length ? s.notices.map((n) => msgBox("amber", n)) : [el("p", { class: "muted" }, "Nothing to report.")]));
+    ...(s.notices && s.notices.length ? s.notices.map((n) => msgBox("amber", localTimes(n))) : [el("p", { class: "muted" }, "Nothing to report.")]));
 }
 
 // ---------- start ----------
