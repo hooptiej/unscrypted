@@ -50,6 +50,19 @@ const probeLoop = async (): Promise<void> => {
 };
 setTimeout(() => void probeLoop(), 500).unref();   // after the bridge's first camera list
 
+// Service lights, on the same interval; a round that's still running is never doubled up.
+let checking = false;
+const serviceLoop = async (): Promise<void> => {
+  if (!checking) {
+    checking = true;
+    try { await rt.pollServices(); }
+    catch (err) { log.error(`service-light round failed (the lights keep their last state, and the page shows how old it is): ${(err as Error).stack ?? err}`); }
+    finally { checking = false; }
+  }
+  setTimeout(() => void serviceLoop(), Math.max(2, rt.settings.pollSeconds || 4) * 1000).unref();
+};
+setTimeout(() => void serviceLoop(), 700).unref();
+
 const server = createDashServer({
   webRoot: path.join(__dirname, "..", "..", "web", "dash"), title,
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",

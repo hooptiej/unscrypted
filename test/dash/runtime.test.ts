@@ -82,3 +82,24 @@ test("a camera dropped from config.json is dropped from the probe state", async 
   assert.deepEqual((rt.state() as any).cameras, {});
   assert.ok(fs.existsSync(rt.settingsFile));
 });
+
+test("service lights reach /api/state with their reasons and a timestamp", async () => {
+  const rt = runtime();
+  assert.deepEqual({ s: (rt.state() as any).services, at: (rt.state() as any).servicesAt }, { s: [], at: null });
+  rt.bridge = { hapEnabled: false, paired: false, go2rtc: { state: "running", lastError: null, nextRetryAt: null } };
+  await rt.pollServices();
+  await rt.pollServices();   // the second miss turns a light red (debounce)
+  const st = rt.state() as any;
+  assert.equal(typeof st.servicesAt, "number");
+  const server = st.services[0];
+  assert.equal(server.name, "Server");
+  const kids = Object.fromEntries(server.children.map((k: any) => [k.id, k]));
+  assert.equal(kids.homekit.name, "HomeKit bridge");
+  assert.equal(kids.homekit.state, "down");
+  assert.match(kids.homekit.reason, /HomeKit is off on this instance/);
+  assert.equal(kids.constructicon.state, "down");
+  assert.match(kids.constructicon.reason, /can't be checked from the NAS's own network yet/);
+  assert.equal(kids.scrypted, undefined, "the Scrypted light is gone (owner Q2 = a)");
+  const reasons = JSON.stringify(st.services, (k, v) => (k === "link" ? undefined : v));
+  assert.doesNotMatch(reasons, /\b\d+\.\d+\.\d+\.\d+\b/, "no addresses in the reasons");
+});

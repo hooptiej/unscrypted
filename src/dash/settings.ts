@@ -14,7 +14,9 @@ export type ServiceCheck =
   | { kind: "tcp"; host: string; port: number }
   | { kind: "alive"; host: string; port: number }
   | { kind: "http"; url: string; ok: "any" | "200" }
-  | { kind: "bridge" };
+  | { kind: "bridge" }
+  /** A light that can't be checked from here yet; it shows red with this reason (owner Q1 = c). */
+  | { kind: "blocked"; reason: string };
 export interface ServiceNode { id: string; name: string; link?: string; rollup?: boolean; check: ServiceCheck; children?: ServiceNode[] }
 export interface DashCameraPref { camera: string; label: string; shown: boolean; stream: "main" | "sub" }
 export interface DashSettings {
@@ -32,6 +34,9 @@ export interface DashSettings {
 export const GRID_MAX = 4;
 export const FONT_FILE = /^[A-Za-z0-9_-]{1,64}\.(otf|ttf|woff2?)$/;
 
+/** Owner Q1 = c: the ipvlan apps can't be reached from the host network yet, and the light says so. */
+export const IPVLAN_REASON = "can't be checked from the NAS's own network yet (it sits on the ipvlan LAN; tracked in hooptiej/unscrypted#11)";
+
 // Hosts as seen from the NAS's own network (unscrypted runs with host networking).
 // Constructicon/Questlog can't be reached from there yet (owner Q1 = c: the lights say why);
 // the old Scrypted light is replaced by the HomeKit bridge's own status (owner Q2 = a).
@@ -39,11 +44,13 @@ export const DEFAULT_SERVICES: ServiceNode[] = [
   { id: "server", name: "Server", rollup: true, check: { kind: "alive", host: "10.0.1.78", port: 80 }, children: [
     { id: "smb", name: "SMB", check: { kind: "tcp", host: "127.0.0.1", port: 445 } },
     { id: "homekit", name: "HomeKit bridge", check: { kind: "bridge" } },
-    { id: "constructicon", name: "Constructicon", link: "http://constructicon.local", check: { kind: "http", url: "http://10.0.1.240/", ok: "any" }, children: [
-      { id: "constructicon-dev", name: "dev", link: "http://10.0.1.241", check: { kind: "http", url: "http://10.0.1.241/", ok: "any" } },
+    // Homedash checked these with http (10.0.1.240/.241 ok any, .250/.246 ok 200). Swap back to
+    // those checks once hooptiej/unscrypted#11 gives the host network a way to reach them.
+    { id: "constructicon", name: "Constructicon", link: "http://constructicon.local", check: { kind: "blocked", reason: IPVLAN_REASON }, children: [
+      { id: "constructicon-dev", name: "dev", link: "http://10.0.1.241", check: { kind: "blocked", reason: IPVLAN_REASON } },
     ] },
-    { id: "questlog", name: "Questlog", link: "http://questlog.local", check: { kind: "http", url: "http://10.0.1.250/", ok: "200" }, children: [
-      { id: "questlog-dev", name: "dev", link: "http://questlog-dev.local", check: { kind: "http", url: "http://10.0.1.246/", ok: "200" } },
+    { id: "questlog", name: "Questlog", link: "http://questlog.local", check: { kind: "blocked", reason: IPVLAN_REASON }, children: [
+      { id: "questlog-dev", name: "dev", link: "http://questlog-dev.local", check: { kind: "blocked", reason: IPVLAN_REASON } },
     ] },
   ] },
 ];

@@ -172,14 +172,19 @@ function svcNode(node) {
 }
 
 let lastServicesJson = "";
-function renderServices(tree) {
+function renderServices(tree, at, serverNow) {
+  // A round older than three intervals (plus slack) means the checks stopped: say so, never pretend.
+  // Both times come from the server, so a kiosk whose clock drifts can't fake a stale panel.
+  const stale = at && serverNow - at > 3 * pollMs + 10000 ? `Status stale since ${clockTime(at)}: the checks stopped answering.` : "";
   // skip identical polls so a click never lands on a node that was just swapped out
-  const json = JSON.stringify(tree);
+  const json = JSON.stringify(tree) + stale;
   if (json === lastServicesJson) return;
   lastServicesJson = json;
   const root = $("svc");
   root.classList.remove("placeholder");
-  root.replaceChildren(...tree.map(svcNode));
+  const kids = tree.map(svcNode);
+  if (stale) { const w = document.createElement("div"); w.className = "why"; w.textContent = stale; kids.push(w); }
+  root.replaceChildren(...kids);
 }
 
 function renderWeather(wx, error) {
@@ -296,7 +301,7 @@ async function pollState() {
   go2rtc = st.go2rtc || null;
   for (const [id, t] of Object.entries(tiles)) t.camSt = (st.cameras || {})[id] || null;
   renderAll();
-  if (st.services && st.services.length) renderServices(st.services);
+  if (st.services && st.services.length) renderServices(st.services, st.servicesAt, st.updated);
   renderWeather(st.weather, st.weatherError);
   setNotice("settings", st.settingsWarning || null);
   if (seenSettingsVersion === null) seenSettingsVersion = st.settingsVersion;
