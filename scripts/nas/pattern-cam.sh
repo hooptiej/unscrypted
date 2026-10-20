@@ -24,8 +24,15 @@ case "${1:-}" in
     if sudo docker ps --format '{{.Names}}' | grep -qx "$NAME"; then sudo docker stop "$NAME"; else echo "$NAME isn't running"; fi
     ;;
   status)
-    echo "clients pulling the pattern (each line = one RTSP connection to :8654):"
-    sudo ss -tnp state established "( dport = :8654 )" | awk 'NR>1 {print $NF}'
+    if ! sudo docker ps --format '{{.Names}}' | grep -qx "$NAME"; then echo "$NAME isn't running" >&2; exit 1; fi
+    # The pattern's own encoder (an ffmpeg child of the rig's go2rtc) publishes into :8654 too; it isn't a client.
+    RIG_PID="$(sudo docker inspect -f '{{.State.Pid}}' "$NAME")"
+    echo "clients pulling the pattern (each line = one RTSP connection to :8654; the rig's own encoder is left out):"
+    sudo ss -tnp state established "( dport = :8654 )" | awk 'NR>1' | while read -r line; do
+      pid="$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' <<<"$line")"
+      if [ -n "$pid" ] && [ "$(ps -o ppid= -p "$pid" | tr -d ' ')" = "$RIG_PID" ]; then continue; fi
+      echo "$line" | awk '{print $NF}'
+    done
     ;;
   *) echo "usage: bash $0 start|stop|status" >&2; exit 2 ;;
 esac
