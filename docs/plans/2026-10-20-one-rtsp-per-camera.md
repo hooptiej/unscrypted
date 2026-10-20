@@ -1602,6 +1602,19 @@ sudo docker exec unscrypted bash -c 'for s in <slug> <slug>_sub; do ffmpeg -hide
 - Feed check: reuse the configured stream; a temp stream only for new or edited URLs, closed right after.
 - Names, bridge identity and pairing are unchanged. The dash is watch-only, the admin signed in. Live video stays WebRTC.
 - No standing dev instance: start `unscrypted-test` on demand and stop it after.
+- **Answers to the 12 questions (owner, 2026-10-20 17:16, verbatim "1y 2y 3 y 4y 5 y 6 y 7 n 8 as stated 9 dont forget the dogcam is also different 10y, 11 we can test that if you have it ready , nbd. 12 check").** These override the "(recommended)" marks below.
+  - **Q1 a:** snapshots through go2rtc from main, with a 10 s cache.
+  - **Q2 a:** `#backchannel=0` on every source.
+  - **Q3 = YES (b), NOT the recommendation:** per-camera fallback. If go2rtc is up but can't get video from one camera, that camera alone goes direct after 3 failures in 2 minutes, for 10 minutes, then retries go2rtc. Same plain-words status as the global fallback.
+  - **Q4 a:** restart go2rtc only when its config text changed, and say so in the save message.
+  - **Q5 a:** idle cameras show "idle: nobody is watching (last video …)", with no checks.
+  - **Q6 a:** an edited-URL feed check is a still frame only.
+  - **Q7 = "n" = no password** on the loopback restream (option a).
+  - **Q8 a:** timings as stated (direct after 15 s down; return after 60 s healthy and at least 2 min direct).
+  - **Q9:** main+sub test on BackyardCamTest (XM), Couch Cam (Foscam) **and DogCamTest** ("dont forget the dogcam is also different": a different model). One at a time, at a moment the owner OKs.
+  - **Q10 a:** a model that fails can't use sub on the dash (greyed out with the reason).
+  - **Q11 = run the prod fallback drill (b)** once 0.4.0 is ready ("we can test that if you have it ready, nbd"), at a quiet moment.
+  - **Q12: done.** The owner set the dash's status checks to 30 s himself (17:12); new connections dropped to 1-2 per camera per 30 s.
 
 ## Open questions for the owner
 
