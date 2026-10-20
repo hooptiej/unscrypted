@@ -68,3 +68,12 @@ test("ping, pong and close pass through", () => {
   const c = Buffer.concat([frame(9, ""), frame(10, ""), frame(8, Buffer.from([3, 232]))]);
   assert.deepEqual((f.push(c) as any).forward, c);
 });
+
+test("refuses compressed (RSV-bit) frames and malformed control frames", () => {
+  const rsv = frame(1, offer);
+  rsv[0] |= 0x40;   // permessage-deflate's RSV1: the filter would be reading compressed bytes
+  assert.match((new ClientFrameFilter().push(rsv) as any).reject, /compressed/);
+  assert.match((new ClientFrameFilter().push(frame(9, "x", false)) as any).reject, /control frame/);
+  assert.match((new ClientFrameFilter().push(frame(9, "x".repeat(126))) as any).reject, /control frame/);
+  assert.ok("forward" in new ClientFrameFilter().push(frame(9, "ping")), "a normal ping still passes");
+});
