@@ -8,7 +8,7 @@ import { DashBridgeInfo, DashCamera } from "./ipc";
 import { DashSettings, loadSettings, effectiveCameras } from "./settings";
 import { PublicConfig } from "./server";
 import { Logger } from "../logger";
-import { tcpProbe } from "./services";
+import { tcpProbe, ServiceWatcher, LightNode } from "./services";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
 
@@ -23,6 +23,10 @@ export class DashRuntime {
   readonly settingsFile: string;
   /** Per tile (keyed by the camera's main stream name): can we reach its RTSP port? */
   private camState = new Map<string, CamState>();
+  /** The service-light tree from the last status round, and when it finished (null = not yet). */
+  services: LightNode[] = [];
+  servicesAt: number | null = null;
+  private watcher = new ServiceWatcher();
 
   constructor(private readonly o: DashRuntimeOptions) {
     this.settingsFile = path.join(o.dir, "settings.json");
@@ -63,6 +67,12 @@ export class DashRuntime {
     for (const k of [...this.camState.keys()]) if (!keep.has(k)) this.camState.delete(k);
   }
 
+  /** One round of service checks. Never throws (every check turns its failure into a reason). */
+  async pollServices(): Promise<void> {
+    this.services = await this.watcher.poll(this.settings.services, () => this.bridge);
+    this.servicesAt = Date.now();
+  }
+
   allowedStreams(): Set<string> {
     const s = new Set<string>();
     for (const c of this.cameras) { s.add(c.main); if (c.sub) s.add(c.sub); }
@@ -81,6 +91,7 @@ export class DashRuntime {
 
   state(): Record<string, unknown> {
     return { updated: Date.now(), settingsVersion: this.settingsMtime, settingsWarning: this.settingsWarning,
-      bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState) };
+      bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
+      services: this.services, servicesAt: this.servicesAt };
   }
 }
