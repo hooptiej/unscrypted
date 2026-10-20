@@ -302,7 +302,10 @@ async function pollState() {
   for (const [id, t] of Object.entries(tiles)) t.camSt = (st.cameras || {})[id] || null;
   renderAll();
   if (st.services && st.services.length) renderServices(st.services, st.servicesAt, st.updated);
-  renderWeather(st.weather, st.weatherError);
+  const wxErr = st.weatherError
+    ? (st.weatherErrorSince ? `Weather ${st.weather ? "not updated" : "unavailable"} since ${clockTime(st.weatherErrorSince)}: ${st.weatherError}` : st.weatherError)
+    : null;
+  renderWeather(st.weather, wxErr);
   setNotice("settings", st.settingsWarning || null);
   if (seenSettingsVersion === null) seenSettingsVersion = st.settingsVersion;
   else if (st.settingsVersion !== seenSettingsVersion) {
