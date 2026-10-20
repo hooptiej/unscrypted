@@ -99,6 +99,19 @@ test("pages carry the title and security headers", async () => {
   assert.equal(api.headers.get("x-content-type-options"), "nosniff");
 });
 
+test("shipped pane files exist and contain nothing the CSP would block", () => {
+  const root = path.join(__dirname, "../../web/admin");
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+  assert.match(html, /<title>__TITLE__<\/title>/);
+  assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i, "no inline <script>");
+  assert.doesNotMatch(html, /\sstyle=|<style/i, "no inline styles");
+  assert.doesNotMatch(html, /\son[a-z]+=/i, "no inline event handlers");
+  const js = fs.readFileSync(path.join(root, "app.js"), "utf8");
+  assert.doesNotMatch(js, /innerHTML|insertAdjacentHTML|document\.write|eval\(/, "server text never goes in as HTML");
+  const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
+  assert.match(css, /--accent:\s*#7a8a2e/);
+});
+
 test("healthz needs no sign-in", async () => {
   const r = await fetch(base + "/healthz");
   assert.equal(r.status, 200);
