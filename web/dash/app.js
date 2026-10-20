@@ -306,7 +306,7 @@ async function pollState() {
     ? (st.weatherErrorSince ? `Weather ${st.weather ? "not updated" : "unavailable"} since ${clockTime(st.weatherErrorSince)}: ${st.weatherError}` : st.weatherError)
     : null;
   renderWeather(st.weather, wxErr);
-  setNotice("settings", [st.settingsWarning, ...(st.notices || [])].filter(Boolean).join("  ·  ") || null);
+  setNotice("settings", [st.settingsWarning, ...(st.notices || [])].filter(Boolean).join("  Â·  ") || null);
   if (seenSettingsVersion === null) seenSettingsVersion = st.settingsVersion;
   else if (st.settingsVersion !== seenSettingsVersion) {
     if ($("full").classList.contains("gone")) location.reload(); else reloadWhenClosed = true;
@@ -402,7 +402,7 @@ async function loadPhotos() {
   }
   if (!data.items.length) {
     // The server may still be fetching the album list after a restart: look again soon.
-    photoPlaceholder(data.error || "Loading photos… (the album is still being fetched)");
+    photoPlaceholder(data.error || "Loading photosâ€¦ (the album is still being fetched)");
     setTimeout(loadPhotos, 30000);
     return;
   }
