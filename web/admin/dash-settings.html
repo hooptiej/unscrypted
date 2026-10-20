@@ -26,7 +26,7 @@
       <h2>Fonts</h2>
       <div class="row"><label for="fontUi">Interface font</label><select id="fontUi"></select></div>
       <div class="row"><label for="fontClock">Clock font</label><select id="fontClock"></select></div>
-      <div class="preview" id="preview">7:42 AM<small id="previewName"></small></div>
+      <div class="preview" id="preview"><span id="previewTime"></span><small id="previewName"></small></div>
       <p class="hint">"Fonts folder" lists the font files in data/dash/fonts on the NAS (names from names.json there). To add one, drop the file in that folder and reload this page.</p>
     </section>
     <section>
@@ -40,10 +40,15 @@
   <div class="col">
     <section>
       <h2>Cameras</h2>
-      <div class="camhead"><span>Label on the dashboard</span><span>HomeKit name</span><span>Shown</span><span>Stream</span><span></span></div>
+      <div class="camhead"><span>Label on the dashboard</span><span>HomeKit name</span><span>Shown</span><span>Dashboard stream</span><span></span></div>
       <div id="cams"></div>
       <p class="hint" id="gridhint"></p>
-      <p class="hint">Labels show only on the dashboard; each camera's HomeKit name stays as it is. Cameras and their addresses are edited in the admin pane's Cameras tab.</p>
+      <p class="hint">Labels show only on the dashboard; each camera's HomeKit name stays as it is. Dashboard stream: what the dashboard tile plays; HomeKit isn't affected. Cameras and their addresses are edited in the admin pane's Cameras tab.</p>
+    </section>
+    <section>
+      <h2>Status lights</h2>
+      <div id="lights" class="lights"><p class="hint">Loading the dashboard's status lights...</p></div>
+      <p class="hint">The dashboard shows a short label under each light that isn't green; the full reason is here (and on a tap there).</p>
     </section>
   </div>
 

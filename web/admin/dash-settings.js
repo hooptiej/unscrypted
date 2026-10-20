@@ -99,6 +99,39 @@ async function updatePreview() {
   $("preview").style.fontFamily = clock;
   document.body.style.fontFamily = ui;
 }
+/* The preview shows the live time (a fixed sample read like a broken clock), in the dashboard's format. */
+function tickPreview() {
+  $("previewTime").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/* ---------- status lights: each one's full reason (the wall shows a short label) ---------- */
+function renderLights(l) {
+  const box = $("lights");
+  if (!l || l.error || !Array.isArray(l.services)) {
+    const p = document.createElement("p");
+    p.className = "hint warn";
+    p.textContent = (l && l.error) || "The server sent no status lights (an older version?). Reload the page.";
+    box.replaceChildren(p);
+    return;
+  }
+  const rows = [];
+  const walk = (ns, depth) => ns.forEach((n) => {
+    const row = document.createElement("div");
+    row.className = "l";
+    row.style.paddingLeft = `calc(${depth * 26}*var(--u))`;
+    const dot = document.createElement("span");
+    dot.className = `dot ${n.state}`;
+    const full = document.createElement("span");
+    full.className = "full";
+    full.textContent = n.state === "ok" ? "" : (n.reason || n.short || "no reason given (a bug: please report it)");
+    row.append(dot, n.name, full);
+    rows.push(row);
+    walk(n.children || [], depth + 1);
+  });
+  walk(l.services, 0);
+  if (!rows.length) { const p = document.createElement("p"); p.className = "hint"; p.textContent = "No status lights are set up."; rows.push(p); }
+  box.replaceChildren(...rows);
+}
 
 /* ---------- cameras ---------- */
 function updateGrid() {
@@ -180,6 +213,7 @@ function render(data) {
   fontSelect($("fontClock"), "clock", s.fonts.clock);
   void updatePreview();
   $("cams").replaceChildren(...data.cameras.map(camRow));
+  renderLights(data.lights);
   updateGrid();
   $("phSource").value = s.photos.source;
   $("phUrl").value = s.photos.icloudUrl;
@@ -247,6 +281,8 @@ function startIdleReturn(total) {
 }
 
 async function init() {
+  tickPreview();
+  setInterval(tickPreview, 1000);
   if (/TEST/.test(document.title)) $("env").hidden = false;
   ["input", "change"].forEach((e) => document.addEventListener(e, () => { dirty = true; }, true));
   $("fontUi").addEventListener("change", () => void updatePreview());
