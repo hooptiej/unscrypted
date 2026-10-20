@@ -1,6 +1,6 @@
 {
   "name": "unscrypted",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "A from-scratch, self-hosted bridge that exposes IP cameras to Apple HomeKit, including HomeKit Secure Video (HKSV). A Scrypted replacement.",
   "license": "MIT",

@@ -33,6 +33,9 @@ run.log
 # deployment folders (real config + pairing state) and local pairing artifacts
 config/
 data/
+# admin password (secrets/admin_password); only the placeholder is tracked
+secrets/*
+!secrets/.gitkeep
 run.*
 qr*.png
 

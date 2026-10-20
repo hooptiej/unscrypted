@@ -124,8 +124,9 @@ Runs ffmpeg against a generated test pattern through the real fragmented-MP4 →
 ### Docker (e.g. TrueNAS)
 
 ```bash
-mkdir -p config data
+mkdir -p config data secrets
 cp config.example.json config/config.json   # edit it
+openssl rand -base64 18 > secrets/admin_password && chmod 600 secrets/admin_password   # admin pane sign-in
 docker compose up -d --build
 docker compose logs -f                       # watch for the pairing QR / code
 ```
@@ -137,11 +138,46 @@ Two folders sit next to the compose file:
 | Folder | Mounted at | Holds |
 |---|---|---|
 | `./config` | `/config` | `config.json` (camera passwords: gitignored, never commit it). |
-| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. |
+| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. Also `admin-session.key`, the admin pane's sign-in key (made on first start, mode 600; deleting it only signs everyone out). |
+| `./secrets` | `/run/secrets` (read-only) | `admin_password`: one line, the admin pane's password (gitignored, mode 600). |
 
 The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir` in `config.json`. If the keys are found in the ignored `persistDir` while `/data/persist` is empty, the bridge refuses to start and says which files to copy where, rather than starting as a new bridge (#4).
 
 **Upgrading from 0.1.0** (config mounted as a single file, keys possibly in an anonymous volume at `/config/persist`): back up the keys from the running container first, then move `config.json` into `./config/` and copy the keys into `./data/persist/` before the first start of the new version. Check `docker inspect unscrypted` for a volume mounted at `/config`.
+
+## Admin pane
+
+A small web page for the cameras, served by the same container: `http://<host>:8190` (on the NAS, `http://10.0.1.78:8190`).
+
+- **Sign-in:** the password is the one line in `./secrets/admin_password`. Sessions last 30 days and survive restarts (the signing key is kept in `./data/admin-session.key`). Five wrong passwords from one computer pause sign-in there for 5 minutes. If the password file is missing or empty, or the key file is unreadable or the wrong size, the pane says so and what to do; the HomeKit bridge keeps running either way.
+- **What it does:** list cameras (passwords are never sent to the browser; they show as set, and URLs show `rtsp://user:***@host/...`), check a feed (a test frame through the bundled go2rtc), a live preview (MSE), edit a camera, add a camera, and show the pairing code and bridge status.
+- **How changes take effect:** logins, stream addresses and motion timings apply live to that one camera. New cameras are added live. Changes that Home itself sees (HKSV on/off, prebuffer, motion source type, model) are saved and wait for **Restart bridge** (about 30 seconds of "No Response" in Home).
+- **Don't rename cameras.** A camera's name is its identity in Home: renaming it would make Home see a new camera and drop the old one's room, settings and recordings. The pane refuses renames and warns that a new camera's name is permanent. Don't rename them by hand in `config.json` either.
+- **go2rtc** (1.9.14, pinned by version and SHA-256 in the Dockerfile) runs inside the container for feed checks and previews only. Its API listens on `127.0.0.1` and is reached only through the signed-in pane. HomeKit streaming doesn't use it.
+- The admin pane and go2rtc run as supervised child processes: if either crashes it's restarted with backoff (1 s doubling to 60 s), and HomeKit is unaffected.
+
+### Ports
+
+| Port | What | Where it listens |
+|---|---|---|
+| `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces |
+| `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces |
+| `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
+| `8099-8102/tcp` | ONVIF push notifications (`onvif.notifyPort`) | all interfaces |
+| Test instance | admin `8191`, go2rtc API `127.0.0.1:1987`, no HomeKit | |
+
+### Test instance
+
+`docker-compose.test.yml` runs a second copy for trying changes before they reach the real bridge. It runs with **HomeKit off** (`UNSCRYPTED_HAP=off`): it never publishes a bridge and never starts motion sources, so it can't appear in the family's Home app or take prod's ONVIF port. Its page title is `unscrypted admin - TEST`.
+
+Run it from its own folder (on the NAS, `~/unscrypted-test`), with its own `config/`, `data/` and `secrets/`:
+
+```bash
+cd ~/unscrypted-test
+sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypted-test up -d --build
+```
+
+The `-p unscrypted-test` project name and the `unscrypted-test` container name keep it apart from prod. The test instance pulls the same cameras over RTSP while you use it, so each camera has one more viewer for that time.
 
 ## HomeKit codec constraints (as implemented)
 

@@ -10,6 +10,7 @@ config.local.json
 .vscode
 .idea
 config
+secrets
 test
 docs
 .claude
