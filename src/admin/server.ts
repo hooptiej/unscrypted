@@ -62,7 +62,7 @@ const STREAM_NAME = /^[a-z0-9_]{1,64}$/;
 const GO2RTC_FILES = new Set(["/video-rtc.js", "/video-stream.js"]);
 const FEEDCHECK_NAME = "__feedcheck__";
 
-function securityHeaders(req: http.IncomingMessage): Record<string, string> {
+export function securityHeaders(req: http.IncomingMessage): Record<string, string> {
   const host = /^[A-Za-z0-9.\-:[\]]+$/.test(req.headers.host ?? "") ? req.headers.host! : "";
   const ws = host ? ` ws://${host} wss://${host}` : "";
   return {
@@ -166,6 +166,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
     }
     if (s.go2rtc.state !== "running") {
       notes.push(`go2rtc is ${s.go2rtc.state}${s.go2rtc.lastError ? ` (${s.go2rtc.lastError})` : ""}: snapshots, feed checks and live previews are unavailable. HomeKit is unaffected.`);
+    }
+    if (s.dash && s.dash.state !== "running") {
+      notes.push(`The dashboard is ${s.dash.state}${s.dash.lastError ? ` (${s.dash.lastError})` : ""}: the living-room display can't load until it's back. HomeKit is unaffected.`);
     }
     try {
       const ports = [...new Set(readRawConfig(d.configPath).cameras.filter((c) => c.onvif).map((c) => c.onvif!.notifyPort ?? 0))];

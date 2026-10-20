@@ -177,6 +177,7 @@ async function main(): Promise<void> {
   const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
   const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
   const go2rtcWebrtc = envPort("UNSCRYPTED_GO2RTC_WEBRTC_PORT", 8557, log);
+  const dashPort = envPort("UNSCRYPTED_DASH_PORT", 8180, log);
   const runtime = new BridgeRuntime({
     config,
     configPath: resolvedConfigPath,
@@ -200,6 +201,16 @@ async function main(): Promise<void> {
       enabled: process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null,
       disabledReason: go2rtcApi.error ?? undefined,
     },
+    dash: {
+      // 0.0.0.0 = every address on the host; a single LAN IP (e.g. its own alias on port 80) also works.
+      host: process.env.UNSCRYPTED_DASH_HOST || "0.0.0.0",
+      port: dashPort.port,
+      enabled: process.env.UNSCRYPTED_DASH !== "off" && dashPort.error === null,
+      // The dashboard's settings, fonts and photo cache sit beside the pairing state in ./data.
+      dir: process.env.UNSCRYPTED_DASH_DIR ?? path.join(path.dirname(config.persistDir), "dash"),
+      title: process.env.UNSCRYPTED_DASH_TITLE,
+      disabledReason: dashPort.error ?? undefined,
+    },
     requestRestart: (reason) => void shutdown(reason),
   });
   try {
@@ -207,7 +218,7 @@ async function main(): Promise<void> {
   } catch (err) {
     // The pane and go2rtc are extras: failing to start them must not stop HomeKit.
     log.error(
-      `admin pane / go2rtc failed to start (HomeKit bridge keeps running without them): ${(err as Error).stack ?? err}`,
+      `admin pane / dashboard / go2rtc failed to start (HomeKit bridge keeps running without them): ${(err as Error).stack ?? err}`,
     );
   }
 
@@ -222,7 +233,7 @@ async function main(): Promise<void> {
     try {
       await runtime.stop();
     } catch (err) {
-      log.warn(`error stopping the admin pane / go2rtc: ${(err as Error).message}`);
+      log.warn(`error stopping the admin pane / dashboard / go2rtc: ${(err as Error).message}`);
     }
     for (const cam of cameras) {
       cam.shutdown();
