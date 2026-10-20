@@ -77,3 +77,20 @@ test("client times out loudly when go2rtc doesn't answer", async () => {
     srv.close();
   }
 });
+
+test("reload restarts go2rtc only when its config text changed (or when forced)", async () => {
+  const dir = tempDir("unscr-g2r-");
+  const m = new Go2rtcManager({ binary: path.join(dir, "no-such-go2rtc"), runtimeDir: path.join(dir, "rt"),
+    ports: { api: 1999, webrtc: null, rtsp: 8554 }, log });
+  let starts = 0, stops = 0;
+  (m as any).sup = { status: () => ({ state: "running" }), start: () => { starts++; }, stop: async () => { stops++; } };
+  const cfg = { cameras: [{ name: "Cam", rtspMain: "rtsp://h/1", audio: false }] } as any;
+  m.start(cfg);
+  assert.equal(starts, 1);
+  assert.deepEqual(await m.reload(cfg), { restarted: false });
+  assert.equal(stops, 0, "same YAML: no restart, HomeKit's buffers keep running");
+  assert.deepEqual(await m.reload(cfg, { force: true }), { restarted: true });
+  assert.deepEqual(await m.reload({ cameras: [{ name: "Cam", rtspMain: "rtsp://h/2", audio: false }] } as any), { restarted: true });
+  assert.equal(stops, 2);
+  assert.equal(starts, 3);
+});
