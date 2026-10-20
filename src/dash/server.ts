@@ -12,6 +12,7 @@ import { UserError, UserErrorBody, toErrorJson } from "../admin/errors";
 import { securityHeaders } from "../admin/server";
 import { Logger } from "../logger";
 import { ClientFrameFilter } from "./wsFilter";
+import { PHOTO_EXT } from "./photos";
 
 export interface PublicConfig {
   title: string; env: "prod" | "test"; adminPort: number;
@@ -30,6 +31,9 @@ export interface DashDeps {
   /** Stream names the open page may play: main/sub of every camera in config.json. */
   allowedStreams: () => Set<string>;
   go2rtcInfo: () => { state: string; lastError: string | null; nextRetryAt: number | null };
+  /** The slideshow list (opaque ids only) and why it's short or empty. */
+  photos: () => { items: { id: string; v: number }[]; album: string; rotateSeconds: number; error: string | null };
+  /** The file behind a published photo id, or null. Never a path the caller made up. */
   photoFile: (id: string) => string | null;
   fontsDir: string;
   /** Live views open at once through this server (default 16). */
@@ -108,6 +112,18 @@ export function createDashServer(d: DashDeps): http.Server {
       }
       if (url.pathname === "/api/config") return json(res, 200, d.publicConfig());
       if (url.pathname === "/api/state") return json(res, 200, d.state());
+      if (url.pathname === "/api/photos") return json(res, 200, d.photos());
+      if (url.pathname.startsWith("/api/photo/")) {
+        attempted = "Load a slideshow photo";
+        const id = url.pathname.slice("/api/photo/".length);
+        const file = /^[0-9a-f]{12}$/.test(id) ? d.photoFile(id) : null;
+        const notThere = () => new UserError({ attempted, happened: "That photo isn't in the slideshow any more (the album or folder changed).", changed: "Nothing.", next: "Nothing to do; the slideshow moves on to the next photo." }, 404);
+        if (!file) throw notThere();
+        let body: Buffer;
+        try { body = fs.readFileSync(file); } catch { throw notThere(); }
+        res.writeHead(200, { "content-type": PHOTO_EXT[path.extname(file).toLowerCase()] ?? "image/jpeg", "content-length": String(body.length) });
+        return res.end(body);
+      }
       if (url.pathname.startsWith("/go2rtc/")) {
         attempted = "Load the camera player";
         const sub = url.pathname.slice("/go2rtc".length);

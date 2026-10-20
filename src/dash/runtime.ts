@@ -9,6 +9,7 @@ import { DashSettings, loadSettings, effectiveCameras } from "./settings";
 import { PublicConfig } from "./server";
 import { Logger } from "../logger";
 import { tcpProbe, ServiceWatcher, LightNode } from "./services";
+import { PhotoLibrary } from "./photos";
 import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
@@ -32,6 +33,8 @@ export class DashRuntime {
   weather: Weather | null = null;
   weatherError: string | null = null;
   weatherErrorSince: number | null = null;
+  readonly photos = new PhotoLibrary();
+  get photoCacheDir(): string { return path.join(this.o.dir, "cache", "icloud"); }
   private wxLoc: { key: string; loc: { lat: number; lon: number; label: string } | null } | null = null;
 
   constructor(private readonly o: DashRuntimeOptions) {
@@ -108,6 +111,10 @@ export class DashRuntime {
       this.o.log.warn(`weather: ${msg} (retrying in 60 s)`);
       return 60;
     }
+  }
+
+  photoList(): { items: { id: string; v: number }[]; album: string; rotateSeconds: number; error: string | null } {
+    return { ...this.photos.list(), rotateSeconds: this.settings.photos.rotateSeconds };
   }
 
   allowedStreams(): Set<string> {

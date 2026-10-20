@@ -375,6 +375,8 @@ function showNextPhoto() {
     slides[photoFront].classList.remove("on");
     photoFront = 1 - photoFront;
   };
+  // A photo that won't load (gone since the list was fetched) is skipped, never left as a frozen tile.
+  incoming.onerror = () => setTimeout(showNextPhoto, 2000);
   incoming.src = `/api/photo/${item.id}?v=${item.v}`;
 }
 
@@ -391,14 +393,19 @@ async function loadPhotos() {
   try {
     const r = await fetch("/api/photos", { cache: "no-store" });
     const body = await r.json().catch(() => null);
-    if (r.status === 404) { photoPlaceholder("Photo slideshow: not in this build yet"); return; }
     if (!r.ok) throw new Error(body && body.error ? body.error.happened : `the server answered ${r.status}`);
     data = body;
   } catch (err) {
-    photoPlaceholder(`Photos didn't load (${err.message}). Retrying in 15 minutes.`);
+    photoPlaceholder(`Photos didn't load (${err.message}). Retrying in 30 s.`);
+    setTimeout(loadPhotos, 30000);
     return;
   }
-  if (!data.items.length) { photoPlaceholder(data.error || "No photos yet: add some in the dashboard settings."); return; }
+  if (!data.items.length) {
+    // The server may still be fetching the album list after a restart: look again soon.
+    photoPlaceholder(data.error || "Loading photos… (the album is still being fetched)");
+    setTimeout(loadPhotos, 30000);
+    return;
+  }
   photoItems = shuffled(data.items);
   photoIdx = -1;
   if (!photoBox.contains(slides[0])) {

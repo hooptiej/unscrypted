@@ -83,12 +83,29 @@ setInterval(() => {
 }, 5000).unref();
 setTimeout(() => void weatherLoop(), 1000).unref();
 
+// Photos: every refreshMinutes, a minute after an error, and at once when the photo settings change.
+let phKey = "";
+let phTimer: NodeJS.Timeout | null = null;
+const photoKey = () => { const p = rt.settings.photos; return JSON.stringify([p.source, p.folder, p.icloudUrl, p.maxPhotos, p.caption]); };
+const photoLoop = async (): Promise<void> => {
+  phTimer = null;
+  phKey = photoKey();
+  try { await rt.photos.refresh(rt.settings.photos, rt.photoCacheDir); }
+  catch (err) { log.error(`photo refresh failed unexpectedly: ${(err as Error).stack ?? err}`); }
+  const e = rt.photos.list().error;
+  if (e) log.warn(e);
+  phTimer = setTimeout(() => void photoLoop(), rt.photos.retrySoon ? 60_000 : Math.max(1, rt.settings.photos.refreshMinutes || 30) * 60_000);
+  phTimer.unref();
+};
+setInterval(() => { if (phTimer && photoKey() !== phKey) { clearTimeout(phTimer); void photoLoop(); } }, 5000).unref();
+setTimeout(() => void photoLoop(), 1500).unref();
+
 const server = createDashServer({
   webRoot: path.join(__dirname, "..", "..", "web", "dash"), title,
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
   publicConfig: () => rt.publicConfig(), state: () => rt.state(), allowedStreams: () => rt.allowedStreams(),
   go2rtcInfo: () => rt.bridge?.go2rtc ?? { state: "unknown", lastError: "the bridge hasn't reported yet", nextRetryAt: null },
-  photoFile: () => null, fontsDir: path.join(dir, "fonts"), log,
+  photos: () => rt.photoList(), photoFile: (id) => rt.photos.file(id), fontsDir: path.join(dir, "fonts"), log,
 });
 listenDash(server, host, port).then(
   () => {
