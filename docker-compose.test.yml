@@ -4,6 +4,7 @@
 #
 #   sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypted-test up -d --build
 #
+# Dashboard: http://<host>:8181, tab title "Homedash - TEST".
 # Admin pane: http://<host>:8191 (live preview video on go2rtc WebRTC port 8558), tab title "unscrypted admin - TEST". Rebuild to test changes.
 services:
   unscrypted:
@@ -16,3 +17,9 @@ services:
       - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8558
       - UNSCRYPTED_ADMIN_TITLE=unscrypted admin - TEST
       - UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted-test
+      - UNSCRYPTED_DASH_PORT=8181
+      - UNSCRYPTED_DASH_TITLE=Homedash - TEST
+    volumes:
+      # Page-only fast loop on the test instance: edit web/dash on the box, reload the browser, no
+      # rebuild. Test only; prod keeps the page baked into the image.
+      - ./web/dash:/app/web/dash:ro

@@ -6,7 +6,9 @@
 #
 # Bring up:   docker compose up -d --build
 # Logs / pairing code:   docker compose logs -f
-# Redeploy after a pull: git pull && docker compose up -d --build
+# Redeploy: copy the new files in, then docker compose up -d --build
+# Admin pane: http://<host>:8190 (password in ./secrets/admin_password).
+# Dashboard: http://<host>:8180 (watch-only, no sign-in).
 
 services:
   unscrypted:
@@ -29,3 +31,10 @@ services:
       - UNSCRYPTED_CONFIG=/config/config.json
       - UNSCRYPTED_PERSIST_DIR=/data/persist
       - UNSCRYPTED_LOG_LEVEL=info
+      - UNSCRYPTED_ADMIN_PORT=8190
+      - UNSCRYPTED_GO2RTC_API_PORT=1986
+      - UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password
+      - UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key
+      # The open, watch-only living-room dashboard (no sign-in). Its settings live in ./data/dash.
+      # UNSCRYPTED_DASH_HOST picks one address (default 0.0.0.0, every address); UNSCRYPTED_DASH=off turns it off.
+      - UNSCRYPTED_DASH_PORT=8180
