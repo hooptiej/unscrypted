@@ -24,7 +24,8 @@ let bridgeReply: (m: any) => any = (m) => ({ type: "applied", reqId: "x", ok: tr
 const status = (over: Partial<BridgeStatus> = {}): BridgeStatus => ({
   bridgeName: "U", pin: "031-45-154", setupURI: "X-HM://0023ISYWYUNSC", paired: false, hapPort: 51826, hapEnabled: true,
   cameras: [], startedAt: Date.now(), version: "test",
-  go2rtc: { name: "go2rtc", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 }, ...over,
+  go2rtc: { name: "go2rtc", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 },
+  dash: { name: "dash", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 }, ...over,
 });
 let currentStatus: BridgeStatus | null = status();
 

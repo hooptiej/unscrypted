@@ -519,6 +519,12 @@ async function renderStatus() {
   add("Paired", s.hapEnabled ? (s.paired ? "yes" : "not yet") : "n/a (HomeKit off)");
   add("go2rtc", `${s.go2rtc.state}, ${s.go2rtc.restarts} restart${s.go2rtc.restarts === 1 ? "" : "s"}`);
   add("go2rtc last error", s.go2rtc.lastError || "none");
+  if (s.dash) {
+    add("Dashboard", `${s.dash.state}, ${s.dash.restarts} restart${s.dash.restarts === 1 ? "" : "s"}`);
+    add("Dashboard last error", s.dash.lastError || "none");
+  } else {
+    add("Dashboard", "not reported by this bridge version");
+  }
   add("Cameras", String(s.cameras.length));
   app.replaceChildren(el("h1", {}, "Status"), facts, el("h2", {}, "Notes"),
     ...(s.notices && s.notices.length ? s.notices.map((n) => msgBox("amber", n)) : [el("p", { class: "muted" }, "Nothing to report.")]));
