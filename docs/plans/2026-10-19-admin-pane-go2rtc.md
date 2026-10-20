@@ -1844,7 +1844,7 @@ Owner, 2026-10-20 06:20 MDT: "go !" (accepting the recommendations offered for q
 - **Admin server:** a separate supervised child process in the same container (the "Your call" in the planning report).
 - **Sign-in key (2026-10-20):** "keep the sign-in key in ./data so sign-ins survive restarts." The session-signing key is made once (32 random bytes, mode 0600) at `<persistDir's parent>/admin-session.key` (`/data/admin-session.key` in Docker; `UNSCRYPTED_ADMIN_KEY_FILE` overrides) and read on every start. A key file that can't be read or has the wrong length is refused with a 503 saying what to do (delete it and restart), never quietly replaced; HomeKit is unaffected. The key is never logged.
 - **Not yet answered:**
-  - **Q5** (keep the test instance after #2): ask at the end of Phase 3.
+  - **Q5** answered (owner, 2026-10-20 08:14): keep `unscrypted-test` running "till we get a standing build in prod".
   - **Q6** (go2rtc version): go with the recommended 1.9.14 pin unless the owner says otherwise.
   - **Q7** (NAS git clone): not needed for this build; ask before touching the NAS layout.
 
