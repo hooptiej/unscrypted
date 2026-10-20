@@ -257,19 +257,64 @@ test("feed check with go2rtc down says so plainly", async () => {
   } finally { currentStatus = status(); }
 });
 
-test("feed check registers a temp stream, grabs a frame, writes nothing", async () => {
+test("feed check of an edited address: one temp stream, closed before the answer, frame kept in memory, nothing written", async () => {
   const s = await login();
   const before = readCfg();
+  g2Calls.length = 0;
   const r = await send("POST", "/api/cameras/check", { name: "Garage", edit: { rtspMain: "rtsp://admin:***@10.0.0.3:554/13" } }, s);
   assert.equal(r.status, 200);
   const j = await r.json();
-  assert.match(j.stream, /^check_[0-9a-f]+$/);
-  const put = g2Calls.find((c) => c.startsWith("PUT /api/streams") && c.includes(j.stream))!;
-  assert.ok(decodeURIComponent(put).includes("rtsp://admin:s3cret@10.0.0.3:554/13"), "stored password merged in for the check");
+  assert.equal(j.reused, false);
+  assert.equal(j.wsUrl, null, "an edited address gets a still frame only (Q6)");
+  assert.match(j.frameUrl, /^\/api\/cameras\/check\/[0-9a-f]{16}\/frame\.jpg$/);
+  const put = g2Calls.findIndex((c) => c.startsWith("PUT /api/streams") && c.includes("name=check_"));
+  assert.ok(put >= 0);
+  assert.ok(decodeURIComponent(g2Calls[put]).includes("rtsp://admin:s3cret@10.0.0.3:554/13"), "stored password merged in for the check");
+  const frame = g2Calls.findIndex((c) => c.startsWith("GET /api/frame.jpeg?src=check_"));
+  const del = g2Calls.findIndex((c) => c.startsWith("DELETE /api/streams?src=check_"));
+  assert.ok(put < frame && frame < del, `PUT, frame, DELETE in that order, all before the answer: ${g2Calls.join(", ")}`);
   assert.equal(readCfg(), before);
-  const del = await send("DELETE", `/api/cameras/check/${j.stream}`, undefined, s);
-  assert.equal(del.status, 200);
-  assert.ok(g2Calls.some((c) => c.startsWith("DELETE /api/streams")));
+  const img = await fetch(base + j.frameUrl, { headers: { cookie: s.cookie } });
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get("content-type"), "image/jpeg");
+  assert.equal(img.headers.get("cache-control"), "no-store");
+  assert.deepEqual([...Buffer.from(await img.arrayBuffer())], [0xff, 0xd8, 0xff, 0xd9]);
+  assert.equal((await fetch(base + j.frameUrl)).status, 401, "signed out");
+  const gone = await fetch(base + "/api/cameras/check/0123456789abcdef/frame.jpg", { headers: { cookie: s.cookie } });
+  assert.equal(gone.status, 404);
+  const e = (await gone.json()).error;
+  assert.match(e.happened, /expired/); assert.ok(e.attempted && e.changed && e.next);
+  const old = await send("DELETE", "/api/cameras/check/check_abcd1234", undefined, s);
+  assert.equal(old.status, 200);
+  assert.match((await old.json()).message, /Nothing to close/);
+});
+
+test("feed check of an unchanged camera reuses its configured stream: no temp stream at all", async () => {
+  const s = await login();
+  currentStatus = status({ cameras: [{ name: "Garage", stream: "garage" } as any] });
+  g2Calls.length = 0;
+  try {
+    const r = await send("POST", "/api/cameras/check", { name: "Garage", edit: {} }, s);
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.deepEqual([j.reused, j.stream, j.wsUrl], [true, "garage", "/go2rtc/api/ws?src=garage"]);
+    assert.deepEqual(g2Calls, ["GET /api/frame.jpeg?src=garage"]);
+    assert.equal((await fetch(base + j.frameUrl, { headers: { cookie: s.cookie } })).status, 200);
+  } finally { currentStatus = status(); }
+});
+
+test("a failing temp-stream check still closes the test stream and explains in plain words", async () => {
+  frameFails = "dial tcp 10.0.0.9:554: i/o timeout";
+  g2Calls.length = 0;
+  try {
+    const s = await login();
+    const r = await send("POST", "/api/cameras/check", { edit: { name: "New", rtspMain: "rtsp://u:x@10.0.0.9/1" } }, s);
+    assert.equal(r.status, 502);
+    const e = (await r.json()).error;
+    assert.match(e.happened, /didn't answer/);
+    assert.match(e.changed, /test connection was closed/);
+    assert.ok(g2Calls.some((c) => c.startsWith("DELETE /api/streams?src=check_")), "temp stream deleted even though the frame failed");
+  } finally { frameFails = null; }
 });
 
 test("feed check for a new camera and a failing camera explains the failure", async () => {

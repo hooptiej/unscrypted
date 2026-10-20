@@ -419,13 +419,14 @@ async function checkFeed(name, edit, out, btn) {
   btn.disabled = false;
   btn.textContent = label;
   if (r.error) { out.replaceChildren(errorBox(r.error)); return; }
-  const tile = el("div", { class: "tile" }, el("img", { alt: "Frame from the feed check", src: `${r.frameUrl}&t=${Date.now()}` }));
-  const live = el("button", { type: "button", class: "secondary", onclick: () => watchLive(r, tile, live) }, "Watch live");
-  const stop = el("button", { type: "button", class: "secondary", onclick: async () => {
-    const d = await api("DELETE", `/api/cameras/check/${encodeURIComponent(r.stream)}`);
-    out.replaceChildren(d.error ? errorBox(d.error) : msgBox("ok", "Preview closed."));
-  } }, "Close preview");
-  out.replaceChildren(msgBox("ok", "The feed works: go2rtc got a frame. Nothing was saved."), tile, el("div", { class: "row" }, live, stop));
+  const tile = el("div", { class: "tile" }, el("img", { alt: "Frame from the feed check", src: r.frameUrl }));
+  // Live preview only for a configured stream: an edited or new address gets one frame and its test connection closes (#16).
+  const live = r.wsUrl ? el("button", { type: "button", class: "secondary", onclick: () => watchLive(r, tile, live) }, "Watch live") : null;
+  const stop = el("button", { type: "button", class: "secondary", onclick: () => out.replaceChildren(msgBox("ok", "Preview closed.")) }, "Close preview");
+  const msg = r.reused
+    ? "The feed works: go2rtc got a frame from the stream it already has (no extra connection to the camera). Nothing was saved."
+    : "The feed works: go2rtc got a frame. The test connection to the camera was closed right away (these cameras tolerate about one viewer). Nothing was saved. Save the camera to get a live preview.";
+  out.replaceChildren(msgBox("ok", msg), tile, el("div", { class: "row" }, ...(live ? [live] : []), stop));
 }
 
 async function watchLive(check, tile, btn) {

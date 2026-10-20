@@ -154,8 +154,20 @@ export function createAdminServer(d: AdminDeps): http.Server {
     log.error(`admin sign-in disabled: ${keyError.body.happened} ${keyError.body.next}`);
   }
   const limiter = new LoginLimiter();
-  const tempStreams = new Map<string, NodeJS.Timeout>();
   const g2 = d.go2rtcApi ? new Go2rtcClient(d.go2rtcApi) : null;
+  // Feed-check frames, held in memory so the test connection to a camera can close at once (#16).
+  const checkFrames = new Map<string, { jpeg: Buffer; at: number }>();
+  const CHECK_FRAME_MS = 5 * 60_000;
+  const keepCheckFrame = (jpeg: Buffer): string => {
+    const token = crypto.randomBytes(8).toString("hex");
+    checkFrames.set(token, { jpeg, at: Date.now() });
+    while (checkFrames.size > 20) checkFrames.delete(checkFrames.keys().next().value!);   // oldest out
+    return token;
+  };
+  const pruneFrames = setInterval(() => {
+    for (const [k, v] of checkFrames) if (Date.now() - v.at > CHECK_FRAME_MS) checkFrames.delete(k);
+  }, 60_000);
+  pruneFrames.unref();
 
   // Signed-out sessions. A session is a signed, stateless cookie, so clearing the cookie alone left a
   // copied one working for 30 days; signing out (the kiosk's idle return does) now kills it on the
@@ -450,20 +462,21 @@ export function createAdminServer(d: AdminDeps): http.Server {
         return json(res, 200, cameraLogins(cam), { "cache-control": "no-store" });
       }
 
+      const checkFrame = /^\/api\/cameras\/check\/([0-9a-f]{16})\/frame\.jpg$/.exec(url.pathname);
+      if (checkFrame && method === "GET") {
+        attempted = "Show the feed check's frame";
+        const f = checkFrames.get(checkFrame[1]);
+        if (!f || Date.now() - f.at > CHECK_FRAME_MS) {
+          throw new UserError({ attempted, happened: "That test frame has expired (they're kept 5 minutes).", changed: "Nothing.", next: "Run the check again." }, 404);
+        }
+        res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store", "content-length": String(f.jpeg.length) });
+        return res.end(f.jpeg);
+      }
+
+      // Old pages still send this after a check; feed checks now close their test connection themselves.
       const checkDel = /^\/api\/cameras\/check\/([^/]+)$/.exec(url.pathname);
       if (checkDel && method === "DELETE") {
-        attempted = "Stop the feed-check preview";
-        const stream = decodeURIComponent(checkDel[1]);
-        const t = tempStreams.get(stream);
-        if (!t || !g2) return json(res, 200, { ok: true, message: "That preview had already been cleaned up." });
-        clearTimeout(t);
-        tempStreams.delete(stream);
-        try {
-          await g2.removeStream(stream);
-        } catch (err) {
-          throw new UserError({ attempted, happened: `go2rtc didn't remove the test stream: ${(err as Error).message}`, changed: "The test stream may still be open in go2rtc (one extra camera viewer) until go2rtc restarts.", next: "Nothing urgent; it's harmless. Restarting the container clears it." }, 502);
-        }
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, message: "Nothing to close: feed checks close their test connection right away." });
       }
 
       if (url.pathname === "/api/cameras/check" && method === "POST") {
@@ -475,33 +488,55 @@ export function createAdminServer(d: AdminDeps): http.Server {
         if (name) delete edit.name; else edit.name = FEEDCHECK_NAME;
         const label = name ? `"${name}"` : "the new camera";
         attempted = `Check the feed for ${label}`;
+        const raw = readRawConfig(d.configPath);
         let cam: ResolvedCamera;
         try {
-          const candidate = applyCameraEdit(readRawConfig(d.configPath), name, edit);
+          const candidate = applyCameraEdit(raw, name, edit);
           cam = resolvedCamera(candidate, name ?? FEEDCHECK_NAME)!;
         } catch (err) {
           if (err instanceof UserError) throw new UserError({ ...err.body, attempted, changed: "Nothing was saved; this was only a test." }, err.status);
           throw err;
         }
+        // An existing camera whose address is unchanged: go2rtc already has that stream (and maybe a
+        // connection to the camera). Ask it for a frame from that stream. No new camera session.
+        let configured: string | undefined;
+        if (name) {
+          try {
+            const running = resolveConfig(raw, "/").cameras;
+            const current = running.find((c) => c.name === name);
+            if (current && current.rtspMain === cam.rtspMain && current.audio === cam.audio) configured = streamNames(running).get(name)?.main;
+          } catch {
+            configured = undefined;   // the stored config doesn't resolve right now: treat the check as an edited address
+          }
+        }
+        if (configured && d.bridge.status()?.cameras.some((c) => c.stream === configured)) {
+          let jpeg: Buffer;
+          try { jpeg = await g2.frame(configured); }
+          catch (err) {
+            const ex = explainGo2rtcFailure((err as Error).message);
+            throw new UserError({ attempted, happened: ex.happened, changed: "Nothing was saved; this was only a test.", next: ex.next }, 502);
+          }
+          const token = keepCheckFrame(jpeg);
+          return json(res, 200, { ok: true, reused: true, stream: configured, frameUrl: `/api/cameras/check/${token}/frame.jpg`, wsUrl: `/go2rtc/api/ws?src=${configured}` });
+        }
+        // A new or edited address: one short test session, closed as soon as one frame arrives (the cameras tolerate ~one client).
         const stream = `check_${crypto.randomBytes(4).toString("hex")}`;
         try {
           await g2.addTempStream(stream, cam.rtspMain + sourceSuffix(cam));
         } catch (err) {
           throw new UserError({ attempted, happened: `go2rtc wouldn't take the test stream: ${(err as Error).message}`, changed: "Nothing was saved; this was only a test.", next: "Try again; if it repeats, check `docker logs unscrypted` for go2rtc lines." }, 502);
         }
-        const t = setTimeout(() => {
-          tempStreams.delete(stream);
-          g2.removeStream(stream).catch((err) => log.warn(`couldn't remove expired feed-check stream ${stream} from go2rtc: ${(err as Error).message}`));
-        }, 5 * 60_000);
-        t.unref();
-        tempStreams.set(stream, t);
+        let jpeg: Buffer;
         try {
-          await g2.frame(stream);
+          jpeg = await g2.frame(stream);
         } catch (err) {
           const ex = explainGo2rtcFailure((err as Error).message);
-          throw new UserError({ attempted, happened: ex.happened, changed: "Nothing was saved; this was only a test.", next: ex.next }, 502);
+          throw new UserError({ attempted, happened: ex.happened, changed: "Nothing was saved; this was only a test. The test connection was closed.", next: ex.next }, 502);
+        } finally {
+          await g2.removeStream(stream).catch((err) => log.warn(`couldn't remove feed-check stream ${stream} from go2rtc (it holds one extra camera session until go2rtc restarts): ${(err as Error).message}`));
         }
-        return json(res, 200, { ok: true, stream, frameUrl: `/go2rtc/api/frame.jpeg?src=${stream}`, wsUrl: `/go2rtc/api/ws?src=${stream}` });
+        const token = keepCheckFrame(jpeg);
+        return json(res, 200, { ok: true, reused: false, stream: null, frameUrl: `/api/cameras/check/${token}/frame.jpg`, wsUrl: null });
       }
 
       const camMatch = /^\/api\/cameras\/([^/]+)$/.exec(url.pathname);
@@ -635,8 +670,8 @@ export function createAdminServer(d: AdminDeps): http.Server {
   });
 
   server.on("close", () => {
-    for (const t of tempStreams.values()) clearTimeout(t);
-    tempStreams.clear();
+    clearInterval(pruneFrames);
+    checkFrames.clear();
   });
 
   return server;
