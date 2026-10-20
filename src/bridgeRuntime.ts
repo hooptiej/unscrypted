@@ -118,7 +118,7 @@ export class BridgeRuntime {
               UNSCRYPTED_CONFIG: this.o.configPath,
               UNSCRYPTED_GO2RTC_API: this.go2rtc?.apiBase() ?? "",
               // The dashboard settings page edits this folder's settings.json.
-              UNSCRYPTED_DASH_DIR: this.o.dash.dir, UNSCRYPTED_DASH_PORT: String(this.o.dash.port),
+              UNSCRYPTED_DASH_DIR: this.o.dash.dir, UNSCRYPTED_DASH_PORT: String(this.o.dash.port), UNSCRYPTED_DASH_HOST: this.o.dash.host,
               // Sign-in key lives beside the pairing state so sign-ins survive restarts.
               UNSCRYPTED_ADMIN_KEY_FILE: process.env.UNSCRYPTED_ADMIN_KEY_FILE
                 || path.join(path.dirname(this.o.config.persistDir), "admin-session.key"),

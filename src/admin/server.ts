@@ -51,7 +51,7 @@ export interface AdminDeps {
    * The dashboard's settings folder, its port, and its public base URL when it isn't this host
    * (UNSCRYPTED_DASH_URL, e.g. http://10.0.1.248/ once it has its own address). Defaults: /data/dash, 8180, derived.
    */
-  dash?: { dir: string; port: number; url: string | null };
+  dash?: { dir: string; port: number; url: string | null; host?: string };
   log?: Logger;
 }
 
@@ -113,6 +113,31 @@ export function createAdminServer(d: AdminDeps): http.Server {
     const host = /^(\[[^\]]+\]|[A-Za-z0-9.-]+)/.exec(req.headers.host ?? "")?.[1] ?? "localhost";
     return `http://${host}:${dash.port}/`;
   };
+  /**
+   * The dashboard's own status lights (open data: names, states and reasons, no addresses), read
+   * from the dashboard over the loopback or its own address, so the settings page shows the full
+   * reasons. Never throws: a failure is the error text the page shows in their place.
+   */
+  const dashLights = (): Promise<{ services: unknown[] | null; at: number | null; error: string | null }> => new Promise((resolve) => {
+    const host = !dash.host || dash.host === "0.0.0.0" || dash.host === "::" ? "127.0.0.1" : dash.host;
+    const fail = (why: string) => resolve({ services: null, at: null,
+      error: `Couldn't read the status lights from the dashboard (${why}). Their reasons show on the dashboard itself; if it's down, the admin pane's Status tab says why.` });
+    const r = http.get({ host, port: dash.port, path: "/api/state", timeout: 1500, headers: { accept: "application/json" } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c: string) => { body += c; if (body.length > 1_000_000) r.destroy(new Error("its answer was too big")); });
+      res.on("end", () => {
+        if (res.statusCode !== 200) return fail(`it answered ${res.statusCode}`);
+        try {
+          const j = JSON.parse(body) as { services?: unknown; servicesAt?: unknown };
+          if (!Array.isArray(j.services)) return fail("its answer had no status lights");
+          resolve({ services: j.services, at: typeof j.servicesAt === "number" ? j.servicesAt : null, error: null });
+        } catch (err) { fail(`its answer wasn't JSON: ${(err as Error).message}`); }
+      });
+    });
+    r.on("timeout", () => r.destroy(new Error("no answer within 1.5 s")));
+    r.on("error", (err: NodeJS.ErrnoException) => fail(err.code === "ECONNREFUSED" ? "connection refused: it isn't running" : err.message));
+  });
   // Read once at start. A bad key file disables sign-in (every request gets its 503) rather than
   // being replaced; the bridge and /healthz carry on.
   let secret: Buffer = Buffer.alloc(0);
@@ -337,6 +362,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
           settings: cur.settings, warning: [cur.warning, fonts.warning].filter(Boolean).join(" ") || null,
           cameras: effectiveCameras(cur.settings, names).map((c) => ({ ...c, hasSub: withSub ? withSub.includes(c.camera) : null })),
           fonts: fonts.fonts, systemFonts: Object.keys(SYSTEM_FONTS), gridMax: GRID_MAX, dashUrl: dashUrlFor(req),
+          lights: await dashLights(),
         });
       }
 

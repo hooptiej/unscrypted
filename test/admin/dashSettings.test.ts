@@ -148,3 +148,71 @@ test("the preview fonts are served from the fonts folder, nothing else", async (
   assert.equal((await fetch(base + "/dash-fonts/names.json")).status, 404);
   assert.equal((await fetch(base + "/dash-fonts/..%2fsettings.json")).status, 404);
 });
+
+test("GET also carries the dashboard's own status lights, with full reasons, for the settings page", async () => {
+  const lights = [{ id: "server", name: "NAS", state: "warn", short: "4 can't be checked yet", reason: "Below this: Constructicon: can't check yet.", children: [] }];
+  const fake = http.createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(req.url === "/api/state" ? { services: lights, servicesAt: 1234, cameras: { secret: "nope" } } : {}));
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+  const dead = http.createServer();
+  await new Promise<void>((r) => dead.listen(0, "127.0.0.1", () => r()));
+  const deadPort = (dead.address() as AddressInfo).port;
+  await new Promise((r) => dead.close(r));
+  const mk = (port: number) => createAdminServer({
+    configPath: path.join(dir, "config.json"), passwordFile: path.join(dir, "pw"), go2rtcApi: "",
+    sessionKeyFile: path.join(dir, "admin-session.key"), webRoot: path.join(__dirname, "../../web/admin"), title: "unscrypted admin - TEST",
+    dash: { dir: dashDir, port, url: null, host: "0.0.0.0" },
+    bridge: { status: () => null, request: async () => null },
+  });
+  for (const [port, check] of [
+    [(fake.address() as AddressInfo).port, (j: any) => {
+      assert.deepEqual(j.lights, { services: lights, at: 1234, error: null });
+    }],
+    [deadPort, (j: any) => {
+      assert.equal(j.lights.services, null);
+      assert.match(j.lights.error, /couldn't read the status lights from the dashboard/i);
+      assert.match(j.lights.error, /refused|ECONNREFUSED/);
+    }],
+  ] as const) {
+    const a = mk(port);
+    await new Promise<void>((r) => a.listen(0, "127.0.0.1", () => r()));
+    try {
+      const b = `http://127.0.0.1:${(a.address() as AddressInfo).port}`;
+      const r = await fetch(b + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "letmein" }) });
+      const cookie = r.headers.get("set-cookie")!.split(";")[0];
+      const g = await fetch(b + "/api/dash/settings", { headers: { cookie } });
+      assert.equal(g.status, 200);
+      check(await g.json());
+    } finally { a.closeAllConnections(); a.close(); }
+  }
+  fake.closeAllConnections();
+  fake.close();
+});
+
+test("owner eye-check: live clock preview, 'Dashboard stream' with its hint, a status-lights list, labels that fit", () => {
+  const web = path.join(__dirname, "../../web/admin");
+  const html = fs.readFileSync(path.join(web, "dash-settings.html"), "utf8");
+  const js = fs.readFileSync(path.join(web, "dash-settings.js"), "utf8");
+  const css = fs.readFileSync(path.join(web, "dash-settings.css"), "utf8");
+  // A fixed sample time read like a broken clock: the preview shows the live time, ticking.
+  assert.doesNotMatch(html, /\d{1,2}:\d{2}\s*[AP]M/, "no fixed sample time in the preview");
+  assert.match(html, /id="previewTime"/);
+  assert.match(js, /\$\("previewTime"\)\.textContent = new Date\(\)\.toLocaleTimeString/);
+  assert.match(js, /setInterval\(tickPreview/);
+  // The stream column only picks the tile's go2rtc stream: say so.
+  assert.match(html, /<span>Dashboard stream<\/span>/);
+  assert.match(html, /what the dashboard tile plays; HomeKit isn't affected/);
+  // The settings page shows each light's full reason.
+  assert.match(html, /id="lights"/);
+  assert.match(js, /function renderLights\(/);
+  // The label column fits "ONVIF Camera" at the label font size: at least 300 design px.
+  const cols = /\.camhead,\.cam\{display:grid;grid-template-columns:([^;]+);/.exec(css)![1];
+  const fixed = [...cols.matchAll(/calc\((\d+)\*var\(--u\)\)/g)].reduce((n, m) => n + Number(m[1]), 0);
+  const grid = /grid-template-columns:([\d.]+)fr ([\d.]+)fr ([\d.]+)fr;/.exec(css)!;
+  const fr = (2560 - 40 - 24) / (Number(grid[1]) + Number(grid[2]) + Number(grid[3]));
+  const camCol = fr * Number(grid[2]) - 2 * 26 - 4;
+  const labelCol = camCol - fixed - 4 * 12;
+  assert.ok(labelCol >= 300, `label column is ${Math.round(labelCol)} design px`);
+});

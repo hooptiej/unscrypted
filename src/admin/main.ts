@@ -49,7 +49,7 @@ const server = createAdminServer({
   // The test instance runs with HAP off, so it gets the " - TEST" tab label even if the title env is unset.
   title: process.env.UNSCRYPTED_ADMIN_TITLE || (hapOff ? "unscrypted admin - TEST" : "unscrypted admin"),
   // The bridge passes the dashboard's folder and port; UNSCRYPTED_DASH_URL only when it lives elsewhere.
-  dash: { dir: process.env.UNSCRYPTED_DASH_DIR || "/data/dash", port: Number(process.env.UNSCRYPTED_DASH_PORT ?? 8180), url: dashUrl.url },
+  dash: { dir: process.env.UNSCRYPTED_DASH_DIR || "/data/dash", port: Number(process.env.UNSCRYPTED_DASH_PORT ?? 8180), url: dashUrl.url, host: process.env.UNSCRYPTED_DASH_HOST || "0.0.0.0" },
   log,
   bridge: {
     status: () => latest,
