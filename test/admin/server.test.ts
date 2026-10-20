@@ -35,6 +35,7 @@ function listen(s: http.Server): Promise<string> {
 function makeServer(over: Partial<AdminDeps> = {}): http.Server {
   return createAdminServer({
     configPath: path.join(dir, "config.json"), passwordFile: path.join(dir, "pw"), go2rtcApi: g2Base,
+    sessionKeyFile: path.join(dir, "data", "admin-session.key"),
     webRoot: path.join(dir, "web"), title: "unscrypted admin - TEST",
     bridge: {
       status: () => currentStatus,
@@ -341,5 +342,36 @@ test("5 wrong passwords lock this address out with a retry time", async () => {
     const r = await fetch(b2 + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "letmein" }) });
     assert.equal(r.status, 429);
     assert.match((await r.json()).error.next, /minute/);
+  } finally { s2.close(); }
+});
+
+test("sign-ins survive an admin pane restart (the key is kept in a file)", async () => {
+  const s = await login();
+  const s2 = makeServer();   // same key file, as after a container restart
+  const b2 = await listen(s2);
+  try {
+    const r = await fetch(b2 + "/api/cameras", { headers: { cookie: s.cookie } });
+    assert.equal(r.status, 200, "the old cookie still works");
+    const me = await (await fetch(b2 + "/api/session", { headers: { cookie: s.cookie } })).json();
+    assert.equal(me.csrf, s.csrf, "and so does its CSRF token");
+  } finally { s2.close(); }
+});
+
+test("a bad sign-in key file refuses the pane with a clear 503 and isn't replaced", async () => {
+  const bad = path.join(dir, "bad.key");
+  fs.writeFileSync(bad, "too short");
+  const s2 = makeServer({ sessionKeyFile: bad });
+  const b2 = await listen(s2);
+  try {
+    const r = await fetch(b2 + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "letmein" }) });
+    assert.equal(r.status, 503);
+    const e = (await r.json()).error;
+    assert.match(e.happened, /9 bytes/);
+    assert.match(e.changed, /HomeKit bridge is running normally/);
+    const me = await (await fetch(b2 + "/api/session")).json();
+    assert.equal(me.signedIn, false);
+    assert.match(me.setupError.happened, /sign-in key/);
+    assert.equal((await fetch(b2 + "/healthz")).status, 200);
+    assert.equal(fs.readFileSync(bad, "utf8"), "too short");
   } finally { s2.close(); }
 });

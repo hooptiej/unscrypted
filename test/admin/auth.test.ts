@@ -6,6 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import {
   checkPassword, issueSession, verifySession, LoginLimiter, loadAdminPassword, csrfToken, checkCsrf, SESSION_DAYS,
+  loadOrCreateSessionKey, SESSION_KEY_BYTES,
 } from "../../src/admin/auth";
 import { UserError } from "../../src/admin/errors";
 
@@ -71,4 +72,40 @@ test("missing or empty password file is a 503 with setup instructions and the re
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("sign-in key: created once (32 bytes, owner-only), then read back unchanged after a restart", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-key-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "data", "admin-session.key");
+  const first = loadOrCreateSessionKey(file);
+  assert.equal(first.created, true);
+  assert.equal(first.key.length, SESSION_KEY_BYTES);
+  assert.deepEqual(fs.readFileSync(file), first.key);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const session = issueSession(first.key);
+  const second = loadOrCreateSessionKey(file);   // a restart of the admin pane
+  assert.equal(second.created, false);
+  assert.ok(verifySession(session, second.key), "a session from before the restart still verifies");
+});
+
+test("sign-in key of the wrong length is refused, not replaced", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-key-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "admin-session.key");
+  fs.writeFileSync(file, "short");
+  assert.throws(() => loadOrCreateSessionKey(file), (e: unknown) =>
+    e instanceof UserError && e.status === 503 && /5 bytes/.test(e.body.happened) && /admin-session\.key/.test(e.body.next)
+    && /HomeKit/.test(e.body.changed));
+  assert.equal(fs.readFileSync(file, "utf8"), "short", "the bad key file is left as it was");
+});
+
+test("unreadable sign-in key is refused with the reason", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unscr-key-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "admin-session.key");
+  fs.mkdirSync(file);   // a folder where the file should be: reading it fails with EISDIR
+  assert.throws(() => loadOrCreateSessionKey(file), (e: unknown) =>
+    e instanceof UserError && e.status === 503 && /couldn't be read/.test(e.body.happened));
+  assert.ok(fs.statSync(file).isDirectory(), "nothing was replaced");
 });

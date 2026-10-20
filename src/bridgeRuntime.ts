@@ -101,6 +101,9 @@ export class BridgeRuntime {
               UNSCRYPTED_ADMIN_PORT: String(a.port),
               UNSCRYPTED_CONFIG: this.o.configPath,
               UNSCRYPTED_GO2RTC_API: this.go2rtc?.apiBase() ?? "",
+              // Sign-in key lives beside the pairing state so sign-ins survive restarts.
+              UNSCRYPTED_ADMIN_KEY_FILE: process.env.UNSCRYPTED_ADMIN_KEY_FILE
+                || path.join(path.dirname(this.o.config.persistDir), "admin-session.key"),
             },
           });
           child.on("message", (m: unknown) => void this.onMessage(m));

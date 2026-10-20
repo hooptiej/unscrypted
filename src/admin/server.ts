@@ -21,7 +21,7 @@ import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, Camera
 import { Config, ResolvedCamera, resolveConfig } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
-  loadAdminPassword, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
+  loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
 } from "./auth";
 import { Logger } from "../logger";
 
@@ -31,6 +31,8 @@ type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "
 export interface AdminDeps {
   configPath: string;
   passwordFile: string;
+  /** Where the session-signing key is kept (made on first start), e.g. /data/admin-session.key. */
+  sessionKeyFile: string;
   /** go2rtc's loopback API base, e.g. "http://127.0.0.1:1986"; "" when go2rtc is disabled. */
   go2rtcApi: string;
   /** Folder holding index.html, app.js, style.css. */
@@ -92,7 +94,20 @@ function resolvedCamera(raw: Config, name: string): ResolvedCamera | undefined {
 
 export function createAdminServer(d: AdminDeps): http.Server {
   const log = d.log ?? new Logger("admin");
-  const secret = crypto.randomBytes(32);
+  // Read once at start. A bad key file disables sign-in (every request gets its 503) rather than
+  // being replaced; the bridge and /healthz carry on.
+  let secret: Buffer = Buffer.alloc(0);
+  let keyError: UserError | null = null;
+  try {
+    const k = loadOrCreateSessionKey(d.sessionKeyFile);
+    secret = k.key;
+    log.info(k.created ? `made a new sign-in key at ${d.sessionKeyFile}` : `using the sign-in key at ${d.sessionKeyFile}`);
+  } catch (err) {
+    keyError = err instanceof UserError ? err
+      : new UserError({ attempted: "Load the admin pane's sign-in key", happened: `Unexpected error: ${(err as Error).message}`,
+        changed: "The admin pane is refusing every request; the HomeKit bridge is running normally.", next: "Check the container log, then restart the container." }, 503);
+    log.error(`admin sign-in disabled: ${keyError.body.happened} ${keyError.body.next}`);
+  }
   const limiter = new LoginLimiter();
   const tempStreams = new Map<string, NodeJS.Timeout>();
   const g2 = d.go2rtcApi ? new Go2rtcClient(d.go2rtcApi) : null;
@@ -101,7 +116,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
     (req.headers.cookie ?? "").split(";").map((s) => s.trim()).find((s) => s.startsWith(COOKIE + "="))?.slice(COOKIE.length + 1);
   const sessionOf = (req: http.IncomingMessage): string | null => {
     const c = cookieOf(req);
-    return c && verifySession(c, secret) ? c : null;
+    return c && !keyError && verifySession(c, secret) ? c : null;
   };
   const json = (res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
     res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
@@ -191,10 +206,12 @@ export function createAdminServer(d: AdminDeps): http.Server {
       if (url.pathname === "/api/session" && method === "GET") {
         const s = sessionOf(req);
         let setupError = null;
-        try { loadAdminPassword(d.passwordFile); } catch (err) { setupError = toErrorJson(err, "Start the admin pane's sign-in").body.error; }
+        if (keyError) setupError = keyError.body;
+        else try { loadAdminPassword(d.passwordFile); } catch (err) { setupError = toErrorJson(err, "Start the admin pane's sign-in").body.error; }
         return json(res, 200, { signedIn: Boolean(s), csrf: s ? csrfToken(secret, s) : null, title: d.title, setupError });
       }
 
+      if (keyError) throw keyError;   // 503: the sign-in key file is unreadable or the wrong length
       const password = loadAdminPassword(d.passwordFile);   // a 503 UserError with setup instructions
       const ip = req.socket.remoteAddress ?? "unknown";
 
