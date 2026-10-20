@@ -1510,6 +1510,11 @@ Already built in Tasks 2 and 5 (mtime watch, `settingsVersion`, the page reloads
   - **Q2 a:** the Scrypted light becomes a "HomeKit bridge" light, from unscrypted's own status.
   - **Q3 a:** copy the three cached Constructicon font files once into `./data/dash/fonts`; no token.
   - **Q4 b:** re-point the kiosk to `http://10.0.1.78:8180` AND re-point `homedash.local` at the NAS (10.0.1.78), so the kiosk URL must carry `:8180`. A bare `http://homedash.local` would open the TrueNAS login, so say so in the README and the cutover notes. Ports 8180 (prod) / 8181 (test) taken as OK (implied by 4b). The mDNS and kiosk changes happen only in Phase 7, after the prod go-ahead.
+  - **Q4 address, CHANGED 2026-10-20 09:49-09:54 (option A, replaces the above):** "i actually want that at its Own IP now that we've talked, i want the .locals to 'just work'" → "a".
+    - **Prod, at cutover:** stop the old Homedash, which frees 10.0.1.248; add 10.0.1.248 as a second address on the NAS LAN interface (TrueNAS network settings, test-and-auto-revert); set `UNSCRYPTED_DASH_HOST=10.0.1.248`, `UNSCRYPTED_DASH_PORT=80`. `homedash.local` (`homedash-mdns` → .248) and the Mac mini kiosk stay **unchanged**, and HomeKit stays on .78. Rollback: remove the address, start the old Homedash.
+    - **Test:** 10.0.1.249 as `homedash-test.local` ("yeah .249 is fine, looks open in unifi"). NOT .247, which is a live LAN device. Until the owner OKs the NAS address change, the test dash stays on 10.0.1.78:8181.
+    - **Cutover checklist step 1:** reserve .248/.249 in UniFi, or confirm they're outside the DHCP pool ("just do it and remind me later to reserve"; a quest-log reminder exists).
+    - **Downtime** at cutover is OK ("im home, its mid-day"). The TrueNAS address change and the cutover need the owner's go-ahead in the build session.
   - **Q5 a:** the 2x2 grid with today's four cameras. Couch Cam is listed but off, and a fifth is refused with a clear message.
   - **Q6 a:** Homedash's labels as dashboard-only labels; the HomeKit names are untouched.
   - **Q7 a:** keep the Settings button. It asks for the admin password, and idling back to the dash signs that browser out.
