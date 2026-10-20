@@ -19,7 +19,8 @@ import { FONT_FILE } from "./settings";
 export interface PublicConfig {
   title: string; env: "prod" | "test"; adminPort: number; settingsUrl: string | null;
   idleSeconds: number; pollSeconds: number; reloadMinutes: number;
-  cameras: { id: string; label: string; stream: string }[];
+  /** `which`: the stream the tile actually plays (a "sub" pick on a camera with no sub plays main). */
+  cameras: { id: string; label: string; stream: string; which: "main" | "sub" }[];
   fonts: { ui: unknown; clock: unknown };
 }
 
