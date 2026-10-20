@@ -88,3 +88,4 @@ video-stream .info,video-stream .controls,video-stream .mode,video-stream .statu
   background:#2a1d0c;color:#e0b54d;border:calc(2*var(--u)) solid #6b4a12;border-radius:calc(8*var(--u));
   padding:calc(6*var(--u)) calc(16*var(--u));font-size:calc(22*var(--u))}
 .cam .off{text-align:center;padding:0 calc(30*var(--u))}
+.svc .why{margin-left:calc(10*var(--u));font-size:calc(18*var(--u));color:#8b6f4a}
