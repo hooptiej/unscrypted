@@ -93,3 +93,12 @@ test("base URLs from the environment: unset is null, a bad one says why, a good 
     assert.match(r.error!, /UNSCRYPTED_ADMIN_URL .* isn't a web address .*ignored/, bad);
   }
 });
+
+test("a broken settings file's warning (served on the open dashboard) carries none of the file's text", () => {
+  const dir = tempDir("dset-");
+  const f = path.join(dir, "settings.json");
+  fs.writeFileSync(f, '{"photos":{"icloudUrl":"https://www.icloud.com/sharedalbum/#B0SECRETTOKEN"},"services":[{"host":"10.9.8.7"},]}');
+  const w = loadSettings(f).warning!;
+  assert.match(w, /isn't valid JSON/);
+  assert.doesNotMatch(w, /SECRETTOKEN|10\.9\.8\.7|icloud/);
+});
