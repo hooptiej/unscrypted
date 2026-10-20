@@ -15,7 +15,11 @@ import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } f
 
 export interface CamState { up: boolean; reason: string | null; since: number }
 
-export interface DashRuntimeOptions { dir: string; title: string; env: "prod" | "test"; adminPort: number; log: Logger }
+export interface DashRuntimeOptions {
+  dir: string; title: string; env: "prod" | "test"; adminPort: number; log: Logger;
+  /** The admin pane's base URL when it isn't this host (UNSCRYPTED_ADMIN_URL), else null; plus why a bad one was ignored. */
+  adminUrl?: string | null; adminUrlError?: string | null;
+}
 
 export class DashRuntime {
   cameras: DashCamera[] = [];
@@ -137,6 +141,8 @@ export class DashRuntime {
     const f = this.fonts();
     return {
       title: this.o.title, env: this.o.env, adminPort: this.o.adminPort,
+      // The kiosk's Settings button. null = the page works it out (this host, the admin port).
+      settingsUrl: this.o.adminUrl ? `${this.o.adminUrl}/dash-settings?from=dash` : null,
       idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes,
       cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream })),
       fonts: { ui: f.ui, clock: f.clock },
@@ -148,6 +154,6 @@ export class DashRuntime {
       bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
       services: this.services, servicesAt: this.servicesAt,
       weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince,
-      notices: this.fonts().notices };
+      notices: [...(this.o.adminUrlError ? [this.o.adminUrlError] : []), ...this.fonts().notices] };
   }
 }

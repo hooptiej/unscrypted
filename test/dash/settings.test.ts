@@ -1,3 +1,4 @@
+import { parseBaseUrl } from "../../src/dash/settings";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "fs";
@@ -79,4 +80,16 @@ test("effectiveCameras: prefs in order, unknown new cameras appended hidden, mis
   const s = { ...DEFAULTS, cameras: [{ camera: "Gone", label: "Old", shown: true, stream: "main" as const }, { camera: "DogCamTest", label: "DogCam", shown: true, stream: "main" as const }] };
   const e = effectiveCameras(s, ["DogCamTest", "Couch Cam"]);
   assert.deepEqual(e.map((c) => [c.camera, c.shown, c.missing]), [["Gone", true, true], ["DogCamTest", true, false], ["Couch Cam", false, false]]);
+});
+
+test("base URLs from the environment: unset is null, a bad one says why, a good one loses its trailing slash", () => {
+  assert.deepEqual(parseBaseUrl("UNSCRYPTED_ADMIN_URL", undefined), { url: null, error: null });
+  assert.deepEqual(parseBaseUrl("UNSCRYPTED_ADMIN_URL", "  "), { url: null, error: null });
+  assert.deepEqual(parseBaseUrl("UNSCRYPTED_ADMIN_URL", "http://10.0.1.78:8190/"), { url: "http://10.0.1.78:8190", error: null });
+  assert.deepEqual(parseBaseUrl("UNSCRYPTED_DASH_URL", "https://homedash.local"), { url: "https://homedash.local", error: null });
+  for (const bad of ["10.0.1.78:8190", "javascript:alert(1)", "http://", "http://a b"]) {
+    const r = parseBaseUrl("UNSCRYPTED_ADMIN_URL", bad);
+    assert.equal(r.url, null, bad);
+    assert.match(r.error!, /UNSCRYPTED_ADMIN_URL .* isn't a web address .*ignored/, bad);
+  }
 });

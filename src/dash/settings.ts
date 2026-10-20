@@ -97,7 +97,7 @@ export function loadSettings(file: string): { settings: DashSettings; warning: s
     };
     return { settings: s, warning: null, mtimeMs };
   } catch (err) {
-    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${(err as Error).message}); showing default dashboard settings. Fix it from the admin pane's Dashboard settings (saving rewrites it).`, mtimeMs };
+    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${(err as Error).message}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs };
   }
 }
 
@@ -134,7 +134,7 @@ function font(v: any, role: "ui" | "clock", fontFiles: string[]): FontSpec {
 }
 
 /** Validates a partial edit and returns the whole new settings. Throws UserError; never writes. */
-export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: string[]; fontFiles: string[] }): DashSettings {
+export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: string[]; fontFiles: string[]; withSub?: string[] }): DashSettings {
   if (!edit || typeof edit !== "object" || Array.isArray(edit)) throw bad("Request", "wasn't a settings object");
   const s = clone(cur);
   if ("idleSeconds" in edit) s.idleSeconds = int(edit.idleSeconds, 5, 600, "Fullscreen timeout (s)");
@@ -150,6 +150,7 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
       seen.add(camera);
       const label = text(c.label, 40, `Label for ${camera}`) || camera;
       if (c.stream !== "main" && c.stream !== "sub") throw bad(`Stream for ${camera}`, "must be main or sub");
+      if (c.stream === "sub" && ctx.withSub && !ctx.withSub.includes(camera)) throw bad(`Stream for ${camera}`, "this camera has no sub stream in config.json (rtspSub), so it can only show main");
       return { camera, label, shown: c.shown === true, stream: c.stream };
     });
     const shown = s.cameras.filter((c) => c.shown).length;
@@ -217,4 +218,18 @@ export function effectiveCameras(s: DashSettings, cameraNames: string[]): (DashC
   const out = s.cameras.map((c) => ({ ...c, missing: !cameraNames.includes(c.camera) }));
   for (const n of cameraNames) if (!s.cameras.some((c) => c.camera === n)) out.push({ camera: n, label: n, shown: false, stream: "main", missing: false });
   return out;
+}
+
+/**
+ * A base web address from the environment (UNSCRYPTED_ADMIN_URL, UNSCRYPTED_DASH_URL), used when
+ * the dashboard and the admin pane don't share a host (e.g. the dash on its own IP at port 80).
+ * Unset is null (callers derive it); a bad value is ignored with a plain reason, never half-used.
+ */
+export function parseBaseUrl(name: string, v: string | undefined): { url: string | null; error: string | null } {
+  const t = (v ?? "").trim();
+  if (!t) return { url: null, error: null };
+  let u: URL | null = null;
+  try { u = /^https?:\/\/[^\s/]+/.test(t) ? new URL(t) : null; } catch { u = null; }
+  if (!u || !u.host) return { url: null, error: `${name} ("${t}") isn't a web address like http://10.0.1.78:8190, so it's ignored and the address is worked out from the browser's own. Fix it in docker-compose.yml.` };
+  return { url: t.replace(/\/+$/, ""), error: null };
 }

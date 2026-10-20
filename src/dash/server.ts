@@ -17,7 +17,7 @@ import { FONT_MIME } from "./fonts";
 import { FONT_FILE } from "./settings";
 
 export interface PublicConfig {
-  title: string; env: "prod" | "test"; adminPort: number;
+  title: string; env: "prod" | "test"; adminPort: number; settingsUrl: string | null;
   idleSeconds: number; pollSeconds: number; reloadMinutes: number;
   cameras: { id: string; label: string; stream: string }[];
   fonts: { ui: unknown; clock: unknown };

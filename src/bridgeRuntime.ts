@@ -117,6 +117,8 @@ export class BridgeRuntime {
               UNSCRYPTED_ADMIN_PORT: String(a.port),
               UNSCRYPTED_CONFIG: this.o.configPath,
               UNSCRYPTED_GO2RTC_API: this.go2rtc?.apiBase() ?? "",
+              // The dashboard settings page edits this folder's settings.json.
+              UNSCRYPTED_DASH_DIR: this.o.dash.dir, UNSCRYPTED_DASH_PORT: String(this.o.dash.port),
               // Sign-in key lives beside the pairing state so sign-ins survive restarts.
               UNSCRYPTED_ADMIN_KEY_FILE: process.env.UNSCRYPTED_ADMIN_KEY_FILE
                 || path.join(path.dirname(this.o.config.persistDir), "admin-session.key"),
@@ -146,7 +148,7 @@ export class BridgeRuntime {
           // An allowlisted env, not ...process.env: the open dashboard process gets no secret paths.
           const pick = (k: string) => (process.env[k] !== undefined ? { [k]: process.env[k] as string } : {});
           const child = fork(dashEntry, [], { env: {
-            ...pick("PATH"), ...pick("TZ"), ...pick("NODE_ENV"), ...pick("UNSCRYPTED_LOG_LEVEL"), ...pick("UNSCRYPTED_HAP"),
+            ...pick("PATH"), ...pick("TZ"), ...pick("NODE_ENV"), ...pick("UNSCRYPTED_LOG_LEVEL"), ...pick("UNSCRYPTED_HAP"), ...pick("UNSCRYPTED_ADMIN_URL"),
             UNSCRYPTED_DASH_HOST: dz.host, UNSCRYPTED_DASH_PORT: String(dz.port), UNSCRYPTED_DASH_DIR: dz.dir,
             ...(dz.title ? { UNSCRYPTED_DASH_TITLE: dz.title } : {}),
             UNSCRYPTED_ADMIN_PORT: String(this.o.admin.port),

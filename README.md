@@ -156,6 +156,14 @@ A small web page for the cameras, served by the same container: `http://<host>:8
 - **go2rtc** (1.9.14, pinned by version and SHA-256 in the Dockerfile) runs inside the container for feed checks and previews only. Its API listens on `127.0.0.1` and is reached only through the signed-in pane. HomeKit streaming doesn't use it.
 - The admin pane and go2rtc run as supervised child processes: if either crashes it's restarted with backoff (1 s doubling to 60 s), and HomeKit is unaffected.
 
+### Dashboard settings
+
+The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open and watch-only. Its settings are a separate page on the admin pane, behind the same password: **`http://<host>:8190/dash-settings`** (test: `http://10.0.1.78:8191/dash-settings`). It's Homedash's own one-screen page: fonts, which cameras show and in what order (at most 4; a fifth is refused with a message), each tile's dashboard-only label (the HomeKit name never changes) and main or sub stream, display timings, the photo slideshow and the weather place. Saving writes `./data/dash/settings.json` (the previous copy is kept as `settings.json.bak`); the dashboard reloads with it within a few seconds.
+
+- **The dashboard's Settings button** opens that page with `?from=dash`. Not signed in, it asks for the password first and comes straight back. From the kiosk, the page idles back to the dashboard after the fullscreen timeout and **signs that browser out**, so the living room never stays signed in.
+- **Different addresses:** when the dashboard and the pane don't share a host (for example the dashboard on its own IP at port 80), set `UNSCRYPTED_ADMIN_URL` (e.g. `http://10.0.1.78:8190`, where the Settings button goes) and `UNSCRYPTED_DASH_URL` (e.g. `http://10.0.1.248/`, where the settings page sends you back). Unset, both are worked out from the browser's address and the ports. A bad value is ignored, and the dashboard says so.
+- **Fonts** are files in `./data/dash/fonts` (`.otf`, `.ttf`, `.woff`, `.woff2`), with display names in `./data/dash/fonts/names.json` (`{ "<file>": "<name>" }`). **Photos** come from an iCloud shared-album link (cached in `./data/dash/cache/icloud`) or a folder.
+
 ### Ports
 
 | Port | What | Where it listens |
