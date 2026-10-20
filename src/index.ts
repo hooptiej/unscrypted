@@ -119,6 +119,14 @@ async function main(): Promise<void> {
     uuid.generate(`unscrypted:bridge:${config.bridge.name}`),
   );
 
+  // go2rtc ports come before the cameras: HomeKit's pipelines need to know the restream port (#16).
+  const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
+  const go2rtcWebrtc = envPort("UNSCRYPTED_GO2RTC_WEBRTC_PORT", 8557, log);
+  const go2rtcRtsp = envPort("UNSCRYPTED_GO2RTC_RTSP_PORT", 8554, log);
+  const go2rtcEnabled = process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null;
+  // Loopback restream for HomeKit's pipelines (#16). Off = HomeKit reads cameras directly (0.3.0 behaviour).
+  const rtspPort = go2rtcEnabled && process.env.UNSCRYPTED_GO2RTC_RTSP !== "off" && go2rtcRtsp.error === null ? go2rtcRtsp.port : null;
+
   const cameras: UnscryptedCamera[] = [];
   for (const camConfig of config.cameras) {
     try {
@@ -175,8 +183,6 @@ async function main(): Promise<void> {
   }
 
   const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
-  const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
-  const go2rtcWebrtc = envPort("UNSCRYPTED_GO2RTC_WEBRTC_PORT", 8557, log);
   const dashPort = envPort("UNSCRYPTED_DASH_PORT", 8180, log);
   const runtime = new BridgeRuntime({
     config,
@@ -198,7 +204,9 @@ async function main(): Promise<void> {
       // doesn't play them). UNSCRYPTED_GO2RTC_WEBRTC=off turns just the live preview off.
       webrtcPort: process.env.UNSCRYPTED_GO2RTC_WEBRTC === "off" || go2rtcWebrtc.error ? null : go2rtcWebrtc.port,
       runtimeDir: process.env.UNSCRYPTED_RUNTIME_DIR ?? path.join(os.tmpdir(), "unscrypted"),
-      enabled: process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null,
+      // go2rtc's RTSP server, 127.0.0.1 only. null = off (UNSCRYPTED_GO2RTC_RTSP=off or a bad port).
+      rtspPort,
+      enabled: go2rtcEnabled,
       disabledReason: go2rtcApi.error ?? undefined,
     },
     dash: {

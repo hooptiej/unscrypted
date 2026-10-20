@@ -31,7 +31,8 @@ export interface RuntimeOptions {
   ffmpegPath: string;
   version: string;
   admin: { port: number; enabled: boolean; disabledReason?: string };
-  go2rtc: { binary: string; apiPort: number; webrtcPort: number | null; runtimeDir: string; enabled: boolean; disabledReason?: string };
+  /** rtspPort: go2rtc's loopback RTSP restream (HomeKit reads cameras through it, #16); null = off. */
+  go2rtc: { binary: string; apiPort: number; webrtcPort: number | null; rtspPort: number | null; runtimeDir: string; enabled: boolean; disabledReason?: string };
   /** The open, watch-only dashboard (a third supervised child). */
   dash: { host: string; port: number; enabled: boolean; dir: string; title?: string; disabledReason?: string };
   /** Graceful shutdown; Docker's restart policy brings the bridge back. */
@@ -92,7 +93,7 @@ export class BridgeRuntime {
       );
     } else {
       this.go2rtc = new Go2rtcManager({
-        binary: g.binary, runtimeDir: g.runtimeDir, ports: { api: g.apiPort, webrtc: g.webrtcPort, rtsp: null },
+        binary: g.binary, runtimeDir: g.runtimeDir, ports: { api: g.apiPort, webrtc: g.webrtcPort, rtsp: g.rtspPort },
         log: log.child("go2rtc"), onState: () => this.pushStatus(),
       });
       this.go2rtc.start(this.config);

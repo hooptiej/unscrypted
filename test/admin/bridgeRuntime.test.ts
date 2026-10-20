@@ -27,7 +27,7 @@ function setup(dash: { host?: string; port: number; enabled: boolean } = { port:
   let restarts = 0;
   const rt = new BridgeRuntime({
     config, configPath: file, bridge: null, cameras, log, ffmpegPath: "ffmpeg", version: "test",
-    admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, runtimeDir: dir, enabled: false },
+    admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, rtspPort: null, runtimeDir: dir, enabled: false },
     dash: { host: "127.0.0.1", ...dash, dir: path.join(dir, "dash"), title: "Homedash - TEST" },
     requestRestart: () => { restarts++; },
   });
