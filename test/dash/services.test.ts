@@ -4,8 +4,11 @@ import * as http from "http";
 import * as https from "https";
 import * as net from "net";
 import { execFileSync } from "child_process";
-import { runCheck, ServiceWatcher, IPVLAN_REASON } from "../../src/dash/services";
-import { DEFAULT_SERVICES, ServiceNode } from "../../src/dash/settings";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { runCheck, runCheckDetailed, ServiceWatcher, IPVLAN_REASON, LightNode } from "../../src/dash/services";
+import { DEFAULT_SERVICES, ServiceNode, loadSettings } from "../../src/dash/settings";
 import { DashBridgeInfo } from "../../src/dash/ipc";
 
 const noBridge = () => null;
@@ -125,4 +128,72 @@ test("rollup: a down child makes a rollup parent warn; a plain parent stays ok; 
   assert.equal(out[0].children[0].link, undefined, "a non-web link is dropped");
   assert.equal(out[1].state, "ok");
   assert.equal(out[1].link, "http://ok.local");
+});
+
+test("short and full reasons: the wall shows a one-line label, the full reason stays for tap/hover", async () => {
+  const blocked = await runCheckDetailed({ kind: "blocked", reason: IPVLAN_REASON }, noBridge);
+  assert.deepEqual(blocked, { short: "can't check yet", full: IPVLAN_REASON });
+  const hapOff = await runCheckDetailed({ kind: "bridge" }, () => ({ hapEnabled: false, paired: false, go2rtc: g2 }));
+  assert.equal(hapOff!.short, "HomeKit off (test)");
+  assert.match(hapOff!.full, /HomeKit is off on this instance/);
+  const refused = await runCheckDetailed({ kind: "tcp", host: "127.0.0.1", port: await closedPort() }, noBridge);
+  assert.equal(refused!.short, "not answering");
+  assert.match(refused!.full, /refused/);
+  assert.equal(await runCheck({ kind: "blocked", reason: "x" }, noBridge), "x", "runCheck still gives the full reason");
+});
+
+test("no non-green light renders without a reason, and every short reason fits one line", async () => {
+  const w = new ServiceWatcher(1);
+  const dead = await closedPort();
+  const tree: ServiceNode[] = JSON.parse(JSON.stringify(DEFAULT_SERVICES));
+  // every probe in the default tree fails here (a closed local port stands in for the NAS)
+  const kill = (ns: ServiceNode[]) => ns.forEach((n) => { if (n.check.kind === "tcp" || n.check.kind === "alive") Object.assign(n.check, { host: "127.0.0.1", port: dead, kind: "tcp" }); kill(n.children ?? []); });
+  kill(tree);
+  for (const bridge of [() => ({ hapEnabled: false, paired: false, go2rtc: g2 }), () => ({ hapEnabled: true, paired: true, go2rtc: g2 })]) {
+    const out = await w.poll(tree, bridge);
+    const walk = (ns: LightNode[]) => ns.forEach((n) => {
+      if (n.state !== "ok") {
+        assert.ok(n.short && n.short.trim(), `${n.name} (${n.state}) has a short reason`);
+        assert.ok(n.reason && n.reason.trim(), `${n.name} (${n.state}) has a full reason`);
+        assert.ok(n.short!.length <= 28, `${n.name}'s short reason fits one line: "${n.short}"`);
+      } else {
+        assert.equal(n.short, null);
+        assert.equal(n.reason, null);
+      }
+      walk(n.children);
+    });
+    walk(out);
+  }
+});
+
+test("a rollup that's orange says why: how many below it aren't green, and which", async () => {
+  const tree: ServiceNode[] = [{ id: "server", name: "NAS", rollup: true, check: { kind: "bridge" }, children: [
+    { id: "a", name: "A", check: { kind: "blocked", reason: IPVLAN_REASON }, children: [
+      { id: "a2", name: "dev", check: { kind: "blocked", reason: IPVLAN_REASON } }] },
+    { id: "b", name: "B", check: { kind: "blocked", reason: IPVLAN_REASON } },
+    { id: "c", name: "C", check: { kind: "bridge" } },
+  ] }];
+  const out = (await new ServiceWatcher(1).poll(tree, () => ({ hapEnabled: true, paired: true, go2rtc: g2 })))[0];
+  assert.equal(out.state, "warn");
+  assert.equal(out.short, "3 can't be checked yet");
+  assert.match(out.reason!, /A: can't check yet/);
+  assert.match(out.reason!, /dev \(under A\)/);
+  const dead = await closedPort();
+  const mixed: ServiceNode[] = [{ id: "r", name: "NAS", rollup: true, check: { kind: "bridge" }, children: [
+    { id: "a", name: "A", check: { kind: "blocked", reason: IPVLAN_REASON } },
+    { id: "t", name: "SMB", check: { kind: "tcp", host: "127.0.0.1", port: dead } }] }];
+  const m = (await new ServiceWatcher(1).poll(mixed, () => ({ hapEnabled: true, paired: true, go2rtc: g2 })))[0];
+  assert.equal(m.state, "warn");
+  assert.equal(m.short, "2 checks not green");
+  assert.match(m.reason!, /SMB: not answering/);
+});
+
+test("the old default 'Server' rollup is the NAS: renamed in the defaults and in saved settings", () => {
+  assert.equal(DEFAULT_SERVICES[0].name, "NAS");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-"));
+  const f = path.join(dir, "settings.json");
+  fs.writeFileSync(f, JSON.stringify({ services: [{ id: "server", name: "Server", rollup: true, check: { kind: "bridge" } }, { id: "other", name: "Server", check: { kind: "bridge" } }] }));
+  const s = loadSettings(f).settings;
+  assert.equal(s.services[0].name, "NAS");
+  assert.equal(s.services[1].name, "Server", "only the old default node is renamed");
 });

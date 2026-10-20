@@ -92,13 +92,16 @@ test("service lights reach /api/state with their reasons and a timestamp", async
   const st = rt.state() as any;
   assert.equal(typeof st.servicesAt, "number");
   const server = st.services[0];
-  assert.equal(server.name, "Server");
+  assert.equal(server.name, "NAS", "the old 'Server' rollup is named for what it checks");
+  if (server.state !== "ok") assert.ok(server.short && server.reason, "a non-green NAS light says why");
   const kids = Object.fromEntries(server.children.map((k: any) => [k.id, k]));
   assert.equal(kids.homekit.name, "HomeKit bridge");
   assert.equal(kids.homekit.state, "down");
   assert.match(kids.homekit.reason, /HomeKit is off on this instance/);
+  assert.equal(kids.homekit.short, "HomeKit off (test)");
   assert.equal(kids.constructicon.state, "down");
   assert.match(kids.constructicon.reason, /can't be checked from the NAS's own network yet/);
+  assert.equal(kids.constructicon.short, "can't check yet");
   assert.equal(kids.scrypted, undefined, "the Scrypted light is gone (owner Q2 = a)");
   const reasons = JSON.stringify(st.services, (k, v) => (k === "link" ? undefined : v));
   assert.doesNotMatch(reasons, /\b\d+\.\d+\.\d+\.\d+\b/, "no addresses in the reasons");

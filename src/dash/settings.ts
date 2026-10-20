@@ -16,7 +16,7 @@ export type ServiceCheck =
   | { kind: "http"; url: string; ok: "any" | "200" }
   | { kind: "bridge" }
   /** A light that can't be checked from here yet; it shows red with this reason (owner Q1 = c). */
-  | { kind: "blocked"; reason: string };
+  | { kind: "blocked"; reason: string; short?: string };
 export interface ServiceNode { id: string; name: string; link?: string; rollup?: boolean; check: ServiceCheck; children?: ServiceNode[] }
 export interface DashCameraPref { camera: string; label: string; shown: boolean; stream: "main" | "sub" }
 export interface DashSettings {
@@ -35,13 +35,15 @@ export const GRID_MAX = 4;
 export const FONT_FILE = /^[A-Za-z0-9_-]{1,64}\.(otf|ttf|woff2?)$/;
 
 /** Owner Q1 = c: the ipvlan apps can't be reached from the host network yet, and the light says so. */
+/** The one-line label for it on the wall display; the full reason shows on tap/hover. */
+export const IPVLAN_SHORT = "can't check yet";
 export const IPVLAN_REASON = "can't be checked from the NAS's own network yet (it sits on the ipvlan LAN; tracked in hooptiej/unscrypted#11)";
 
 // Hosts as seen from the NAS's own network (unscrypted runs with host networking).
 // Constructicon/Questlog can't be reached from there yet (owner Q1 = c: the lights say why);
 // the old Scrypted light is replaced by the HomeKit bridge's own status (owner Q2 = a).
 export const DEFAULT_SERVICES: ServiceNode[] = [
-  { id: "server", name: "Server", rollup: true, check: { kind: "alive", host: "10.0.1.78", port: 80 }, children: [
+  { id: "server", name: "NAS", rollup: true, check: { kind: "alive", host: "10.0.1.78", port: 80 }, children: [
     { id: "smb", name: "SMB", check: { kind: "tcp", host: "127.0.0.1", port: 445 } },
     { id: "homekit", name: "HomeKit bridge", check: { kind: "bridge" } },
     // Homedash checked these with http (10.0.1.240/.241 ok any, .250/.246 ok 200). Swap back to
@@ -93,12 +95,17 @@ export function loadSettings(file: string): { settings: DashSettings; warning: s
       photos: { ...d.photos, ...(raw.photos ?? {}) },
       fonts: { ...d.fonts, ...(raw.fonts ?? {}) },
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
-      services: Array.isArray(raw.services) ? raw.services : d.services,
+      services: Array.isArray(raw.services) ? raw.services.map(renameOldServer) : d.services,
     };
     return { settings: s, warning: null, mtimeMs };
   } catch (err) {
     return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${(err as Error).message}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs };
   }
+}
+
+/** The old default's rollup was called "Server"; it checks the NAS itself, so it's "NAS" now (owner eye-check). */
+function renameOldServer(n: ServiceNode): ServiceNode {
+  return n && n.id === "server" && n.name === "Server" ? { ...n, name: "NAS" } : n;
 }
 
 const int = (v: unknown, lo: number, hi: number, label: string): number => {
