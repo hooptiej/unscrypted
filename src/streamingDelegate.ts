@@ -45,7 +45,12 @@ const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "t
  * packet is the next keyframe, then steady real time. The camera's parameters come from the SDP,
  * which is all a copy needs.
  */
-export const NO_PROBE_ARGS = ["-analyzeduration", "0", "-probesize", "32"];
+// DISABLED in 0.4.3: on prod, Couch Cam's Foscam couldn't be opened with these. ffmpeg found no
+// picture size ("Could not find codec parameters ... unspecified size"), so every live view and
+// snapshot failed. It failed even at 1 s of analysis; only the default probe (~5 s) works for it.
+// The pattern-camera harness that proved #35 announces its size in the SDP; the real camera doesn't.
+// Kept empty, with the hook in place, until a per-camera probe is designed (#35).
+export const NO_PROBE_ARGS: string[] = [];
 
 /** The live view's input args for the chosen feed (go2rtc's restream or the camera, #16). */
 export function buildLiveInputArgs(feed: FeedChoice): string[] {
@@ -58,7 +63,8 @@ export function buildLiveInputArgs(feed: FeedChoice): string[] {
  * give HomeKit a stream it can't decode. Repeating them when the camera already does is harmless.
  */
 export function buildLiveVideoCodecArgs(copy: boolean, fps: number, maxBitRateK: number): string[] {
-  if (copy) return ["-an", "-c:v", "copy", "-bsf:v", "dump_extra"];
+  // dump_extra is held back with NO_PROBE_ARGS in 0.4.3 (unverified on the real cameras); live view is the 0.4.1 args again.
+  if (copy) return ["-an", "-c:v", "copy"];
   return ["-an", "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main", "-pix_fmt", "yuv420p", "-r", String(fps), "-b:v", `${maxBitRateK}k`];
 }
 

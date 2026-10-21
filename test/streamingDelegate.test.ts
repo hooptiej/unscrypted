@@ -8,25 +8,23 @@ setLogLevel("error");
 test("live view and snapshot read the chosen feed over TCP with a socket timeout", () => {
   const f = { url: "rtsp://127.0.0.1:8554/garagecamtest", via: "go2rtc" as const };
   assert.deepEqual(buildLiveInputArgs(f), ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", "-timeout", "10000000",
-    "-analyzeduration", "0", "-probesize", "32", "-i", f.url]);
+    "-i", f.url]);
   const s = buildSnapshotArgs(f, 640, 360);
   assert.equal(s[s.indexOf("-i") + 1], f.url);
   assert.deepEqual(s.slice(s.indexOf("-timeout"), s.indexOf("-timeout") + 2), ["-timeout", "10000000"]);
   assert.ok(s.includes("scale=640:360:force_original_aspect_ratio=decrease"));
 });
 
-test("#35: live view and snapshots start without input analysis, and the no-probe flags come before -i", () => {
+test("0.4.3: live view and snapshots use ffmpeg's default input analysis (a tiny probe broke Couch Cam's Foscam on prod)", () => {
   const f = { url: "rtsp://127.0.0.1:8554/cam", via: "camera" as const };
   for (const a of [buildLiveInputArgs(f), buildSnapshotArgs(f, 640, 360)]) {
-    const i = a.indexOf("-i");
-    assert.equal(a[a.indexOf("-analyzeduration") + 1], "0");
-    assert.equal(a[a.indexOf("-probesize") + 1], "32");
-    assert.ok(a.indexOf("-analyzeduration") < i && a.indexOf("-probesize") < i, "input options must precede -i");
+    assert.ok(!a.includes("-analyzeduration"), "no -analyzeduration override");
+    assert.ok(!a.includes("-probesize"), "no -probesize override");
   }
 });
 
-test("#35: a copied live view repeats SPS/PPS before keyframes; a transcode doesn't need to", () => {
-  assert.deepEqual(buildLiveVideoCodecArgs(true, 30, 300), ["-an", "-c:v", "copy", "-bsf:v", "dump_extra"]);
+test("0.4.3: a copied live view is a plain copy (dump_extra held back until checked on real cameras)", () => {
+  assert.deepEqual(buildLiveVideoCodecArgs(true, 30, 300), ["-an", "-c:v", "copy"]);
   const t = buildLiveVideoCodecArgs(false, 15, 299);
   assert.ok(!t.includes("dump_extra"));
   assert.deepEqual(t.slice(t.indexOf("-r"), t.indexOf("-r") + 4), ["-r", "15", "-b:v", "299k"]);
