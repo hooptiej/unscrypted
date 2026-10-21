@@ -31,7 +31,7 @@ import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
 import { SourceSelector } from "./source";
 import { probeOnvif } from "./onvif";
-import { hasPairingState } from "./util";
+import { hasPairingState, hostIpv4s, parseHapBind } from "./util";
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -182,6 +182,19 @@ async function main(): Promise<void> {
 
   if (hapEnabled) {
     // Publish the bridge (starts the HAP server + mDNS advertisement).
+    // UNSCRYPTED_HAP_BIND limits which addresses HomeKit advertises (#36): an Apple device that
+    // connects on an extra address (an ipvlan shim, a dashboard alias) gets live video from the
+    // host's main address instead, and live view dies after about a second.
+    const hapBind = parseHapBind(process.env.UNSCRYPTED_HAP_BIND);
+    if (hapBind) {
+      log.info(`HomeKit advertises only on: ${hapBind.join(", ")} (UNSCRYPTED_HAP_BIND)`);
+    } else {
+      const v4 = hostIpv4s(os.networkInterfaces());
+      if (v4.length > 1) {
+        log.warn(`HomeKit advertises on every address this host has (${v4.join(", ")}). If Apple devices connect on the wrong one, live view plays a second and stops. ` +
+          `Set UNSCRYPTED_HAP_BIND to the host's main address (e.g. UNSCRYPTED_HAP_BIND=${v4[0]}).`);
+      }
+    }
     await bridge.publish({
       username: config.bridge.username,
       pincode: config.bridge.pin,
@@ -189,6 +202,7 @@ async function main(): Promise<void> {
       category: Categories.BRIDGE,
       setupID: config.bridge.setupId,
       advertiser: MDNSAdvertiser.CIAO,
+      ...(hapBind ? { bind: hapBind } : {}),
     });
 
     printPairingInfo(log, config, bridge);
