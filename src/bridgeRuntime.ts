@@ -14,10 +14,11 @@ import { Bridge } from "hap-nodejs";
 import { loadConfig, ConfigError, ResolvedConfig, ResolvedCamera } from "./config";
 import { Logger } from "./logger";
 import { UnscryptedCamera } from "./camera";
+import { StandaloneState, standalonePaired, standaloneSetupURI } from "./standalone";
 import { Supervisor, ChildStatus } from "./admin/supervisor";
 import { Go2rtcManager } from "./admin/go2rtc";
 import { streamNames } from "./admin/go2rtcConfig";
-import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
+import { ApplyMode, BridgeStatus, CameraHomekitStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
 import { UserError, toErrorJson } from "./admin/errors";
 import { dashCameras, ToDash } from "./dash/ipc";
 
@@ -27,6 +28,8 @@ export interface RuntimeOptions {
   /** The published bridge, or null when HAP is off (test instance). */
   bridge: Bridge | null;
   cameras: UnscryptedCamera[];
+  /** Standalone cameras' publish state (#57); empty when none, or when HAP is off. */
+  standalone?: StandaloneState[];
   log: Logger;
   ffmpegPath: string;
   version: string;
@@ -223,6 +226,7 @@ export class BridgeRuntime {
         liveSessions: s?.liveSessions ?? 0, recordingActive: s?.recordingActive ?? false,
         motionActive: s?.motionActive ?? false, lastMotionAt: s?.lastMotionAt ?? null,
         pendingRestart: this.pendingRestart.has(rc.name) || !cam,
+        homekit: this.homekitStatus(rc),
       };
     });
     return {
@@ -230,7 +234,22 @@ export class BridgeRuntime {
       setupURI: b ? b.setupURI() : "", paired: Boolean(b?._accessoryInfo?.paired()),
       hapPort: b ? this.config.bridge.port : null, hapEnabled: Boolean(b),
       cameras, go2rtc: this.go2rtcStatus(), dash: this.dashStatus(), startedAt: this.startedAt, version: this.o.version,
+      pairings: (this.o.standalone ?? []).map((st) => ({
+        name: st.name, pin: st.pin, setupURI: standaloneSetupURI(st), paired: standalonePaired(st),
+        published: st.published, port: st.port, error: st.error,
+      })),
     };
+  }
+
+  /** What the pane shows about a camera's HomeKit route. Uses the running state, not just the saved config. */
+  private homekitStatus(rc: ResolvedCamera): CameraHomekitStatus {
+    const st = this.o.standalone?.find((s) => s.name === rc.name);
+    if (st) return { mode: "standalone", port: st.port, published: st.published, paired: standalonePaired(st), error: st.error };
+    if (rc.homekit?.mode === "standalone") {
+      return { mode: "standalone", port: rc.homekit.port, published: false, paired: false,
+        error: this.o.bridge ? "Saved as standalone; it is published after a bridge restart." : "HomeKit is off on this instance." };
+    }
+    return { mode: "bridged", port: null, published: Boolean(this.o.bridge), paired: Boolean(this.o.bridge?._accessoryInfo?.paired()), error: null };
   }
 
   private send(m: ToAdmin): void {
@@ -383,6 +402,11 @@ export class BridgeRuntime {
 
   private addCamera(after: ResolvedCamera): { mode: ApplyMode; message: string } {
     const name = after.name;
+    if (after.homekit.mode === "standalone" && this.o.bridge) {
+      // Its identity is generated and saved, and its own HAP server started, only at startup.
+      this.pendingRestart.add(name);
+      return { mode: "restart-needed", message: `Saved. "${name}" is a standalone HomeKit camera: it gets its own pairing code after a bridge restart. Use "Restart bridge", then pair it from the Pairing page.` };
+    }
     let cam: UnscryptedCamera;
     try {
       cam = new UnscryptedCamera(after, this.o.ffmpegPath, this.o.log);

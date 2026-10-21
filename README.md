@@ -99,6 +99,34 @@ unscrypted tries **PullPoint** first (it long-polls the camera, no inbound serve
 
 Verified against a generic XM camera (admin on port 8080): PullPoint is unsupported, push works, motion arrives on `tns1:RuleEngine/CellMotionDetector/Motion` with `IsMotion=true/false`.
 
+### Standalone cameras (one HomeKit accessory per camera)
+
+By default every camera rides the bridge: one accessory in Home, one pairing, one HAP connection carrying every camera's stream setup, keepalives and HKSV clip uploads. A camera can opt out and be published as **its own HomeKit accessory**, with its own pairing code, HAP server and TCP port (#57). This is how Homebridge recommends running cameras, and how Scrypted does it: one busy camera can't hold up another's live view on a shared connection.
+
+```json
+{
+  "name": "Roof Cam",
+  "rtspMain": "rtsp://...",
+  "homekit": { "mode": "standalone" }
+}
+```
+
+On the next start, unscrypted fills in whatever the block is missing and saves it back to `config.json` (the previous version goes to `config/backups/`), so the pairing survives restarts:
+
+| Field | Meaning |
+|---|---|
+| `mode` | `"bridged"` (the default, also when there's no `homekit` block) or `"standalone"`. |
+| `username` | The accessory's HAP id, a MAC-style string. Generated as a random locally administered address. |
+| `pin` | Its setup code, `XXX-XX-XXX`. Generated; trivial codes HomeKit refuses (`111-11-111`, `123-45-678`...) are never used and are refused if typed in. |
+| `setupId` | 4 letters/digits for the QR code. Generated. |
+| `port` | Its HAP server's TCP port. Generated as the next free port from 51830, skipping the bridge's port, other cameras' ports and ports already in use. |
+
+Each standalone camera's setup code and QR are printed in the log at startup, and shown on the admin pane's **Pairing** page with its paired state; the **Cameras** page says which cameras are bridged and which are standalone. Pair each standalone camera separately in the Home app (Add Accessory, scan its code). It honors `UNSCRYPTED_HAP_BIND` like the bridge. Its pairing files sit in the same persist folder as the bridge's, named by its own id.
+
+If a standalone camera can't be published (its port is taken, its identity couldn't be saved, the publish failed) the log and the pane say which camera and why; the bridge and the other cameras keep running.
+
+**The trade-off:** moving a camera from bridged to standalone makes Home see a brand-new accessory. Its old bridged copy disappears from Home, and with it that camera's **HKSV clips, room, name and automations**: set them up again on the new accessory. The same happens moving back. So move cameras one at a time, starting with one that doesn't record, at a moment the household won't mind. The `homekit` block isn't editable in the admin pane on purpose; edit `config.json` and restart the bridge.
+
 ## Run
 
 ### Locally (dev)
@@ -197,7 +225,8 @@ The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open
 
 | Port | What | Where it listens |
 |---|---|---|
-| `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces |
+| `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces, or `UNSCRYPTED_HAP_BIND` |
+| `51830+/tcp` | HomeKit (HAP) for each standalone camera, `homekit.port` | all interfaces, or `UNSCRYPTED_HAP_BIND` |
 | `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces |
 | `8180/tcp` | Dashboard, open and watch-only (`UNSCRYPTED_DASH_PORT`; own IP: port `80` on `UNSCRYPTED_DASH_HOST`) | all interfaces, or `UNSCRYPTED_DASH_HOST` |
 | `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
@@ -217,6 +246,8 @@ sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypt
 ```
 
 The `-p unscrypted-test` project name and the `unscrypted-test` container name keep it apart from prod. The test instance pulls the same cameras over RTSP while you use it, so each camera has one more viewer for that time.
+
+To test HomeKit itself (e.g. standalone cameras), turn HAP on for the test instance only with an extra compose file that sets `UNSCRYPTED_HAP=on`, and give its `config.json` a bridge identity of its own: a different `bridge.username`, `pin`, `setupId`, `name` and `port`, an empty persist folder, and pattern cameras rather than the real ones. Never reuse prod's identity, and pair it into a separate test Home.
 
 ## HomeKit codec constraints (as implemented)
 

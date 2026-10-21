@@ -31,6 +31,10 @@ import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
 import { probeOnvif } from "./onvif";
 import { hasPairingState, hostIpv4s, parseHapBind } from "./util";
+import { ensureStandaloneIdentities, tcpPortFree } from "./homekitIdentity";
+import { publishStandalone, standaloneSetupURI, unpublishStandalone, StandaloneState } from "./standalone";
+import { readRawConfig, writeConfigAtomic } from "./admin/configStore";
+import { UserError } from "./admin/errors";
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -49,10 +53,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  // HAP-off mode is for the test instance: it must never collide with prod's HomeKit identity.
+  const hapEnabled = process.env.UNSCRYPTED_HAP !== "off";
+
   let config: ResolvedConfig;
   let resolvedConfigPath: string;
+  let identityError: string | undefined;
   try {
     resolvedConfigPath = findConfigPath(configPath);
+    if (hapEnabled && !selftest) identityError = await ensureIdentities(resolvedConfigPath, rootLogger);
     config = loadConfig(resolvedConfigPath);
   } catch (err) {
     if (err instanceof ConfigError) {
@@ -99,9 +108,6 @@ async function main(): Promise<void> {
       process.exit(2);
     }
   }
-  // HAP-off mode is for the test instance: it must never collide with prod's HomeKit identity.
-  const hapEnabled = process.env.UNSCRYPTED_HAP !== "off";
-
   fs.mkdirSync(config.persistDir, { recursive: true });
   if (hapEnabled && !hasPairingState(config.persistDir)) {
     log.warn(
@@ -123,7 +129,8 @@ async function main(): Promise<void> {
   for (const camConfig of config.cameras) {
     try {
       const cam = new UnscryptedCamera(camConfig, config.ffmpegPath, log);
-      bridge.addBridgedAccessory(cam.accessory);
+      // A standalone camera is published on its own below, never also on the bridge (#57).
+      if (camConfig.homekit.mode !== "standalone") bridge.addBridgedAccessory(cam.accessory);
       cameras.push(cam);
     } catch (err) {
       // One bad camera must not take down the whole bridge.
@@ -143,11 +150,13 @@ async function main(): Promise<void> {
     log.error(`unhandled rejection (bridge kept running): ${(e as Error)?.stack ?? e}`);
   });
 
+  const standalone: StandaloneState[] = [];
   if (hapEnabled) {
     // Publish the bridge (starts the HAP server + mDNS advertisement).
     // UNSCRYPTED_HAP_BIND limits which addresses HomeKit advertises (#36): an Apple device that
     // connects on an extra address (an ipvlan shim, a dashboard alias) gets live video from the
     // host's main address instead, and live view dies after about a second.
+    // Standalone cameras honor the same bind.
     const hapBind = parseHapBind(process.env.UNSCRYPTED_HAP_BIND);
     if (hapBind) {
       log.info(`HomeKit advertises only on: ${hapBind.join(", ")} (UNSCRYPTED_HAP_BIND)`);
@@ -168,16 +177,32 @@ async function main(): Promise<void> {
       ...(hapBind ? { bind: hapBind } : {}),
     });
 
-    printPairingInfo(log, config, bridge);
+    printPairingInfo(log, `"${config.bridge.name}"`, config.bridge.pin, bridge.setupURI());
+
+    // Standalone cameras (#57): one HAP server each. A failure is logged per camera and the
+    // rest carry on.
+    for (const cam of cameras) {
+      if (cam.resolved.homekit.mode !== "standalone") continue;
+      const st = await publishStandalone(cam, hapBind, log, identityError);
+      standalone.push(st);
+      if (st.published) {
+        log.info(`standalone camera "${cam.name}" published as its own HomeKit accessory on port ${st.port} (id ${st.username})`);
+        printPairingInfo(log, `"${cam.name}" (standalone camera, port ${st.port})`, st.pin as string, standaloneSetupURI(st));
+      }
+    }
 
     // Start background work (motion pollers). The prebuffer starts on demand when
-    // HomeKit enables recording.
+    // HomeKit enables recording. A standalone camera that didn't publish has nobody to tell.
     for (const cam of cameras) {
+      if (cam.resolved.homekit.mode === "standalone" && !standalone.find((s) => s.name === cam.name)?.published) continue;
       cam.start();
     }
 
+    const bridged = cameras.filter((c) => c.resolved.homekit.mode !== "standalone").length;
+    const up = standalone.filter((s) => s.published).length;
     log.info(
-      `unscrypted is up: ${cameras.length} camera(s) bridged on port ${config.bridge.port}`,
+      `unscrypted is up: ${bridged} camera(s) bridged on port ${config.bridge.port}` +
+        (standalone.length ? `, ${up} of ${standalone.length} standalone camera(s) published` : ""),
     );
   } else {
     // Motion sources stay off too: they'd take camera event subscriptions and the shared ONVIF
@@ -197,6 +222,7 @@ async function main(): Promise<void> {
     configPath: resolvedConfigPath,
     bridge: hapEnabled ? bridge : null,
     cameras,
+    standalone,
     log,
     ffmpegPath: config.ffmpegPath,
     version: (require("../package.json") as { version: string }).version,
@@ -253,6 +279,7 @@ async function main(): Promise<void> {
       cam.shutdown();
     }
     if (hapEnabled) {
+      await unpublishStandalone(standalone, log);
       try {
         await bridge.unpublish();
       } catch (err) {
@@ -353,16 +380,47 @@ async function runProbe(
   }
 }
 
+/**
+ * Give every standalone camera a full identity before the config is loaded (#57): fill in what
+ * is missing and save it atomically (with a backup), so the pairing survives restarts. Returns
+ * a plain-words reason when that failed (those cameras then stay unpublished, loudly).
+ */
+async function ensureIdentities(file: string, log: Logger): Promise<string | undefined> {
+  try {
+    const raw = readRawConfig(file);
+    const hapBind = parseHapBind(process.env.UNSCRYPTED_HAP_BIND);
+    const host = hapBind?.length === 1 ? hapBind[0] : undefined;
+    const { config: next, generated } = await ensureStandaloneIdentities(raw, {
+      isPortFree: (p) => tcpPortFree(p, host),
+    });
+    if (generated.length === 0) return undefined;
+    const { backupPath, warning } = writeConfigAtomic(file, next);
+    for (const g of generated) {
+      log.info(
+        `standalone camera "${g.camera}": generated its HomeKit identity (${g.fields.join(", ")}): ` +
+          `id ${g.username}, setup id ${g.setupId}, port ${g.port}. Saved to ${file}` +
+          (backupPath ? ` (previous version kept at ${backupPath})` : "") + ". The setup code is in its pairing block below.",
+      );
+    }
+    if (warning) log.warn(warning);
+    return undefined;
+  } catch (err) {
+    const msg = err instanceof UserError ? `${err.body.happened} ${err.body.changed}` : (err as Error).message;
+    log.error(`couldn't generate or save HomeKit identities for standalone cameras: ${msg}`);
+    return msg;
+  }
+}
+
 function printPairingInfo(
   log: Logger,
-  config: ResolvedConfig,
-  bridge: Bridge,
+  label: string,
+  pin: string,
+  uri: string,
 ): void {
-  const uri = bridge.setupURI();
   log.info("");
   log.info("──────────────────────────────────────────────");
-  log.info(`  Pair "${config.bridge.name}" in the Home app:`);
-  log.info(`  Setup code:  ${config.bridge.pin}`);
+  log.info(`  Pair ${label} in the Home app:`);
+  log.info(`  Setup code:  ${pin}`);
   log.info("  Scan this QR code, or enter the code manually:");
   log.info("──────────────────────────────────────────────");
   // qrcode-terminal prints the QR to stdout.

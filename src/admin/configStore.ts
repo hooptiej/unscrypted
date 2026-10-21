@@ -59,6 +59,8 @@ export function redactCamera(cam: CameraConfig): PublicCamera {
   if (cam.rtspPassword !== undefined) out.rtspPassword = { set: cam.rtspPassword !== "" };
   if (cam.foscam) out.foscam = { ...cam.foscam, password: { set: cam.foscam.password !== "" } };
   if (cam.onvif) out.onvif = { ...cam.onvif, password: { set: cam.onvif.password !== "" } };
+  // A standalone camera's setup code is shown on the Pairing page only, like the bridge's (#57).
+  if (cam.homekit) { const { pin: _pin, ...hk } = cam.homekit; out.homekit = hk; }
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 }

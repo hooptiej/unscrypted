@@ -120,6 +120,7 @@ label.check { display: flex; gap: 8px; align-items: center; }
 .msg p { margin: 2px 0; }
 .ok { background: var(--ok-bg); border-left: 5px solid var(--ok); }
 .amber { background: var(--warn-bg); border-left: 5px solid var(--warn); }
+.msg.bad { background: var(--bad-bg); border-left: 5px solid var(--bad); }
 .err { background: var(--bad-bg); border-left: 5px solid var(--bad); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
 .err p { margin: 2px 0; }
 

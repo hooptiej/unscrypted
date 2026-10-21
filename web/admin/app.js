@@ -353,6 +353,14 @@ function loginBox(cam) {
   return box;
 }
 
+/** How a camera reaches HomeKit (#57): bridged, or standalone with its own port and pairing. */
+function homekitText(h) {
+  if (h.mode !== "standalone") return "bridged (through the bridge)";
+  if (!h.published) return el("span", { class: "badtext" }, `standalone, not published: ${h.error || "see the bridge log"}`);
+  return el("span", {}, `standalone, port ${h.port}, ${h.paired ? "paired" : "not paired yet "}`,
+    h.paired ? null : el("a", { href: "#/pairing" }, "(code on the Pairing page)"));
+}
+
 async function renderCameras() {
   const r = await api("GET", "/api/cameras");
   if (r.error) { app.replaceChildren(el("h1", {}, "Cameras"), errorBox(r.error)); return; }
@@ -372,6 +380,7 @@ async function renderCameras() {
       add("Live viewers", String(s.liveSessions));
       add("Recording", s.recordingActive ? "on" : "off");
       add("Last motion", ago(s.lastMotionAt));
+      if (s.homekit) add("HomeKit", homekitText(s.homekit));
       if (s.pendingRestart) add("Pending", el("span", { class: "badtext" }, "change waits for a bridge restart"));
     }
     const checkOut = el("div");
@@ -623,11 +632,21 @@ async function renderPairing() {
   app.replaceChildren(el("h1", {}, "Pairing"), body, refresh);
   const r = await api("GET", "/api/pairing");
   if (r.error) { body.replaceChildren(errorBox(r.error)); return; }
+  const cams = (r.cameras || []).map((c) => el("div", { class: "card" },
+    el("h3", {}, `${c.name} (standalone camera)`),
+    c.qrImage ? el("img", { class: "qr", src: c.qrImage, alt: `HomeKit pairing QR code for ${c.name}` }) : null,
+    el("p", {}, "Setup code"),
+    el("p", { class: "pin" }, c.pin || "none yet"),
+    msgBox(!c.published ? "bad" : c.paired ? "amber" : "ok", c.note)));
   body.replaceChildren(
+    el("h2", {}, "Bridge"),
     el("img", { class: "qr", src: r.qrImage, alt: "HomeKit pairing QR code" }),
     el("p", {}, "Setup code"),
     el("p", { class: "pin" }, r.pin),
-    msgBox(r.paired ? "amber" : "ok", r.note));
+    msgBox(r.paired ? "amber" : "ok", r.note),
+    ...(cams.length ? [el("h2", {}, "Standalone cameras"),
+      el("p", { class: "hint" }, "Each standalone camera is its own HomeKit accessory with its own code. Pair each one separately, in the same Home as the bridge."),
+      el("div", { class: "grid" }, ...cams)] : []));
 }
 
 // ---------- status ----------

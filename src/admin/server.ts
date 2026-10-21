@@ -245,6 +245,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
     if (s.dash && s.dash.state !== "running") {
       notes.push(`The dashboard is ${s.dash.state}${s.dash.lastError ? ` (${s.dash.lastError})` : ""}: the living-room display can't load until it's back. HomeKit is unaffected.`);
     }
+    for (const p of s.pairings ?? []) {
+      if (!p.published) notes.push(`Standalone camera "${p.name}" isn't in HomeKit: ${p.error ?? "unknown reason; check the bridge log."}`);
+    }
     try {
       const ports = [...new Set(readRawConfig(d.configPath).cameras.filter((c) => c.onvif).map((c) => c.onvif!.notifyPort ?? 0))];
       if (ports.length === 1) {
@@ -403,7 +406,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         attempted = "Read bridge status";
         const s = d.bridge.status();
         if (!s) throw new UserError({ attempted, happened: "The bridge hasn't reported its status yet.", changed: "Nothing.", next: "Wait a few seconds; the page retries on its own." }, 503);
-        const { pin: _p, setupURI: _u, ...pub } = s;
+        const { pin: _p, setupURI: _u, pairings: _s, ...pub } = s;
         return json(res, 200, { ...pub, notices: statusNotices(s) });
       }
 
@@ -412,13 +415,23 @@ export function createAdminServer(d: AdminDeps): http.Server {
         const s = d.bridge.status();
         if (!s) throw new UserError({ attempted, happened: "The bridge hasn't reported its status yet.", changed: "Nothing.", next: "Wait a few seconds and press Refresh." }, 503);
         if (!s.hapEnabled) throw new UserError({ attempted, happened: "HomeKit is switched off in this instance (UNSCRYPTED_HAP=off), so there's nothing to pair.", changed: "Nothing.", next: "Use the production pane for pairing." }, 409);
-        const svg = await QRCode.toString(s.setupURI, { type: "svg", margin: 1 });
+        const qr = async (uri: string) => `data:image/svg+xml;base64,${Buffer.from(await QRCode.toString(uri, { type: "svg", margin: 1 })).toString("base64")}`;
+        // Standalone cameras (#57): each has its own code, paired separately from the bridge.
+        const cameras = await Promise.all((s.pairings ?? []).map(async (p) => ({
+          ...p, qrImage: p.published && p.setupURI ? await qr(p.setupURI) : null,
+          note: !p.published
+            ? `Not published to HomeKit: ${p.error ?? "unknown reason; check the bridge log."}`
+            : p.paired
+              ? "Already paired with a Home. This code only works again after the camera is removed from Home."
+              : `Not paired yet: in the Home app choose Add Accessory and scan this camera's own code (port ${p.port}).`,
+        })));
         return json(res, 200, {
           pin: s.pin, setupURI: s.setupURI, paired: s.paired,
-          qrImage: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+          qrImage: await qr(s.setupURI),
           note: s.paired
             ? "Already paired with a Home. This code only works again after the bridge is removed from Home."
             : "Not paired yet: in the Home app choose Add Accessory and scan this code, or type the setup code.",
+          cameras,
         });
       }
 

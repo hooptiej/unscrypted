@@ -14,11 +14,25 @@ export interface CameraStatus {
   reachable: boolean | null; reachableCheckedAt: number | null; reachError: string | null;
   liveSessions: number; recordingActive: boolean; motionActive: boolean; lastMotionAt: number | null;
   pendingRestart: boolean;   // saved change needs a bridge restart to take effect
+  /** How the camera reaches HomeKit (#57). No secrets here: the PIN is only in `pairings`. */
+  homekit: CameraHomekitStatus;
+}
+
+export interface CameraHomekitStatus {
+  mode: "bridged" | "standalone";
+  /** Standalone only: its own HAP port, whether it's advertising, paired, and why not. */
+  port: number | null; published: boolean; paired: boolean; error: string | null;
+}
+
+/** One standalone camera's pairing details, for the Pairing page only (stripped from /api/status). */
+export interface StandalonePairing {
+  name: string; pin: string | null; setupURI: string; paired: boolean; published: boolean; port: number | null; error: string | null;
 }
 
 export interface BridgeStatus {
   bridgeName: string; pin: string; setupURI: string; paired: boolean; hapPort: number | null; hapEnabled: boolean;
   cameras: CameraStatus[]; go2rtc: ChildStatus; dash: ChildStatus; startedAt: number; version: string;
+  pairings: StandalonePairing[];
 }
 
 export type ApplyMode = "live" | "added" | "restart-needed";
@@ -60,5 +74,7 @@ export function classifyChange(before: ResolvedCamera | undefined, after: Resolv
   if (!before) return "added";
   if (HAP_SHAPE.some((k) => before[k] !== after[k])) return "restart-needed";
   if (motionKindOf(before) !== motionKindOf(after)) return "restart-needed";
+  // Bridged <-> standalone, or a new standalone identity: a different accessory to Home (#57).
+  if (JSON.stringify(before.homekit) !== JSON.stringify(after.homekit)) return "restart-needed";
   return "live";
 }

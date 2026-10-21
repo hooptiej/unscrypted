@@ -23,7 +23,7 @@ let bridgeReply: (m: any) => any = (m) => ({ type: "applied", reqId: "x", ok: tr
 
 const status = (over: Partial<BridgeStatus> = {}): BridgeStatus => ({
   bridgeName: "U", pin: "031-45-154", setupURI: "X-HM://0023ISYWYUNSC", paired: false, hapPort: 51826, hapEnabled: true,
-  cameras: [], startedAt: Date.now(), version: "test",
+  cameras: [], startedAt: Date.now(), version: "test", pairings: [],
   go2rtc: { name: "go2rtc", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 },
   dash: { name: "dash", state: "running", restarts: 0, lastError: null, nextRetryAt: null, since: 0 }, ...over,
 });
@@ -315,6 +315,25 @@ test("pairing returns a QR image and the code", async () => {
   assert.equal(j.pin, "031-45-154");
   assert.match(j.qrImage, /^data:image\/svg\+xml;base64,/);
   assert.ok(j.note.length > 0);
+});
+
+test("standalone cameras (#57): codes only on the pairing page, a failed one is a status notice", async () => {
+  currentStatus = status({ pairings: [
+    { name: "Roof", pin: "482-19-305", setupURI: "X-HM://00ABCDEFGROOF", paired: false, published: true, port: 51830, error: null },
+    { name: "Side", pin: "482-19-306", setupURI: "", paired: false, published: false, port: 51831, error: "TCP port 51831 is already in use on this host" },
+  ] });
+  try {
+    const s = await login();
+    const st = await (await fetch(base + "/api/status", { headers: { cookie: s.cookie } })).json();
+    assert.equal(st.pairings, undefined);
+    assert.ok(!JSON.stringify(st).includes("482-19-305"));
+    assert.match(st.notices.join(" "), /Standalone camera "Side" isn't in HomeKit: TCP port 51831 is already in use/);
+    const j = await (await fetch(base + "/api/pairing", { headers: { cookie: s.cookie } })).json();
+    assert.equal(j.pin, "031-45-154");
+    assert.deepEqual(j.cameras.map((c: any) => [c.name, c.pin, Boolean(c.qrImage)]), [["Roof", "482-19-305", true], ["Side", "482-19-306", false]]);
+    assert.match(j.cameras[0].note, /Not paired yet.*port 51830/);
+    assert.match(j.cameras[1].note, /Not published to HomeKit: TCP port 51831/);
+  } finally { currentStatus = status(); }
 });
 
 test("a bad JSON body is a 400, server keeps serving", async () => {
