@@ -36,15 +36,36 @@ import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
 const RTSP_TIMEOUT_US = "10000000";
 const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "the camera directly");
 
+/**
+ * Don't let ffmpeg analyse the input before it starts sending (#35). By default it reads about 20
+ * frames to guess the frame rate (2 s at 10 fps), and on a stream joined mid-GOP it waits for the
+ * next keyframe first. Then it sends all of that at once: a 2-4 s burst whose RTP timestamps run
+ * ahead of real time for the rest of the session, with RTCP sender reports to match. Through
+ * go2rtc's restream that put the first video 3-6 s after HomeKit asked. With no analysis the first
+ * packet is the next keyframe, then steady real time. The camera's parameters come from the SDP,
+ * which is all a copy needs.
+ */
+export const NO_PROBE_ARGS = ["-analyzeduration", "0", "-probesize", "32"];
+
 /** The live view's input args for the chosen feed (go2rtc's restream or the camera, #16). */
 export function buildLiveInputArgs(feed: FeedChoice): string[] {
-  return ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", "-timeout", RTSP_TIMEOUT_US, "-i", feed.url];
+  return ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", "-timeout", RTSP_TIMEOUT_US, ...NO_PROBE_ARGS, "-i", feed.url];
+}
+
+/**
+ * The live view's video codec args. A copy repeats SPS/PPS before every keyframe (dump_extra, #35):
+ * HomeKit gets no SDP, so a camera (or restream) that sends them only in its SDP would otherwise
+ * give HomeKit a stream it can't decode. Repeating them when the camera already does is harmless.
+ */
+export function buildLiveVideoCodecArgs(copy: boolean, fps: number, maxBitRateK: number): string[] {
+  if (copy) return ["-an", "-c:v", "copy", "-bsf:v", "dump_extra"];
+  return ["-an", "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main", "-pix_fmt", "yuv420p", "-r", String(fps), "-b:v", `${maxBitRateK}k`];
 }
 
 /** A one-frame JPEG snapshot of the chosen feed, scaled to fit width x height. */
 export function buildSnapshotArgs(feed: FeedChoice, width: number, height: number): string[] {
   return [
-    "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-timeout", RTSP_TIMEOUT_US, "-i", feed.url,
+    "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-timeout", RTSP_TIMEOUT_US, ...NO_PROBE_ARGS, "-i", feed.url,
     "-frames:v", "1", "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease`, "-f", "mjpeg", "pipe:1",
   ];
 }
@@ -273,25 +294,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const args: string[] = [...buildLiveInputArgs(feed)];
 
     // --- Video ---
-    if (this.camera.copyVideo) {
-      args.push("-an", "-c:v", "copy");
-    } else {
-      args.push(
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-profile:v",
-        "main",
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        String(video.fps),
-        "-b:v",
-        `${video.max_bit_rate}k`,
-      );
-    }
+    args.push(...buildLiveVideoCodecArgs(this.camera.copyVideo, video.fps, video.max_bit_rate));
     args.push(
       "-payload_type",
       String(video.pt),

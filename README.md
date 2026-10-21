@@ -160,6 +160,7 @@ The living-room camera dashboard (formerly the separate Homedash app) runs insid
 - **Settings** live in `./data/dash/` (`settings.json`, `fonts/`, the photo cache) and are changed on the admin pane's settings page, behind the admin password (see [Dashboard settings](#dashboard-settings)).
 - **Off switch:** `UNSCRYPTED_DASH=off`. A dashboard crash restarts only the dashboard (backoff 1 s doubling to 60 s); the HomeKit bridge and the admin pane carry on.
 - **Rebuilding the image restarts HomeKit too** (a few seconds of "No Response" in Home, and any recording in progress stops). Batch dashboard changes into as few prod deploys as possible. On the test instance, `web/dash` is bind-mounted read-only, so page-only changes need no rebuild.
+- **Background glow:** a soft olive wash that follows the sun along the bottom edge, warming at dawn and dusk. Two sliders under Display on the settings page tune it, each -100% to +100% (0% is the standard look). **Glow intensity** scales its strength: -100% turns it off, +100% doubles it. **Glow size** scales the ellipse, never smaller than 10% or larger than 200%. Both apply day and night for now. (hooptiej/unscrypted#25)
 - **The Mac kiosk** that shows it full screen lives in [`scripts/mac-kiosk/`](scripts/mac-kiosk/).
 
 ### Its own IP address (so `http://homedash.local` works with no port)
@@ -208,6 +209,7 @@ These cameras tolerate about one RTSP client at a time: a second viewer makes so
   - Each camera's feed: `streaming` (video flowing), `starting` (connecting), `stalled` (connected, but the camera stopped sending video), `down` (go2rtc can't connect, with the reason), `idle` (nobody is watching, so nothing is checked), `unknown` (go2rtc is down, so its state can't be read).
 - **A camera save restarts go2rtc** when its config text actually changed, and the save message says so. Every recording buffer restarts with it: a few seconds of pre-roll lost, and a clip being recorded is cut short.
 - **Live view on a recording camera may start up to one keyframe interval later** (about 1.5 s with a 2 s keyframe interval): it joins a connection that's already running and waits for the next keyframe. A shorter keyframe interval in the camera's own settings shortens it.
+- **Live view and snapshots skip ffmpeg's input analysis** (`-analyzeduration 0 -probesize 32`, #35). Otherwise ffmpeg reads about 2 s of video before sending anything, then sends it all in one burst, and the stream's timestamps stay ahead of real time for the whole session. Live view also repeats SPS/PPS before every keyframe (`dump_extra`), so a camera that sends them only in its SDP still decodes.
 - **Counting connections:** [`scripts/nas/rtsp-census.sh`](scripts/nas/rtsp-census.sh) (read-only, prints IPs and process names only) shows who holds connections to each camera's port 554, how many closed in the last minute, and how many new ones start in N seconds: `bash rtsp-census.sh 20`. With 0.4.0, every camera should show only `go2rtc`, at most one connection per stream in use.
 
 ### Dashboard settings
