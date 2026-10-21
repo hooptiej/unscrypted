@@ -8,6 +8,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { CameraHomekitConfig, ResolvedHomekit, resolveHomekit } from "./homekitIdentity";
 
 export interface FoscamConfig {
   /**
@@ -131,6 +132,13 @@ export interface CameraConfig {
   manufacturer?: string;
   model?: string;
   serialNumber?: string;
+
+  /**
+   * How this camera reaches HomeKit (#57). Absent, or `mode: "bridged"`: through the bridge,
+   * as always. `mode: "standalone"`: its own accessory with its own pairing; missing identity
+   * fields are generated on first start and saved back here.
+   */
+  homekit?: CameraHomekitConfig;
 }
 
 export interface BridgeConfig {
@@ -205,6 +213,8 @@ export interface ResolvedCamera {
   manufacturer: string;
   model: string;
   serialNumber: string;
+  /** Bridged (default) or standalone with its identity (#57). */
+  homekit: ResolvedHomekit;
 }
 
 export interface ResolvedConfig {
@@ -317,6 +327,13 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
 
     const prebufferSeconds = Math.max(4, cam.prebufferSeconds ?? 4);
 
+    let homekit: ResolvedHomekit;
+    try {
+      homekit = resolveHomekit(cam.homekit);
+    } catch (err) {
+      throw new ConfigError(`cameras[${i}] "${cam.name}": ${(err as Error).message}`);
+    }
+
     return {
       name: cam.name,
       rtspMain,
@@ -331,8 +348,28 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       manufacturer: cam.manufacturer ?? "Foscam",
       model: cam.model ?? "IP Camera",
       serialNumber: cam.serialNumber ?? `unscrypted-${cam.name.replace(/\s+/g, "-")}`,
+      homekit,
     };
   });
+
+  // Standalone cameras each run their own HAP server: their ids and ports must not clash with
+  // the bridge's or each other's (hap-nodejs keys pairing files by username).
+  const ports = new Map<number, string>([[bridge.port, "the bridge"]]);
+  const users = new Map<string, string>([[bridge.username, "the bridge"]]);
+  for (const c of cameras) {
+    if (c.homekit.mode !== "standalone") continue;
+    const { port, username } = c.homekit;
+    if (port !== null) {
+      const other = ports.get(port);
+      if (other) throw new ConfigError(`camera "${c.name}": homekit.port ${port} is already used by ${other}; give it a different port`);
+      ports.set(port, `camera "${c.name}"`);
+    }
+    if (username !== null) {
+      const other = users.get(username);
+      if (other) throw new ConfigError(`camera "${c.name}": homekit.username ${username} is already used by ${other}; every accessory needs its own`);
+      users.set(username, `camera "${c.name}"`);
+    }
+  }
 
   // UNSCRYPTED_PERSIST_DIR wins over config.persistDir: in Docker it names the bind-mounted
   // /data/persist, and a stale config key must not send the pairing keys somewhere that isn't

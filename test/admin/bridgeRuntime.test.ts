@@ -71,6 +71,30 @@ test("new camera is added (HAP off: says it won't appear in Home)", async () => 
   assert.equal(rt.status().cameras[1].pendingRestart, false);
 });
 
+test("status reports each camera's HomeKit route, and pairings carry only standalone codes (#57)", () => {
+  const { rt, cameras } = setup();
+  assert.deepEqual(rt.status().cameras[0].homekit, { mode: "bridged", port: null, published: false, paired: false, error: null });
+  assert.deepEqual(rt.status().pairings, []);
+  const st = { name: "Garage", port: 51830, username: "0E:4B:21:9C:A0:13", pin: "482-19-305", setupId: "AB12",
+    published: false, error: "TCP port 51830 is already in use on this host", accessory: cameras[0].accessory };
+  (rt as any).o.standalone = [st];
+  assert.deepEqual(rt.status().cameras[0].homekit,
+    { mode: "standalone", port: 51830, published: false, paired: false, error: "TCP port 51830 is already in use on this host" });
+  assert.deepEqual(rt.status().pairings, [{ name: "Garage", pin: "482-19-305", setupURI: "", paired: false, published: false, port: 51830, error: st.error }]);
+});
+
+test("a camera saved as standalone while HAP is on waits for a restart instead of joining the bridge", async () => {
+  const { save, ask, lastApplied, rt } = setup();
+  const fakeBridge = { addBridgedAccessory: () => { throw new Error("must not be bridged"); }, _accessoryInfo: null, setupURI: () => "" };
+  (rt as any).o.bridge = fakeBridge;
+  save((r) => { r.cameras.push({ name: "Roof", rtspMain: "rtsp://127.0.0.1:1/1", homekit: { mode: "standalone" } }); });
+  await ask({ type: "apply", reqId: "1", name: "Roof", isNew: true });
+  assert.equal(lastApplied().mode, "restart-needed");
+  assert.match(lastApplied().message, /standalone HomeKit camera/);
+  assert.equal(rt.status().cameras[1].homekit.mode, "standalone");
+  assert.match(rt.status().cameras[1].homekit.error ?? "", /after a bridge restart/);
+});
+
 test("bridge identity is never adopted from a hand-edited config", async () => {
   const { save, ask, rt } = setup();
   save((r) => { r.bridge.pin = "111-22-333"; r.cameras[0].audio = false; });

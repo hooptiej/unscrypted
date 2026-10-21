@@ -61,6 +61,16 @@ const RECORDING_RESOLUTIONS: [number, number, number][] = [
   [320, 240, 15],
 ];
 
+/**
+ * The accessory UUID's seed. Bridged keeps its original seed (changing it would orphan every
+ * paired camera); a standalone camera gets a different one, so Home sees a fresh accessory (#57).
+ */
+export function accessoryUuidSeed(camera: Pick<ResolvedCamera, "name" | "homekit">): string {
+  return camera.homekit.mode === "standalone"
+    ? `unscrypted:camera-standalone:${camera.name}`
+    : `unscrypted:camera:${camera.name}`;
+}
+
 export class UnscryptedCamera {
   readonly accessory: Accessory;
   private readonly streamingDelegate: StreamingDelegate;
@@ -81,10 +91,7 @@ export class UnscryptedCamera {
     const log = parentLog.child(camera.name);
     this.log = log;
 
-    this.accessory = new Accessory(
-      camera.name,
-      uuid.generate(`unscrypted:camera:${camera.name}`),
-    );
+    this.accessory = new Accessory(camera.name, uuid.generate(accessoryUuidSeed(camera)));
 
     const info = this.accessory.getService(Service.AccessoryInformation)!;
     info
