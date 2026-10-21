@@ -30,6 +30,7 @@ import { Logger } from "./logger";
 import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU } from "./ffmpeg";
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
+import { RtpRelay, rtpRelayEnabled } from "./rtpRelay";
 
 interface SessionInfo {
   address: string;
@@ -55,6 +56,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
 
   private readonly pendingSessions = new Map<string, SessionInfo>();
   private readonly activeSessions = new Map<string, SpawnedFfmpeg[]>();
+  /** Sessions whose packets go through the same-port relay (UNSCRYPTED_RTP_PROXY=on, #55): what to close at the end. */
+  private readonly relaySessions = new Map<string, { relays: RtpRelay[]; sockets: dgram.Socket[] }>();
 
   constructor(
     private readonly camera: ResolvedCamera,
@@ -219,6 +222,31 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const videoKeySalt = session.videoSRTP.toString("base64");
     const audioKeySalt = session.audioSRTP.toString("base64");
 
+    // Where ffmpeg sends its SRTP. Normally straight to the controller. With UNSCRYPTED_RTP_PROXY=on (experiment,
+    // #55) it sends to a loopback relay that re-sends every packet from the port we announced to the controller.
+    let videoDest = `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${HOMEKIT_MTU}`;
+    let audioDest = `srtp://${session.address}:${session.audioPort}?rtcpport=${session.audioPort}&pkt_size=188`;
+    if (rtpRelayEnabled()) {
+      const relays: RtpRelay[] = [];
+      try {
+        const v = await RtpRelay.create({ out: session.videoReturnSocket, targetAddress: session.address, targetPort: session.videoPort, label: `video:${this.camera.name}`, log: this.log });
+        relays.push(v);
+        videoDest = `srtp://127.0.0.1:${v.ingestPort}?rtcpport=${v.ingestPort}&pkt_size=${HOMEKIT_MTU}`;
+        if (this.camera.audio) {
+          const a = await RtpRelay.create({ out: session.audioReturnSocket, targetAddress: session.address, targetPort: session.audioPort, label: `audio:${this.camera.name}`, log: this.log });
+          relays.push(a);
+          audioDest = `srtp://127.0.0.1:${a.ingestPort}?rtcpport=${a.ingestPort}&pkt_size=188`;
+        }
+        this.relaySessions.set(request.sessionID, { relays, sockets: [session.videoReturnSocket, session.audioReturnSocket] });
+        this.log.info(`live view: RTP and RTCP leave from announced port ${session.videoReturnPort} through the relay (UNSCRYPTED_RTP_PROXY=on, experiment #55)`);
+      } catch (err) {
+        relays.forEach((r) => r.close());
+        videoDest = `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${HOMEKIT_MTU}`;
+        audioDest = `srtp://${session.address}:${session.audioPort}?rtcpport=${session.audioPort}&pkt_size=188`;
+        this.log.warn(`couldn't start the RTP relay (${(err as Error).message}); sending directly from ffmpeg instead`);
+      }
+    }
+
     const args: string[] = [
       "-hide_banner",
       "-loglevel",
@@ -264,7 +292,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       SRTP_SUITE,
       "-srtp_out_params",
       videoKeySalt,
-      `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${HOMEKIT_MTU}`,
+      videoDest,
     );
 
     // --- Audio (transcode -> Opus), ONLY if the camera has an audio track.
@@ -294,7 +322,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         SRTP_SUITE,
         "-srtp_out_params",
         audioKeySalt,
-        `srtp://${session.address}:${session.audioPort}?rtcpport=${session.audioPort}&pkt_size=188`,
+        audioDest,
       );
     }
 
@@ -331,6 +359,18 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       }
       this.activeSessions.delete(sessionID);
       this.log.info(`live stream stopped for ${this.camera.name}`);
+    }
+    const relayed = this.relaySessions.get(sessionID);
+    if (relayed) {
+      for (const r of relayed.relays) {
+        const s = r.stats();
+        this.log.info(`live view relay stopped: sent ${s.toController} packets (${s.bytesToController} bytes) to the controller, ${s.fromController} replies from it, ${s.sendErrors} send errors`);
+        r.close();
+      }
+      for (const sock of relayed.sockets) {
+        try { sock.close(); } catch { /* already closed */ }
+      }
+      this.relaySessions.delete(sessionID);
     }
     const pending = this.pendingSessions.get(sessionID);
     if (pending) {
