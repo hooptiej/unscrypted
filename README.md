@@ -138,6 +138,8 @@ docker compose logs -f                       # watch for the pairing QR / code
 
 **Host networking is required** — HomeKit discovery uses mDNS, which does not cross Docker's bridge network.
 
+**On a host with more than one address, set `UNSCRYPTED_HAP_BIND`** to its main LAN address, e.g. in `docker-compose.override.yml`. Extra addresses include a dashboard alias, the ipvlan shim below, or a Docker bridge. Without the setting, HomeKit advertises every address. An Apple device that connects on an extra one gets live video from the main address instead, so live view plays for a second, spins, and drops to the camera icon, on every camera. Snapshots keep working. At startup unscrypted logs which addresses HomeKit advertises, and warns when the setting is unset and the host has several. (hooptiej/unscrypted#36)
+
 Two folders sit next to the compose file:
 
 | Folder | Mounted at | Holds |
