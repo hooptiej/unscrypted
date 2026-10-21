@@ -1,17 +1,36 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildLiveInputArgs, buildSnapshotArgs, StreamingDelegate } from "../src/streamingDelegate";
+import { buildLiveInputArgs, buildLiveVideoCodecArgs, buildSnapshotArgs, StreamingDelegate } from "../src/streamingDelegate";
 import { Logger, setLogLevel } from "../src/logger";
 
 setLogLevel("error");
 
 test("live view and snapshot read the chosen feed over TCP with a socket timeout", () => {
   const f = { url: "rtsp://127.0.0.1:8554/garagecamtest", via: "go2rtc" as const };
-  assert.deepEqual(buildLiveInputArgs(f), ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", "-timeout", "10000000", "-i", f.url]);
+  assert.deepEqual(buildLiveInputArgs(f), ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", "-timeout", "10000000",
+    "-analyzeduration", "0", "-probesize", "32", "-i", f.url]);
   const s = buildSnapshotArgs(f, 640, 360);
   assert.equal(s[s.indexOf("-i") + 1], f.url);
   assert.deepEqual(s.slice(s.indexOf("-timeout"), s.indexOf("-timeout") + 2), ["-timeout", "10000000"]);
   assert.ok(s.includes("scale=640:360:force_original_aspect_ratio=decrease"));
+});
+
+test("#35: live view and snapshots start without input analysis, and the no-probe flags come before -i", () => {
+  const f = { url: "rtsp://127.0.0.1:8554/cam", via: "camera" as const };
+  for (const a of [buildLiveInputArgs(f), buildSnapshotArgs(f, 640, 360)]) {
+    const i = a.indexOf("-i");
+    assert.equal(a[a.indexOf("-analyzeduration") + 1], "0");
+    assert.equal(a[a.indexOf("-probesize") + 1], "32");
+    assert.ok(a.indexOf("-analyzeduration") < i && a.indexOf("-probesize") < i, "input options must precede -i");
+  }
+});
+
+test("#35: a copied live view repeats SPS/PPS before keyframes; a transcode doesn't need to", () => {
+  assert.deepEqual(buildLiveVideoCodecArgs(true, 30, 300), ["-an", "-c:v", "copy", "-bsf:v", "dump_extra"]);
+  const t = buildLiveVideoCodecArgs(false, 15, 299);
+  assert.ok(!t.includes("dump_extra"));
+  assert.deepEqual(t.slice(t.indexOf("-r"), t.indexOf("-r") + 4), ["-r", "15", "-b:v", "299k"]);
+  assert.equal(t[t.indexOf("-c:v") + 1], "libx264");
 });
 
 test("snapshots: one ffmpeg for requests that overlap, a 10 s cache per size, failures not cached", async () => {
