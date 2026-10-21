@@ -10,6 +10,13 @@
  *    3 times within 2 minutes. That camera alone reads directly for 10 minutes, then tries go2rtc
  *    again. Failures while go2rtc is unhealthy, or within 20 s of go2rtc (re)starting, don't count:
  *    those are go2rtc's fault, not the camera's, and the global switch handles them.
+ *
+ * Camera outages never count (owner decision 1, 2026-10-20). Only failures go2rtc causes may send a
+ * camera direct. When go2rtc's own view of the camera's stream says it can't reach the camera either
+ * (its producer is down, reconnecting or stalled, or go2rtc logged a producer error in the counting
+ * window), the camera is rebooting or off the network: a direct read would fail too, and it would be
+ * a second client the moment the camera is back. Such a failure is ignored (logged once per outage),
+ * and the camera reconnects through go2rtc as normal.
  */
 import { Logger } from "./logger";
 import { ResolvedCamera } from "./config";
@@ -21,8 +28,25 @@ export interface FeedChoice { url: string; via: FeedVia }
 export type FeedPicker = (which: "main" | "sub") => FeedChoice | null;
 /** A pipeline tells the selector its read failed (ffmpeg exited, no picture). Only go2rtc reads count. */
 export type FeedFailure = (feed: FeedChoice, why: string) => void;
-/** startedAt: when go2rtc last entered "running" (null when it isn't running). */
-export interface Go2rtcHealth { supervisor: string; apiOk: boolean; rtspOk: boolean; at: number; error: string | null; startedAt?: number | null }
+/**
+ * go2rtc's own view of one stream, from the watcher: its feed state (see go2rtcWatch's FeedState)
+ * and the last producer error go2rtc logged for that stream's camera, with when. No URLs.
+ */
+export interface StreamView { state: string; errorAt: number | null; error: string | null }
+/**
+ * startedAt: when go2rtc last entered "running" (null when it isn't running).
+ * streams: go2rtc's view of each stream by name (absent when it couldn't be read).
+ */
+export interface Go2rtcHealth {
+  supervisor: string; apiOk: boolean; rtspOk: boolean; at: number; error: string | null; startedAt?: number | null;
+  streams?: Record<string, StreamView>;
+}
+/** Feed states in which go2rtc itself has no video from the camera: the camera is down, not go2rtc. */
+const OUTAGE_STATES: Record<string, string> = {
+  down: "go2rtc can't connect to it either",
+  starting: "go2rtc is still trying to connect to it",
+  stalled: "go2rtc is connected but the camera stopped sending video",
+};
 export interface SourceState { mode: SourceMode; since: number; reason: string | null; downSince: number | null; healthySince: number | null; unhealthySince: number | null; returnAt: number | null }
 export interface SourceTimings {
   downGraceMs: number; healthyForMs: number; minDirectMs: number;
@@ -97,6 +121,8 @@ export class SourceSelector {
   private lastHealth: Go2rtcHealth | null = null;
   private readonly camDirect = new Map<string, CameraDirect>();
   private readonly failures = new Map<string, { at: number; why: string }[]>();
+  /** Cameras whose failures are being ignored as a camera outage: when it started and the last ignore (one log per outage). */
+  private readonly outages = new Map<string, { since: number; lastAt: number }>();
 
   constructor(private readonly o: { rtspPort: number | null; offReason?: string; log: Logger; timings?: Partial<SourceTimings>; now?: () => number }) {
     this.timings = { ...DEFAULT_TIMINGS, ...o.timings };
@@ -111,6 +137,32 @@ export class SourceSelector {
     this.names = streamNames(cams);
     for (const k of [...this.camDirect.keys()]) if (!this.names.has(k)) this.camDirect.delete(k);
     for (const k of [...this.failures.keys()]) if (!this.names.has(k)) this.failures.delete(k);
+    for (const k of [...this.outages.keys()]) if (!this.names.has(k)) this.outages.delete(k);
+  }
+
+  /** The camera's stream names (main and sub). */
+  private streamsOf(name: string): string[] {
+    const n = this.names.get(name);
+    return n ? [n.main, ...(n.sub ? [n.sub] : [])] : [];
+  }
+
+  /**
+   * Why a failed read of `name` is the camera's own outage rather than go2rtc's fault, or null.
+   * Looks at go2rtc's latest view of the stream that failed (or all the camera's streams).
+   */
+  private cameraOutage(name: string, stream: string | undefined, windowStart: number): string | null {
+    const views = this.lastHealth?.streams;
+    if (!views) return null;
+    const own = this.streamsOf(name);
+    for (const s of stream && own.includes(stream) ? [stream] : own) {
+      const v = views[s];
+      if (!v) continue;
+      if (OUTAGE_STATES[v.state]) return `${OUTAGE_STATES[v.state]}${v.state === "down" && v.error ? ` (${v.error})` : ""}`;
+      if (v.errorAt !== null && v.errorAt >= windowStart) {
+        return `go2rtc's own connection to it also failed at ${new Date(v.errorAt).toISOString()}${v.error ? ` (${v.error})` : ""}`;
+      }
+    }
+    return null;
   }
   state(): SourceState { return { ...this.st }; }
   /** The camera's per-camera fallback, or null when it follows the global mode. */
@@ -139,6 +191,14 @@ export class SourceSelector {
         this.o.log.info(`HomeKit is reading the cameras through go2rtc again (it was direct for ${dur(this.st.since - prev.since)}).`);
       }
     }
+    // A camera outage ends when go2rtc has video from the camera again.
+    for (const [name, o] of [...this.outages]) {
+      const views = h.streams;
+      if (!views || !this.streamsOf(name).some((s) => views[s]?.state === "streaming")) continue;
+      this.outages.delete(name);
+      this.o.log.info(`"${name}": go2rtc has video from the camera again (it was unreachable from about ${new Date(o.since).toISOString()}, ${dur(h.at - o.since)}). ` +
+        "HomeKit kept reading it through go2rtc the whole time.");
+    }
     for (const [name, d] of [...this.camDirect]) {
       if (h.at < d.until) continue;
       this.camDirect.delete(name);
@@ -152,15 +212,30 @@ export class SourceSelector {
 
   /**
    * A HomeKit pipeline reading `name` through go2rtc failed. Counts toward that camera's own
-   * fallback only while go2rtc is healthy and not just restarted. Never throws.
+   * fallback only while go2rtc is healthy and not just restarted, and only when go2rtc itself has
+   * video from the camera (a camera outage never counts). `stream` is the go2rtc stream that was
+   * read, when known. Never throws.
    */
-  reportFailure(name: string, why: string): void {
+  reportFailure(name: string, why: string, stream?: string): void {
     const t = this.timings;
     const now = this.now();
     const h = this.lastHealth;
     if (this.st.mode !== "go2rtc" || this.camDirect.has(name) || !this.names.has(name)) return;
     if (!h || !isHealthy(h)) return;   // go2rtc's own trouble: the global switch handles it
     if (h.startedAt && now - h.startedAt < t.restartGraceMs) return;
+    const outage = this.cameraOutage(name, stream, now - t.camWindowMs);
+    if (outage) {
+      // The camera itself is unreachable: earlier counted failures were most likely the start of it.
+      this.failures.delete(name);
+      const prev = this.outages.get(name);
+      if (!prev || now - prev.lastAt > t.camDirectMs) {
+        this.o.log.info(`"${name}": reading through go2rtc failed (${why}), but ${outage}. ` +
+          "That's the camera being unreachable (a reboot or a network drop), not go2rtc, so it doesn't count toward reading this camera directly. " +
+          "HomeKit keeps reading it through go2rtc and picks it up again when the camera is back. (Logged once per outage.)");
+      }
+      this.outages.set(name, { since: prev?.since ?? now, lastAt: now });
+      return;
+    }
     const list = (this.failures.get(name) ?? []).filter((f) => now - f.at < t.camWindowMs);
     if (list.length && now - list[list.length - 1].at < 3000) return;   // one incident, seen by two pipelines
     list.push({ at: now, why });
@@ -180,7 +255,12 @@ export class SourceSelector {
 
   /** The failure callback for one camera's pipelines (only reads through go2rtc count). */
   failureReporter(cam: Pick<ResolvedCamera, "name">): FeedFailure {
-    return (feed, why) => { if (feed.via === "go2rtc") this.reportFailure(cam.name, why); };
+    return (feed, why) => {
+      if (feed.via !== "go2rtc") return;
+      // The restream URL ends in the go2rtc stream name (rtsp://127.0.0.1:<port>/<stream>).
+      const stream = feed.url.slice(feed.url.lastIndexOf("/") + 1) || undefined;
+      this.reportFailure(cam.name, why, stream);
+    };
   }
 
   picker(cam: Pick<ResolvedCamera, "name" | "rtspMain" | "rtspSub">): FeedPicker {

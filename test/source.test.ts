@@ -132,3 +132,77 @@ test("per camera: failures while go2rtc is unhealthy or just restarted are go2rt
   p.at(170_000); fail(p.garage("main")!, "EOF");
   assert.equal(p.garage("main")!.via, "camera");
 });
+
+// Owner decision 1 (2026-10-20): camera outages never count toward per-camera fallback.
+function outageRig() {
+  let now = 100_000;
+  const lines: string[] = [];
+  const log = new Logger("t");
+  log.info = (...a: unknown[]) => { lines.push(a.join(" ")); };
+  log.warn = (...a: unknown[]) => { lines.push(a.join(" ")); };
+  const sel = new SourceSelector({ rtspPort: 8554, log, now: () => now });
+  sel.setCameras([{ name: "Garage", rtspSub: "rtsp://u:p@10.0.0.3/12" }, { name: "Dog", rtspSub: undefined }]);
+  const garage = sel.picker({ name: "Garage", rtspMain: "rtsp://u:p@10.0.0.3/11", rtspSub: "rtsp://u:p@10.0.0.3/12" });
+  const fail = sel.failureReporter({ name: "Garage" });
+  const health = (at: number, garageState: string, errorAt: number | null = null): Go2rtcHealth => ({
+    ...up(at, 0), streams: {
+      garage: { state: garageState, errorAt, error: errorAt === null ? null : "The camera didn't answer at that address." },
+      garage_sub: { state: "idle", errorAt: null, error: null },
+      dog: { state: "streaming", errorAt: null, error: null },
+    } });
+  return { sel, garage, fail, lines, health, at: (t: number) => { now = t; } };
+}
+
+test("camera outage: go2rtc can't reach the camera either, so failures don't count and it never goes direct", () => {
+  for (const st of ["down", "starting", "stalled"]) {
+    const r = outageRig();
+    r.sel.update(r.health(100_000, st));
+    for (const t of [110_000, 130_000, 150_000, 170_000, 190_000]) { r.at(t); r.fail(r.garage("main")!, "ffmpeg exited (code 1)"); }
+    assert.equal(r.garage("main")!.via, "go2rtc", `${st}: a rebooting camera reconnects through go2rtc`);
+    assert.equal(r.sel.cameraDirect("Garage"), null);
+    const ignored = r.lines.filter((l) => /doesn't count toward reading this camera directly/.test(l));
+    assert.equal(ignored.length, 1, `${st}: logged once per outage, not per failure`);
+    assert.match(ignored[0], /^"Garage": reading through go2rtc failed \(ffmpeg exited \(code 1\)\), but go2rtc/);
+  }
+});
+
+test("camera outage: a producer error go2rtc logged in the window counts as an outage even when the feed reads idle", () => {
+  const r = outageRig();
+  r.sel.update(r.health(100_000, "idle", 109_000));   // HomeKit was the only viewer; go2rtc logged its own failure
+  for (const t of [110_000, 130_000, 150_000]) { r.at(t); r.fail(r.garage("main")!, "EOF"); }
+  assert.equal(r.garage("main")!.via, "go2rtc");
+  assert.match(r.lines.join("\n"), /go2rtc's own connection to it also failed at .*didn't answer/);
+});
+
+test("camera outage: an old producer error (outside the 2 min window) doesn't hide a go2rtc fault", () => {
+  const r = outageRig();
+  r.sel.update(r.health(300_000, "streaming", 100_000));
+  for (const t of [310_000, 330_000, 350_000]) { r.at(t); r.fail(r.garage("main")!, "EOF"); }
+  assert.equal(r.garage("main")!.via, "camera", "go2rtc has video, yet HomeKit's reads through it fail: go2rtc's fault");
+});
+
+test("camera outage: earlier counted failures are dropped, the end of the outage is logged, and a later go2rtc fault counts afresh", () => {
+  const r = outageRig();
+  r.sel.update(r.health(100_000, "streaming"));
+  r.at(110_000); r.fail(r.garage("main")!, "EOF");                // counted: go2rtc still showed video
+  r.at(115_000); r.sel.update(r.health(115_000, "down", 111_000));  // the camera went away for go2rtc too
+  r.at(120_000); r.fail(r.garage("main")!, "EOF");                // ignored, and the first one is dropped
+  r.at(200_000); r.sel.update(r.health(200_000, "streaming", 111_000));
+  assert.match(r.lines.at(-1)!, /^"Garage": go2rtc has video from the camera again .*HomeKit kept reading it through go2rtc/);
+  // Back, and go2rtc has video, but HomeKit's reads keep failing: that's go2rtc's fault and counts.
+  // (The producer error at 111 s is still inside the 2 min window until 231 s.)
+  r.at(232_000); r.fail(r.garage("main")!, "EOF");
+  r.at(252_000); r.fail(r.garage("main")!, "EOF");
+  assert.equal(r.garage("main")!.via, "go2rtc", "only 2 counted");
+  r.at(272_000); r.fail(r.garage("main")!, "EOF");
+  assert.equal(r.garage("main")!.via, "camera");
+});
+
+test("camera outage: only the stream that failed is judged (a down sub doesn't excuse a failing main)", () => {
+  const r = outageRig();
+  const h = r.health(100_000, "streaming");
+  h.streams!.garage_sub = { state: "down", errorAt: null, error: null };
+  r.sel.update(h);
+  for (const t of [110_000, 130_000, 150_000]) { r.at(t); r.fail(r.garage("main")!, "EOF"); }
+  assert.equal(r.garage("main")!.via, "camera");
+});

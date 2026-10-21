@@ -7,7 +7,7 @@ import * as net from "net";
 import { Logger } from "../logger";
 import { ChildStatus } from "./supervisor";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
-import { Go2rtcHealth } from "../source";
+import { Go2rtcHealth, StreamView } from "../source";
 
 export type FeedState = "streaming" | "starting" | "stalled" | "down" | "idle" | "unknown";
 export interface FeedStatus { state: FeedState; since: number; reason: string | null; lastVideoAt: number | null; consumers: number }
@@ -67,7 +67,7 @@ export class Go2rtcWatcher {
   private readonly state = new Map<string, { feed: FeedStatus; bytes: number | null }>();
 
   constructor(private readonly o: { client: Go2rtcClient; rtspPort: number | null; supervisor: () => ChildStatus;
-    lastError: (stream: string) => string | null; known?: () => Set<string>; log: Logger; intervalMs?: number; onHealth: (h: Go2rtcHealth) => void }) {}
+    lastError: (stream: string) => { error: string; at: number } | null; known?: () => Set<string>; log: Logger; intervalMs?: number; onHealth: (h: Go2rtcHealth) => void }) {}
 
   start(): void { if (!this.timer) { this.timer = setInterval(() => void this.tick(), this.o.intervalMs ?? 5000); void this.tick(); } }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -91,13 +91,19 @@ export class Go2rtcWatcher {
         startedAt: sup.state === "running" ? sup.since : null };
       const ok = h.supervisor === "running" && h.apiOk;
       const names = new Set([...(streams?.keys() ?? []), ...this.state.keys()]);
+      const views: Record<string, StreamView> = {};
       for (const n of names) {
         if (n.startsWith("check_")) continue;   // feed-check temp streams aren't cameras
-        this.state.set(n, nextFeed(this.state.get(n), streams?.get(n), now, ok, this.o.lastError(n)));
+        const pe = this.o.lastError(n);
+        const next = nextFeed(this.state.get(n), streams?.get(n), now, ok, pe?.error ?? null);
+        this.state.set(n, next);
+        views[n] = { state: next.feed.state, errorAt: pe?.at ?? null, error: pe ? explainGo2rtcFailure(pe.error).happened : null };
       }
       // A stream gone from both go2rtc and the bridge's camera list (a removed camera) is dropped.
       const known = this.o.known?.();
       if (known) for (const k of [...this.state.keys()]) if (!known.has(k) && !streams?.has(k)) this.state.delete(k);
+      // go2rtc's per-stream view goes with the health, so the selector can tell a camera outage from a go2rtc fault.
+      if (streams) h.streams = views;
       this.last = h;
       this.o.onHealth(h);
     } catch (err) {

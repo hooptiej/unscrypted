@@ -99,3 +99,25 @@ test("watcher: a dead API is unhealthy, feeds turn unknown, and removed cameras 
     assert.equal(w.feeds().get("garagecamtest")!.state, "unknown");
   } finally { api.close(); }
 });
+
+test("watcher: health carries go2rtc's view of each stream (state and its last producer error, explained), so outages can be told apart", async () => {
+  const api = http.createServer((req, res) => { res.end(JSON.stringify(sample(10))); });
+  await new Promise<void>((r) => api.listen(0, "127.0.0.1", () => r()));
+  const seen: any[] = [];
+  const w = new Go2rtcWatcher({ client: new Go2rtcClient(`http://127.0.0.1:${(api.address() as AddressInfo).port}`, 3000), rtspPort: null,
+    supervisor: () => ({ state: "running", since: 1 } as any),
+    lastError: (s) => (s === "garagecamtest" ? { error: "dial tcp 10.0.1.3:554: i/o timeout", at: 1234 } : null),
+    log: new Logger("t"), onHealth: (h) => seen.push(h) });
+  try {
+    await w.tick();
+    const v = seen.at(-1).streams.garagecamtest;
+    assert.equal(v.state, w.feeds().get("garagecamtest")!.state);
+    assert.equal(v.errorAt, 1234);
+    assert.equal(v.error, "The camera didn't answer at that address.");
+    assert.ok(!JSON.stringify(seen.at(-1).streams).includes("10.0.1.3"), "no addresses in the view");
+    api.close();
+    await new Promise((r) => setTimeout(r, 50));
+    await w.tick();
+    assert.equal(seen.at(-1).streams, undefined, "no view when go2rtc's API didn't answer");
+  } finally { api.close(); }
+});

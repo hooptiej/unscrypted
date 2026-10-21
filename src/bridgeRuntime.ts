@@ -118,7 +118,7 @@ export class BridgeRuntime {
       this.watcher = new Go2rtcWatcher({
         client: new Go2rtcClient(this.go2rtc.apiBase(), 3000), rtspPort: g.rtspPort,
         supervisor: () => this.go2rtcStatus(), log: log.child("go2rtc-watch"),
-        lastError: (stream) => { const u = this.maskedSources().get(stream); return u ? this.go2rtc?.producerError(u)?.error ?? null : null; },
+        lastError: (stream) => { const u = this.maskedSources().get(stream); return u ? this.go2rtc?.producerError(u) ?? null : null; },
         known: () => new Set(this.maskedSources().keys()),
         onHealth: (h) => this.sources.update(h),
       });
