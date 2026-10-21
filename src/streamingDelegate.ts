@@ -231,7 +231,11 @@ export class StreamingDelegate implements CameraStreamingDelegate {
 
     // --- Video ---
     if (this.camera.copyVideo) {
-      args.push("-an", "-c:v", "copy");
+      // dump_extra repeats SPS/PPS in-band before keyframes. HomeKit never sees the RTSP SDP, so a
+      // source that carries them only there gives HomeKit an undecodable stream: it spins and ends
+      // the session after ~30 s (#55; proven on the pattern camera 2026-10-21). Harmless when the
+      // camera already sends them in-band.
+      args.push("-an", "-c:v", "copy", "-bsf:v", "dump_extra");
     } else {
       args.push(
         "-an",
