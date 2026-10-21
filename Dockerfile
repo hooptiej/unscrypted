@@ -34,7 +34,7 @@ ENV NODE_ENV=production
 ENV UNSCRYPTED_CONFIG=/config/config.json
 ENV UNSCRYPTED_PERSIST_DIR=/data/persist
 
-# ---- go2rtc (feed checks and previews in the admin pane). Pinned version + checksum, never latest.
+# ---- go2rtc (HomeKit's single camera client, feed checks, previews, the dashboard). Pinned version + checksum, never latest.
 # The checksum is the release asset's SHA-256 as published by GitHub for v1.9.14 (and re-hashed on
 # the NAS). ADD --checksum fails the build on any mismatch.
 ARG GO2RTC_VERSION=1.9.14
@@ -53,6 +53,7 @@ COPY web ./web
 ENV UNSCRYPTED_GO2RTC_BIN=/usr/local/bin/go2rtc \
     UNSCRYPTED_ADMIN_PORT=8190 \
     UNSCRYPTED_GO2RTC_API_PORT=1986 \
+    UNSCRYPTED_GO2RTC_RTSP_PORT=8554 \
     UNSCRYPTED_RUNTIME_DIR=/tmp/unscrypted \
     UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password \
     UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key \

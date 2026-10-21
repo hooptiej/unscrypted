@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: unscrypted:0.3.5
+    image: unscrypted:0.4.0
     container_name: unscrypted
     restart: unless-stopped
     # REQUIRED for HomeKit mDNS discovery. Linux host only.
@@ -39,6 +39,8 @@ services:
       - UNSCRYPTED_GO2RTC_API_PORT=1986
       # go2rtc WebRTC media (tcp+udp, all interfaces) for the pane's live preview.
       - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8557
+      # go2rtc's RTSP restream, 127.0.0.1 only: HomeKit's ffmpeg reads cameras through it (#16).
+      - UNSCRYPTED_GO2RTC_RTSP_PORT=8554
       - UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password
       - UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key
       # The open, watch-only living-room dashboard (no sign-in). Its settings live in ./data/dash.

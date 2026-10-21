@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "fs";
-import * as net from "net";
 import * as path from "path";
 import { tempDir } from "../helpers/tmp";
 import { DashRuntime } from "../../src/dash/runtime";
@@ -11,12 +10,6 @@ import { Logger, setLogLevel } from "../../src/logger";
 setLogLevel("error");
 const log = new Logger("test");
 
-function closedPort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); });
-  });
-}
 
 function runtime(services = DEFAULTS.services) {
   const dir = tempDir("unscr-dashrt-");
@@ -31,8 +24,8 @@ function runtime(services = DEFAULTS.services) {
 test("config says which stream each tile actually plays, for the 'live · main/sub' tag (#22)", () => {
   const rt = runtime();
   rt.cameras = [
-    { name: "DogCamTest", main: "dogcamtest", sub: "dogcamtest_sub", probe: null },
-    { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub", probe: null },
+    { name: "DogCamTest", main: "dogcamtest", sub: "dogcamtest_sub" },
+    { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub" },
   ];
   const cams = (rt.publicConfig() as any).cameras;
   assert.deepEqual(cams.map((c: any) => [c.label, c.which, c.stream]), [
@@ -40,65 +33,48 @@ test("config says which stream each tile actually plays, for the 'live · main/s
     ["Garagecam", "sub", "garagecamtest_sub"],
   ]);
   // Set to sub, but the camera has no sub stream: it plays main, and says so.
-  rt.cameras = [{ name: "GarageCamTest", main: "garagecamtest", sub: null, probe: null }];
+  rt.cameras = [{ name: "GarageCamTest", main: "garagecamtest", sub: null }];
   assert.deepEqual((rt.publicConfig() as any).cameras.map((c: any) => [c.which, c.stream]), [["main", "garagecamtest"]]);
 });
 
-test("probes shown cameras: up, and down with a plain reason but no address", async () => {
-  const live = net.createServer((s) => s.destroy());
-  await new Promise<void>((r) => live.listen(0, "127.0.0.1", () => r()));
-  const upPort = (live.address() as net.AddressInfo).port;
-  const downPort = await closedPort();
-  try {
-    const rt = runtime();
-    rt.cameras = [
-      { name: "DogCamTest", main: "dogcamtest", sub: null, probe: { host: "127.0.0.1", port: upPort } },
-      { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub", probe: { host: "127.0.0.1", port: downPort } },
-      { name: "Couch Cam", main: "couch_cam", sub: null, probe: null },
-    ];
-    await rt.probeCameras();
-    const st = rt.state() as any;
-    assert.deepEqual({ up: st.cameras.dogcamtest.up, reason: st.cameras.dogcamtest.reason }, { up: true, reason: null });
-    assert.equal(st.cameras.garagecamtest.up, false);
-    assert.match(st.cameras.garagecamtest.reason, /not answering at its RTSP port \(connection refused/);
-    assert.equal(typeof st.cameras.garagecamtest.since, "number");
-    assert.equal(st.cameras.couch_cam, undefined, "a hidden camera isn't probed");
-
-    // since only moves when up/down flips
-    const since = st.cameras.garagecamtest.since;
-    await new Promise((r) => setTimeout(r, 5));
-    await rt.probeCameras();
-    assert.equal((rt.state() as any).cameras.garagecamtest.since, since);
-
-    const cfg = rt.publicConfig();
-    assert.deepEqual(cfg.cameras, [
-      { id: "dogcamtest", label: "DogCam", stream: "dogcamtest", which: "main" },
-      { id: "garagecamtest", label: "Garagecam", stream: "garagecamtest_sub", which: "sub" },
-    ]);
-    const all = JSON.stringify(cfg) + JSON.stringify(rt.state());
-    assert.doesNotMatch(all, /rtsp:/);
-    assert.doesNotMatch(all, /\b\d+\.\d+\.\d+\.\d+\b/);
-    assert.doesNotMatch(all, /password/i);
-  } finally { live.close(); }
+test("tile states come from the bridge's go2rtc feeds: the stream the tile plays, unknown until told", () => {
+  const rt = runtime();
+  rt.cameras = [
+    { name: "DogCamTest", main: "dogcamtest", sub: null },
+    { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub" },
+    { name: "Couch Cam", main: "couch_cam", sub: null },
+  ];
+  let st = rt.state() as any;
+  assert.deepEqual({ ...st.cameras.dogcamtest, since: 0 }, { state: "unknown", up: true, reason: null, since: 0 }, "no feed yet: try to play");
+  rt.setFeeds({
+    dogcamtest: { state: "down", up: false, reason: "Camera not sending video: go2rtc can't connect to it", since: 5 },
+    garagecamtest: { state: "down", up: false, reason: "main is down", since: 6 },
+    garagecamtest_sub: { state: "streaming", up: true, reason: null, since: 7 },
+    couch_cam: { state: "streaming", up: true, reason: null, since: 8 },
+  });
+  st = rt.state() as any;
+  assert.deepEqual(st.cameras.dogcamtest, { state: "down", up: false, reason: "Camera not sending video: go2rtc can't connect to it", since: 5 });
+  assert.deepEqual(st.cameras.garagecamtest, { state: "streaming", up: true, reason: null, since: 7 }, "the tile plays sub, so sub's state counts");
+  assert.equal(st.cameras.couch_cam, undefined, "a hidden camera isn't in the state");
+  const cfg = rt.publicConfig();
+  assert.deepEqual(cfg.cameras, [
+    { id: "dogcamtest", label: "DogCam", stream: "dogcamtest", which: "main" },
+    { id: "garagecamtest", label: "Garagecam", stream: "garagecamtest_sub", which: "sub" },
+  ]);
+  const all = JSON.stringify(cfg) + JSON.stringify(rt.state());
+  assert.doesNotMatch(all, /rtsp:/);
+  assert.doesNotMatch(all, /\b\d+\.\d+\.\d+\.\d+\b/);
+  assert.doesNotMatch(all, /password/i);
 });
 
-test("a camera whose address can't be read says so", async () => {
+test("a camera dropped from config.json is dropped from the tile states", () => {
   const rt = runtime();
-  rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null, probe: null }];
-  await rt.probeCameras();
-  assert.match((rt.state() as any).cameras.dogcamtest.reason, /address in config\.json can't be read/);
-});
-
-test("a camera dropped from config.json is dropped from the probe state", async () => {
-  const rt = runtime();
-  rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null, probe: null }];
-  await rt.probeCameras();
+  rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null }];
+  assert.ok((rt.state() as any).cameras.dogcamtest);
   rt.cameras = [];
-  await rt.probeCameras();
   assert.deepEqual((rt.state() as any).cameras, {});
   assert.ok(fs.existsSync(rt.settingsFile));
 });
-
 test("service lights reach /api/state with their reasons and a timestamp", async () => {
   // Hermetic: the ipvlan lights are "blocked" here (an install without the shim), so the result
   // doesn't depend on whether this machine can reach the real Constructicon/Questlog.
@@ -178,7 +154,7 @@ test("fonts: publicConfig serves the chosen file; a gone file falls back and the
 
 test("a saved settings change reaches the open page; a garbage file falls back to defaults and says so", async () => {
   const rt = runtime();
-  rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null, probe: null }];
+  rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null }];
   const v0 = (rt.state() as any).settingsVersion;
   await new Promise((r) => setTimeout(r, 20));   // a distinct mtime
   saveSettings(rt.settingsFile, { ...rt.settings, cameras: [{ camera: "DogCamTest", label: "The Dogs", shown: true, stream: "main" }] });

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as net from "net";
-import { BridgeRuntime, probeRtsp } from "../../src/bridgeRuntime";
+import { BridgeRuntime } from "../../src/bridgeRuntime";
 import { loadConfig } from "../../src/config";
 import { UnscryptedCamera } from "../../src/camera";
 import { Logger, setLogLevel } from "../../src/logger";
@@ -27,7 +27,7 @@ function setup(dash: { host?: string; port: number; enabled: boolean } = { port:
   let restarts = 0;
   const rt = new BridgeRuntime({
     config, configPath: file, bridge: null, cameras, log, ffmpegPath: "ffmpeg", version: "test",
-    admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, runtimeDir: dir, enabled: false },
+    admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, rtspPort: null, runtimeDir: dir, enabled: false },
     dash: { host: "127.0.0.1", ...dash, dir: path.join(dir, "dash"), title: "Homedash - TEST" },
     requestRestart: () => { restarts++; },
   });
@@ -115,11 +115,28 @@ test("reload-go2rtc without go2rtc says why", async () => {
   assert.equal(rt.status().go2rtc.state, "stopped");
 });
 
-test("probeRtsp reports an unparseable URL and a closed port", async () => {
-  assert.match((await probeRtsp("not a url")).err ?? "", /can't be parsed/);
-  const r = await probeRtsp("rtsp://127.0.0.1:1/x", 1000);
-  assert.equal(r.ok, false);
-  assert.ok(r.err);
+test("go2rtc off: HomeKit reads the cameras directly and the status says so, with no probe fields", () => {
+  const { rt } = setup();
+  const s = rt.status();
+  assert.equal(s.homekitSource.mode, "off");
+  assert.match(s.homekitSource.text, /HomeKit reads the cameras directly/);
+  assert.equal(s.cameras[0].via, "camera");
+  assert.equal(s.cameras[0].feed, null);
+  assert.equal(s.cameras[0].direct, null);
+  assert.deepEqual(s.cameras[0].prebuffer, { running: false, via: null, lastFragmentAt: null });
+  assert.ok(!("reachable" in s.cameras[0]), "the TCP camera probe is gone (#16)");
+});
+
+test("the dashboard gets a feed state for every stream, address-free (unknown while go2rtc isn't watched)", () => {
+  const { rt } = setup();
+  const got: any[] = [];
+  (rt as any).dash = { child: () => ({ connected: true, send: (m: any) => got.push(m) }) };
+  (rt as any).pushDash(true);
+  const feeds = got.find((m) => m.type === "feeds");
+  assert.deepEqual(Object.keys(feeds.feeds), ["garage"]);
+  assert.equal(feeds.feeds.garage.state, "unknown");
+  assert.equal(feeds.feeds.garage.up, true);
+  assert.doesNotMatch(JSON.stringify(got), /127\.0\.0\.1|rtsp:/);
 });
 
 test("dashboard switched off: says so, and the status shows it stopped with the reason", async () => {

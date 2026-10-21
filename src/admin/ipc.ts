@@ -6,12 +6,20 @@
 import { ResolvedCamera } from "../config";
 import { ChildStatus } from "./supervisor";
 import { UserErrorBody } from "./errors";
+import type { FeedStatus } from "./go2rtcWatch";
+import type { CameraDirect, FeedVia, SourceState } from "../source";
 
 export type MotionKind = "foscam-cgi" | "onvif" | "none";
 
 export interface CameraStatus {
   name: string; stream: string; hksv: boolean; motionKind: MotionKind;
-  reachable: boolean | null; reachableCheckedAt: number | null; reachError: string | null;
+  /** go2rtc's view of the main and sub streams (null when go2rtc isn't watched in this instance). */
+  feed: FeedStatus | null; subFeed: FeedStatus | null;
+  /** Where HomeKit's next pipeline for this camera reads from. */
+  via: FeedVia;
+  /** This camera alone reading directly (per-camera fallback), with the reason and the retry time. */
+  direct: (CameraDirect & { text: string }) | null;
+  prebuffer: { running: boolean; via: FeedVia | null; lastFragmentAt: number | null } | null;
   liveSessions: number; recordingActive: boolean; motionActive: boolean; lastMotionAt: number | null;
   pendingRestart: boolean;   // saved change needs a bridge restart to take effect
 }
@@ -19,6 +27,8 @@ export interface CameraStatus {
 export interface BridgeStatus {
   bridgeName: string; pin: string; setupURI: string; paired: boolean; hapPort: number | null; hapEnabled: boolean;
   cameras: CameraStatus[]; go2rtc: ChildStatus; dash: ChildStatus; startedAt: number; version: string;
+  /** Where HomeKit reads the cameras from, in words. Times inside `text` are {{t:<ms>}} tokens the pane localises. */
+  homekitSource: SourceState & { text: string };
 }
 
 export type ApplyMode = "live" | "added" | "restart-needed";

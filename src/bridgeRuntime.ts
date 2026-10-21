@@ -7,7 +7,6 @@
  */
 
 import * as fs from "fs";
-import * as net from "net";
 import * as path from "path";
 import { fork } from "child_process";
 import { Bridge } from "hap-nodejs";
@@ -15,11 +14,13 @@ import { loadConfig, ConfigError, ResolvedConfig, ResolvedCamera } from "./confi
 import { Logger } from "./logger";
 import { UnscryptedCamera } from "./camera";
 import { Supervisor, ChildStatus } from "./admin/supervisor";
-import { Go2rtcManager } from "./admin/go2rtc";
+import { Go2rtcClient, Go2rtcManager, maskSecretsInLine } from "./admin/go2rtc";
 import { streamNames } from "./admin/go2rtcConfig";
+import { Go2rtcWatcher } from "./admin/go2rtcWatch";
+import { cameraDirectText, SourceSelector, sourceText } from "./source";
 import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
 import { UserError, toErrorJson } from "./admin/errors";
-import { dashCameras, ToDash } from "./dash/ipc";
+import { dashCameras, dashFeed, ToDash } from "./dash/ipc";
 
 export interface RuntimeOptions {
   config: ResolvedConfig;
@@ -27,11 +28,14 @@ export interface RuntimeOptions {
   /** The published bridge, or null when HAP is off (test instance). */
   bridge: Bridge | null;
   cameras: UnscryptedCamera[];
+  /** Where HomeKit reads the cameras from (#16). Absent = always direct (tests, or no go2rtc). */
+  sources?: SourceSelector;
   log: Logger;
   ffmpegPath: string;
   version: string;
   admin: { port: number; enabled: boolean; disabledReason?: string };
-  go2rtc: { binary: string; apiPort: number; webrtcPort: number | null; runtimeDir: string; enabled: boolean; disabledReason?: string };
+  /** rtspPort: go2rtc's loopback RTSP restream (HomeKit reads cameras through it, #16); null = off. */
+  go2rtc: { binary: string; apiPort: number; webrtcPort: number | null; rtspPort: number | null; runtimeDir: string; enabled: boolean; disabledReason?: string };
   /** The open, watch-only dashboard (a third supervised child). */
   dash: { host: string; port: number; enabled: boolean; dir: string; title?: string; disabledReason?: string };
   /** Graceful shutdown; Docker's restart policy brings the bridge back. */
@@ -59,9 +63,11 @@ function resolveDashEntry(): string | null {
 export class BridgeRuntime {
   private readonly cams = new Map<string, UnscryptedCamera>();
   private readonly pendingRestart = new Set<string>();
-  private readonly reach = new Map<string, { ok: boolean | null; at: number | null; err: string | null }>();
   private config: ResolvedConfig;
   private go2rtc: Go2rtcManager | null = null;
+  /** go2rtc's health and per-stream feed state, read every 5 s over loopback (replaces the camera probes). */
+  private watcher: Go2rtcWatcher | null = null;
+  private readonly sources: SourceSelector;
   private go2rtcOff: string | null = null;
   private admin: Supervisor | null = null;
   private dash: Supervisor | null = null;
@@ -70,12 +76,25 @@ export class BridgeRuntime {
   private dashListenError: string | null = null;
   private readonly startedAt = Date.now();
   private timers: NodeJS.Timeout[] = [];
-  private probing = false;
   private lastStatusError: string | null = null;
 
   constructor(private readonly o: RuntimeOptions) {
     this.config = o.config;
     for (const c of o.cameras) this.cams.set(c.name, c);
+    this.sources = o.sources ?? new SourceSelector({ rtspPort: null, log: o.log, offReason: "no source selector was given" });
+    this.sources.setCameras(o.config.cameras);
+  }
+
+  /** go2rtc stream name -> that camera's source URL with the password masked (go2rtc's log key). */
+  private maskedSources(): Map<string, string> {
+    const names = streamNames(this.config.cameras);
+    const m = new Map<string, string>();
+    for (const c of this.config.cameras) {
+      const n = names.get(c.name)!;
+      m.set(n.main, maskSecretsInLine(c.rtspMain));
+      if (n.sub && c.rtspSub) m.set(n.sub, maskSecretsInLine(c.rtspSub));
+    }
+    return m;
   }
 
   start(): void {
@@ -92,10 +111,18 @@ export class BridgeRuntime {
       );
     } else {
       this.go2rtc = new Go2rtcManager({
-        binary: g.binary, runtimeDir: g.runtimeDir, ports: { api: g.apiPort, webrtc: g.webrtcPort },
+        binary: g.binary, runtimeDir: g.runtimeDir, ports: { api: g.apiPort, webrtc: g.webrtcPort, rtsp: g.rtspPort },
         log: log.child("go2rtc"), onState: () => this.pushStatus(),
       });
       this.go2rtc.start(this.config);
+      this.watcher = new Go2rtcWatcher({
+        client: new Go2rtcClient(this.go2rtc.apiBase(), 3000), rtspPort: g.rtspPort,
+        supervisor: () => this.go2rtcStatus(), log: log.child("go2rtc-watch"),
+        lastError: (stream) => { const u = this.maskedSources().get(stream); return u ? this.go2rtc?.producerError(u) ?? null : null; },
+        known: () => new Set(this.maskedSources().keys()),
+        onHealth: (h) => this.sources.update(h),
+      });
+      this.watcher.start();
     }
 
     const a = this.o.admin;
@@ -164,22 +191,6 @@ export class BridgeRuntime {
     }
 
     this.timers.push(setInterval(() => { this.pushStatus(); this.pushDash(false); }, 2000));
-    this.timers.push(setInterval(() => void this.probeAll(), 30_000));
-    void this.probeAll();
-  }
-
-  /** Cheap reachability: can we open a TCP connection to the camera's RTSP host:port? */
-  private async probeAll(): Promise<void> {
-    if (this.probing) return;
-    this.probing = true;
-    try {
-      await Promise.all(this.config.cameras.map(async (c) => {
-        const res = await probeRtsp(c.rtspMain);
-        this.reach.set(c.name, { ok: res.ok, at: Date.now(), err: res.err });
-      }));
-    } finally {
-      this.probing = false;
-    }
   }
 
   private go2rtcStatus(): ChildStatus {
@@ -212,14 +223,20 @@ export class BridgeRuntime {
   status(): BridgeStatus {
     const names = streamNames(this.config.cameras);
     const b = this.o.bridge;
+    const feeds = this.watcher?.feeds();
+    const clock = (ms: number) => `{{t:${ms}}}`;
     const cameras: CameraStatus[] = this.config.cameras.map((rc) => {
       const cam = this.cams.get(rc.name);
-      const r = this.reach.get(rc.name);
       const s = cam?.snapshotStatus();
+      const n = names.get(rc.name)!;
+      const direct = this.sources.cameraDirect(rc.name);
       return {
-        name: rc.name, stream: names.get(rc.name)!.main, hksv: rc.hksv,
+        name: rc.name, stream: n.main, hksv: rc.hksv,
         motionKind: s?.motionKind ?? motionKindOf(rc),
-        reachable: r?.ok ?? null, reachableCheckedAt: r?.at ?? null, reachError: r?.err ?? null,
+        feed: feeds?.get(n.main) ?? null, subFeed: n.sub ? feeds?.get(n.sub) ?? null : null,
+        via: s?.via ?? this.sources.picker(rc)("main")?.via ?? "camera",
+        direct: direct ? { ...direct, text: cameraDirectText(rc.name, direct, clock) } : null,
+        prebuffer: s?.prebuffer ?? null,
         liveSessions: s?.liveSessions ?? 0, recordingActive: s?.recordingActive ?? false,
         motionActive: s?.motionActive ?? false, lastMotionAt: s?.lastMotionAt ?? null,
         pendingRestart: this.pendingRestart.has(rc.name) || !cam,
@@ -230,6 +247,7 @@ export class BridgeRuntime {
       setupURI: b ? b.setupURI() : "", paired: Boolean(b?._accessoryInfo?.paired()),
       hapPort: b ? this.config.bridge.port : null, hapEnabled: Boolean(b),
       cameras, go2rtc: this.go2rtcStatus(), dash: this.dashStatus(), startedAt: this.startedAt, version: this.o.version,
+      homekitSource: { ...this.sources.state(), text: sourceText(this.sources.state(), clock) },
     };
   }
 
@@ -255,6 +273,12 @@ export class BridgeRuntime {
       msgs.push({ type: "bridge", bridge: { hapEnabled: Boolean(this.o.bridge), paired: Boolean(this.o.bridge?._accessoryInfo?.paired()),
         go2rtc: { state: g.state, lastError: g.lastError, nextRetryAt: g.nextRetryAt } } });
       if (withCameras) msgs.push({ type: "cameras", cameras: dashCameras(this.config) });
+      // go2rtc's feed state for every configured stream (fixed reasons only: no addresses reach the dash).
+      const h = this.watcher?.health();
+      const ok = Boolean(h && h.supervisor === "running" && h.apiOk);
+      const feeds = this.watcher?.feeds();
+      const streams = [...streamNames(this.config.cameras).values()].flatMap((n) => [n.main, ...(n.sub ? [n.sub] : [])]);
+      msgs.push({ type: "feeds", feeds: Object.fromEntries(streams.map((s) => [s, dashFeed(feeds?.get(s), ok)])) });
     } catch (err) {
       this.o.log.warn(`couldn't build the dashboard's status update (it keeps the last one): ${(err as Error).message}`);
       return;
@@ -305,8 +329,9 @@ export class BridgeRuntime {
           throw new UserError({ attempted: "Restart go2rtc", happened: `go2rtc isn't running in this instance: ${this.go2rtcOff}.`,
             changed: "Nothing.", next: "Install go2rtc in the image (or set UNSCRYPTED_GO2RTC_BIN) and restart the container." }, 409);
         }
-        await this.go2rtc.reload(this.config);
-        this.send({ type: "applied", reqId: m.reqId, ok: true, mode: "live", message: "go2rtc restarted with the current config." });
+        await this.go2rtc.reload(this.config, { force: true });
+        this.send({ type: "applied", reqId: m.reqId, ok: true, mode: "live",
+          message: "go2rtc restarted. HomeKit's recording buffers reconnect within about 5 s; a clip being recorded right now was cut short." });
       } else {
         this.send({ type: "applied", reqId: m.reqId, ok: true, mode: "restart-needed",
           message: "Bridge is restarting now. Home will show cameras as No Response for about 30 seconds." });
@@ -367,10 +392,14 @@ export class BridgeRuntime {
     const cameras = [...this.config.cameras];
     if (idx >= 0) cameras[idx] = after; else cameras.push(after);
     this.config = { ...this.config, cameras };
+    this.sources.setCameras(this.config.cameras);
 
     if (this.go2rtc) {
       try {
-        await this.go2rtc.reload(this.config);
+        const r = await this.go2rtc.reload(this.config);
+        if (r.restarted) {
+          message += " go2rtc restarted to pick up the change, so every camera's recording buffer restarts (a few seconds of pre-roll are lost, and a clip being recorded right now is cut short).";
+        }
       } catch (err) {
         this.o.log.error(`go2rtc reload after saving "${name}" failed: ${(err as Error).message}`);
         message += ` The live preview wasn't updated: ${(err as Error).message}.`;
@@ -385,7 +414,7 @@ export class BridgeRuntime {
     const name = after.name;
     let cam: UnscryptedCamera;
     try {
-      cam = new UnscryptedCamera(after, this.o.ffmpegPath, this.o.log);
+      cam = new UnscryptedCamera(after, this.o.ffmpegPath, this.o.log, this.sources);
       if (this.o.bridge) this.o.bridge.addBridgedAccessory(cam.accessory);
     } catch (err) {
       this.pendingRestart.add(name);
@@ -405,6 +434,7 @@ export class BridgeRuntime {
   }
 
   async stop(): Promise<void> {
+    this.watcher?.stop();
     this.timers.forEach(clearInterval);
     this.timers = [];
     const results = await Promise.allSettled([this.admin?.stop(), this.dash?.stop(), this.go2rtc?.stop()]);
@@ -412,24 +442,4 @@ export class BridgeRuntime {
       if (r.status === "rejected") this.o.log.warn(`error stopping a child process during shutdown: ${(r.reason as Error)?.message ?? r.reason}`);
     }
   }
-}
-
-/** TCP connect to the RTSP host:port within 3s. Never rejects. */
-export function probeRtsp(rtspUrl: string, timeoutMs = 3000): Promise<{ ok: boolean; err: string | null }> {
-  let host = "";
-  let port = 554;
-  try {
-    const u = new URL(rtspUrl);
-    host = u.hostname;
-    port = Number(u.port || 554);
-  } catch (err) {
-    return Promise.resolve({ ok: false, err: `stream URL can't be parsed (${(err as Error).message})` });
-  }
-  if (!host) return Promise.resolve({ ok: false, err: "stream URL has no host" });
-  return new Promise((resolve) => {
-    const s = net.connect({ host, port, timeout: timeoutMs });
-    s.once("connect", () => { s.destroy(); resolve({ ok: true, err: null }); });
-    s.once("timeout", () => { s.destroy(); resolve({ ok: false, err: `no answer from ${host}:${port} within ${timeoutMs / 1000}s` }); });
-    s.once("error", (e) => { s.destroy(); resolve({ ok: false, err: `${host}:${port}: ${e.message}` }); });
-  });
 }

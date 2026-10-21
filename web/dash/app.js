@@ -113,10 +113,12 @@ function render(t) {
   // "live · main" / "live · sub" (#22): on a small tile 1080p and 360p look alike, so say which.
   let why = null, badge = liveLabel(t.cam);
   if (!st) {
+    if (!t.el) startStream(t);
     why = "Checking the camera…"; badge = "checking…";
   } else if (!st.up) {
-    stopStream(t);
-    why = `${st.reason || "Camera not answering"} since ${clockTime(st.since)}.`;
+    // Keep the player: it's go2rtc's only reason to keep retrying this camera (one client, about every 15 s).
+    if (!t.el) startStream(t);
+    why = `${st.reason || "Camera not sending video"} since ${clockTime(st.since)}.`;
     badge = "offline";
   } else {
     if (!t.el) startStream(t);

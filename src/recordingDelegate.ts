@@ -94,6 +94,11 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     return this.recordingActive;
   }
 
+  /** How many clips are being sent to HomeKit right now (a source switch waits for these). */
+  activeClips(): number {
+    return this.closeSignals.size;
+  }
+
   updateRecordingActive(active: boolean): void {
     this.recordingActive = active;
     this.log.info(`recording ${active ? "ENABLED" : "disabled"} by HomeKit`);

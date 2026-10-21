@@ -30,6 +30,27 @@ import { Logger } from "./logger";
 import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU } from "./ffmpeg";
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
+import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
+
+/** ffmpeg socket I/O timeout (µs): a wedged go2rtc or camera ends the read instead of hanging it. */
+const RTSP_TIMEOUT_US = "10000000";
+const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "the camera directly");
+
+/** The live view's input args for the chosen feed (go2rtc's restream or the camera, #16). */
+export function buildLiveInputArgs(feed: FeedChoice): string[] {
+  return ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", "-timeout", RTSP_TIMEOUT_US, "-i", feed.url];
+}
+
+/** A one-frame JPEG snapshot of the chosen feed, scaled to fit width x height. */
+export function buildSnapshotArgs(feed: FeedChoice, width: number, height: number): string[] {
+  return [
+    "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-timeout", RTSP_TIMEOUT_US, "-i", feed.url,
+    "-frames:v", "1", "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease`, "-f", "mjpeg", "pipe:1",
+  ];
+}
+
+/** A HomeKit snapshot is reused this long: the Home app asks about every 10 s per tile while open. */
+const SNAPSHOT_CACHE_MS = 10_000;
 
 interface SessionInfo {
   address: string;
@@ -56,11 +77,23 @@ export class StreamingDelegate implements CameraStreamingDelegate {
   private readonly pendingSessions = new Map<string, SessionInfo>();
   private readonly activeSessions = new Map<string, SpawnedFfmpeg[]>();
 
+  private readonly snapCache = new Map<string, { at: number; buf: Buffer }>();
+  private readonly snapInflight = new Map<string, Promise<Buffer>>();
+
   constructor(
     private readonly camera: ResolvedCamera,
     private readonly ffmpegPath: string,
     private readonly log: Logger,
+    /** Where to read the camera from at each spawn (go2rtc's restream or the camera, #16). */
+    private readonly pick: FeedPicker = directPicker(camera),
+    /** Told when a read fails, so a camera go2rtc keeps failing on can go direct (Q3). */
+    private readonly onFailure?: FeedFailure,
   ) {}
+
+  private reportFailure(feed: FeedChoice, why: string): void {
+    try { this.onFailure?.(feed, why); }
+    catch (err) { this.log.error(`couldn't report a failed read to the source selector: ${(err as Error).message}`); }
+  }
 
   // ---- Snapshots -----------------------------------------------------------
 
@@ -76,30 +109,43 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       });
   }
 
+  /**
+   * Snapshots read the main stream through go2rtc (owner Q1 = a): on a recording camera go2rtc
+   * already holds that connection, so a snapshot opens none. Cached 10 s per size, and requests
+   * that arrive while one is being made share it. A failure isn't cached.
+   */
   private async takeSnapshot(request: SnapshotRequest): Promise<Buffer> {
+    const key = `${request.width}x${request.height}`;
+    const hit = this.snapCache.get(key);
+    if (hit && Date.now() - hit.at < SNAPSHOT_CACHE_MS) return hit.buf;
+    const running = this.snapInflight.get(key);
+    if (running) return running;
+    const p = this.snapshotNow(request)
+      .then((buf) => { this.snapCache.set(key, { at: Date.now(), buf }); return buf; })
+      .finally(() => this.snapInflight.delete(key));
+    this.snapInflight.set(key, p);
+    return p;
+  }
+
+  private async snapshotNow(request: SnapshotRequest): Promise<Buffer> {
     const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
     if (!ff) {
       throw new Error("ffmpeg unavailable; cannot produce snapshot");
     }
-    // Prefer the sub stream for a cheap snapshot; fall back to main.
-    const source = this.camera.rtspSub ?? this.camera.rtspMain;
-    const args = [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      source,
-      "-frames:v",
-      "1",
-      "-vf",
-      `scale=${request.width}:${request.height}:force_original_aspect_ratio=decrease`,
-      "-f",
-      "mjpeg",
-      "pipe:1",
-    ];
-    return await this.runToBuffer(ff, args, "snapshot", 15000);
+    const feed = this.pick("main");
+    if (!feed) throw new Error("no main stream URL configured for this camera");
+    return this.readSnapshot(ff, feed, request);
+  }
+
+  /** One snapshot read; a failure through go2rtc counts toward this camera's own fallback. */
+  private async readSnapshot(ff: string, feed: FeedChoice, request: Pick<SnapshotRequest, "width" | "height">): Promise<Buffer> {
+    try {
+      return await this.runToBuffer(ff, buildSnapshotArgs(feed, request.width, request.height), "snapshot", 15000);
+    } catch (err) {
+      const why = `snapshot reading ${readsFrom(feed)} failed: ${(err as Error).message}`;
+      this.reportFailure(feed, why);
+      throw new Error(why);
+    }
   }
 
   private runToBuffer(
@@ -219,15 +265,12 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const videoKeySalt = session.videoSRTP.toString("base64");
     const audioKeySalt = session.audioSRTP.toString("base64");
 
-    const args: string[] = [
-      "-hide_banner",
-      "-loglevel",
-      "warning",
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      this.camera.rtspMain,
-    ];
+    const feed = this.pick("main");
+    if (!feed) {
+      callback(new Error("no main stream URL configured"));
+      return;
+    }
+    const args: string[] = [...buildLiveInputArgs(feed)];
 
     // --- Video ---
     if (this.camera.copyVideo) {
@@ -310,12 +353,15 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     void proc.done.then((code) => {
       const sessions = this.activeSessions.get(request.sessionID);
       if (sessions && sessions.includes(proc) && code !== null && code !== 0) {
-        this.log.warn(`live stream ffmpeg exited (code ${code}); stopping session`);
+        // ffmpeg's -timeout exit prints nothing, so say what we know.
+        const why = `live view ffmpeg exited with code ${code} while reading ${readsFrom(feed)} (no video for 10 s, or the stream couldn't be opened)`;
+        this.log.warn(`${why}; stopping session`);
+        this.reportFailure(feed, why);
         this.stopStream(request.sessionID);
       }
     });
 
-    this.log.info(`live stream started for ${this.camera.name}`);
+    this.log.info(`live stream started for ${this.camera.name} (reading ${readsFrom(feed)})`);
     callback();
   }
 
