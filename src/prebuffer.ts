@@ -259,7 +259,10 @@ export class Prebuffer {
     const args = buildPrebufferArgs(this.camera, feed.url);
     this.feed = feed;
     const startedAt = Date.now();
-    let lastAt: number | null = null;   // this spawn's last fragment
+    // This spawn's last two fragments. ffmpeg flushes one final fragment as it exits, so on exit the
+    // one before it says when video really stopped (seen live: a frozen go2rtc read as "stream ended").
+    let lastAt: number | null = null;
+    let prevAt: number | null = null;
     this.initSegment = null;
     this.ring = [];
     this.parser = new FragmentedMp4Parser(
@@ -267,7 +270,7 @@ export class Prebuffer {
         this.initSegment = segment;
         this.log.debug(`prebuffer init segment ready (${segment.length} bytes)`);
       },
-      (fragment) => { lastAt = Date.now(); this.onFragment(fragment); },
+      (fragment) => { prevAt = lastAt; lastAt = Date.now(); this.onFragment(fragment); },
     );
 
     const ff = spawnFfmpeg(ffmpegPath, args, this.log, {
@@ -295,7 +298,8 @@ export class Prebuffer {
         // Restart if we still want to be running (camera dropped, network blip).
         if (this.wantRunning) {
           const now = Date.now();
-          const why = prebufferExitReason(code, feed, now - startedAt, lastAt === null ? null : now - lastAt);
+          const videoAt = lastAt !== null && now - lastAt < 1000 ? prevAt : lastAt;   // skip the exit flush
+          const why = prebufferExitReason(code, feed, now - startedAt, videoAt === null ? null : now - videoAt);
           this.log.warn(`prebuffer ffmpeg exited (code ${code}) while reading ${readsFrom(feed.via)}: ${why}; restarting in 5s`);
           try { this.onFailure?.(feed, why); }
           catch (err) { this.log.error(`couldn't report the prebuffer failure to the source selector (the restart still happens): ${(err as Error).message}`); }
