@@ -44,11 +44,13 @@ The camera IPs aren't secret, and the plan uses them for the counts:
 
 | Camera (HomeKit name) | IP | Model | Has sub | Audio | HomeKit recording (last 6 h of logs) |
 |---|---|---|---|---|---|
-| Couch Cam | 10.0.1.189 | Foscam FI9803P V2 | yes | yes (default) | not enabled |
-| GarageCamTest | 10.0.1.3 | Generic XM | yes | no | **on**: 383 clips |
-| BackyardCamTest | 10.0.1.4 | Generic XM | yes | no | on 19:45, **off** 20:00 |
-| OnvifCamTest | 10.0.1.9 | Generic XM | yes | no | **on**: 100 clips |
-| DogCamTest | 10.0.1.99 | Generic XM | yes | no | not enabled |
+| Couch Cam | 10.0.1.189 | Foscam FI9803P V2 (old, about 720p) | yes | yes (default) | not enabled |
+| GarageCamTest | 10.0.1.3 | Boavision, reports "Generic XM IP Camera" (1080p) | yes | no | **on**: 383 clips |
+| BackyardCamTest | 10.0.1.4 | Boavision, reports "Generic XM IP Camera" (1080p) | yes | no | on 19:45, **off** 20:00 |
+| OnvifCamTest (the porch cam, "ONVIF Camera") | 10.0.1.9 | Boavision, reports "Generic XM IP Camera" (1080p) | yes | no | **on**: 100 clips |
+| DogCamTest (DogCam) | 10.0.1.99 | Newer Boavision, also reports "Generic XM IP Camera", but **4K main** (3840x2160 H.264 High, 10 fps since 2026-10-20) | yes | no | not enabled |
+
+**Owner decision 2 (2026-10-20):** the four Boavision cameras all report the same model string, but DogCam's main is 4K where the others are 1080p, so the model string doesn't tell them apart. **Anything per camera (the main+sub result, a "sub not allowed" rule) is keyed by camera name, never by model.**
 
 1. **Established RTSP connections right now** (`ss -tnp state established "( dport = :554 )"`):
    - Couch Cam: 1 (go2rtc)
@@ -1567,7 +1569,7 @@ rm -f "$out" "$err"
 
 ### Task 15: Main-vs-sub concurrency test, one camera at a time [owner go-ahead at run time]
 
-Goal: find out, per camera model, whether a camera serves its main and sub streams to go2rtc **at the same time** without refusing or dropping one. That decides whether dashboard tiles (and Q1's snapshot) may use sub.
+Goal: find out, **per camera (keyed by camera name, owner decision 2)**, whether a camera serves its main and sub streams to go2rtc **at the same time** without refusing or dropping one. That decides whether dashboard tiles (and Q1's snapshot) may use sub.
 
 - [ ] **Step 1: Ask the owner for the go-ahead, the cameras and the moment** (Q9). Say plainly: "For about 3 minutes, <camera> gets a second connection (its sub stream). If it's a recording camera, its recording may drop for a few seconds."
 - [ ] **Step 2: Record the before state** for that camera: `rtsp-census.sh 20`, plus its Status line.
@@ -1579,16 +1581,19 @@ sudo docker exec unscrypted bash -c 'for s in <slug> <slug>_sub; do ffmpeg -hide
 
   Here `<slug>` is the camera's main stream name from the Status page (e.g. `backyardcamtest`, `couch_cam`).
 - [ ] **Step 4: While it runs:** take `rtsp-census.sh 20` once a minute (expect 2 go2rtc connections to that IP), and grep go2rtc's lines for that IP's errors: `sudo docker logs --since 4m unscrypted 2>&1 | grep -E "producer.go.*@<ip>"`. Afterwards, each `/tmp/cc_*.log` should end with no error and about 180 s of frames. A refused or dropped stream shows up as `EOF`, `i/o timeout`, `connection refused`, or an ffmpeg exit before 180 s. If the camera records, also check its `prebuffer ffmpeg exited` count over that window.
-- [ ] **Step 5: Record the result** in a table on #16 and in the README's "One connection per camera" section: `model | camera tested | main+sub together: OK / drops <which> after <n> s / refuses | date`. Do Foscam FI9803P V2 (Couch Cam) and the XM model (one camera; a second XM camera is optional to confirm).
+- [ ] **Step 5: Record the result** in a table on #16 and in the README's "One connection per camera" section, **one row per camera name**: `camera name | hardware | main+sub together: OK / drops <which> after <n> s / refuses | date`. Don't generalise a result to "the XM model": all four Boavision cameras report "Generic XM IP Camera", but DogCam (4K main) is different hardware from the 1080p ones. The cameras to test (Q9), one at a time:
+  - **BackyardCamTest**: Boavision 1080p (stands in for itself; GarageCamTest and OnvifCamTest, the porch cam, are the same 1080p Boavision line but each gets its own row only once tested).
+  - **Couch Cam**: old Foscam FI9803P V2, about 720p, with audio (its restream read is the `--audio` / G.711 case).
+  - **DogCamTest**: newer Boavision with a 4K main (3840x2160 H.264 High, 10 fps). Two streams at 4K + sub is the heaviest load of the five; watch for the camera dropping sub, and for go2rtc/ffmpeg CPU on the NAS.
 - [ ] **Step 6:** `rm -f /tmp/cc_*.log` in the container. Re-run the census: back to the Step 2 state.
 
 ### Task 16 (gated): Act on the main/sub result (Q10) and Q4 (b)
 
 - [ ] **If a model failed and Q10 = (a):**
-  - Add `subConcurrentOk?: boolean` per camera model in a small table in `src/dash/settings.ts` (keyed by `model`, from Task 15's result). The dashboard settings save refuses `stream: "sub"` for such a camera with the four-part error: "<label>'s camera model (<model>) drops a stream when main and sub are open together (tested <date>), and HomeKit already holds its main stream, so the tile has to use main."
+  - Add `subConcurrentOk?: boolean` per camera in a small table in `src/dash/settings.ts`, **keyed by camera name** (owner decision 2: the model string is the same "Generic XM IP Camera" on all four Boavision cameras, and DogCam's 4K main makes it behave differently), from Task 15's result. An untested camera has no entry and isn't restricted. The dashboard settings save refuses `stream: "sub"` for such a camera with the four-part error: "<label> drops a stream when main and sub are open together (tested <date>), and HomeKit already holds its main stream, so the tile has to use main." A renamed camera loses its entry, so the table is checked against config names at start and an orphaned entry is logged.
   - The Settings page shows the sub option greyed out with that reason, not hidden (owner rule).
   - Write the tests first, as in Task 10.
-- [ ] **If both models pass:** nothing changes in code. The default stays `main`. Note on #16 that sub is safe for those models.
+- [ ] **If every tested camera passes:** nothing changes in code. The default stays `main`. Note on #16 which cameras (by name) are safe on sub.
 - [ ] **If Q4 = (b):** file it as its own issue ("go2rtc per-stream live update instead of a restart"), with a plan of its own. It's not part of 0.4.0.
 
 ---
@@ -1606,13 +1611,15 @@ sudo docker exec unscrypted bash -c 'for s in <slug> <slug>_sub; do ffmpeg -hide
   - **Q1 a:** snapshots through go2rtc from main, with a 10 s cache.
   - **Q2 a:** `#backchannel=0` on every source.
   - **Q3 = YES (b), NOT the recommendation:** per-camera fallback. If go2rtc is up but can't get video from one camera, that camera alone goes direct after 3 failures in 2 minutes, for 10 minutes, then retries go2rtc. Same plain-words status as the global fallback.
+  - **Owner decision 1 (2026-10-20, refines Q3): per-camera fallback ignores camera outages.** Only failures go2rtc causes count. When go2rtc's own view of the stream says it can't reach the camera (producer down, reconnecting or stalled, or a producer error logged in the 2 min window), the failure doesn't count, it's logged once per outage, and the camera reconnects through go2rtc. A rebooting camera never goes direct. (Built in Phase 5: `SourceSelector.cameraOutage`.)
+  - **Owner decision 2 (2026-10-20): key per-camera things by camera name, not model.** See the Findings table: four Boavision cameras report the same model string, DogCam's main is 4K, Couch Cam is an old ~720p Foscam.
   - **Q4 a:** restart go2rtc only when its config text changed, and say so in the save message.
   - **Q5 a:** idle cameras show "idle: nobody is watching (last video …)", with no checks.
   - **Q6 a:** an edited-URL feed check is a still frame only.
   - **Q7 = "n" = no password** on the loopback restream (option a).
   - **Q8 a:** timings as stated (direct after 15 s down; return after 60 s healthy and at least 2 min direct).
-  - **Q9:** main+sub test on BackyardCamTest (XM), Couch Cam (Foscam) **and DogCamTest** ("dont forget the dogcam is also different": a different model). One at a time, at a moment the owner OKs.
-  - **Q10 a:** a model that fails can't use sub on the dash (greyed out with the reason).
+  - **Q9:** main+sub test on BackyardCamTest (Boavision 1080p), Couch Cam (old Foscam, ~720p) **and DogCamTest** ("dont forget the dogcam is also different": newer Boavision, 4K main). One at a time, at a moment the owner OKs. Results are recorded per camera name.
+  - **Q10 a:** a camera that fails can't use sub on the dash (greyed out with the reason), keyed by camera name (decision 2).
   - **Q11 = run the prod fallback drill (b)** once 0.4.0 is ready ("we can test that if you have it ready, nbd"), at a quiet moment.
   - **Q12: done.** The owner set the dash's status checks to 30 s himself (17:12); new connections dropped to 1-2 per camera per 30 s.
 
