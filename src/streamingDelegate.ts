@@ -27,7 +27,14 @@ import {
   AudioStreamingCodecType,
 } from "hap-nodejs";
 import { Logger } from "./logger";
-import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU } from "./ffmpeg";
+import {
+  resolveFfmpeg,
+  spawnFfmpeg,
+  SpawnedFfmpeg,
+  SRTP_SUITE,
+  HOMEKIT_MTU,
+  liveViewInputArgs,
+} from "./ffmpeg";
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
 
@@ -223,10 +230,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "-hide_banner",
       "-loglevel",
       "warning",
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      this.camera.rtspMain,
+      ...liveViewInputArgs(this.camera.rtspMain),
     ];
 
     // --- Video ---

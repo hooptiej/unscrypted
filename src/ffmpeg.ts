@@ -119,3 +119,15 @@ export const SRTP_SUITE = "AES_CM_128_HMAC_SHA1_80";
 
 /** HomeKit live-stream MTU. The spec wants ~1200 for video RTP payloads. */
 export const HOMEKIT_MTU = 1200;
+
+/**
+ * Input args for a HomeKit live view (#55). ffmpeg normally probes an RTSP input for ~2.8 s before it
+ * writes anything, then flushes the probed frames in one burst. The phone then gets ~28 frames in
+ * 200 ms whose RTP timestamps run ~2.8 s ahead of real time, so the whole stream stays early by that
+ * much (measured: 105k RTP ticks per second over a 20 s capture instead of 90k). Probing only the
+ * first packet removes the burst; ffmpeg still gets SPS/PPS from the RTSP SDP, and the camera's own
+ * timestamps (90,000 per second steady-state) pass through untouched.
+ */
+export function liveViewInputArgs(rtspUrl: string): string[] {
+  return ["-probesize", "32", "-analyzeduration", "0", "-rtsp_transport", "tcp", "-i", rtspUrl];
+}
