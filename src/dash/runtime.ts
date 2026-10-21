@@ -139,6 +139,7 @@ export class DashRuntime {
       idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes,
       cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream, which: x.which })),
       fonts: { ui: f.ui, clock: f.clock },
+      glow: { intensity: s.glow.intensity, size: s.glow.size },
     };
   }
 
