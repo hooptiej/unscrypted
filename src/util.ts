@@ -8,6 +8,29 @@ export function hasPairingState(dir: string): boolean {
   return fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.startsWith("AccessoryInfo."));
 }
 
+/**
+ * Where HomeKit listens and advertises (#36), from UNSCRYPTED_HAP_BIND: a comma list of IP
+ * addresses or interface names, passed to hap-nodejs's `bind`. Unset means every address the
+ * host has, which on a NAS with extra addresses (a dashboard alias, an ipvlan shim) lets Apple
+ * devices connect on one address while live video is sent from another, and live view dies
+ * after a second. Returns undefined for unset/blank.
+ */
+export function parseHapBind(raw: string | undefined): string[] | undefined {
+  const list = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return list.length ? list : undefined;
+}
+
+/** The host's non-internal IPv4 addresses, for the "more than one address" warning. */
+export function hostIpv4s(ifaces: NodeJS.Dict<{ family: string | number; internal: boolean; address: string }[]>): string[] {
+  const out: string[] = [];
+  for (const list of Object.values(ifaces)) {
+    for (const a of list ?? []) {
+      if ((a.family === "IPv4" || a.family === 4) && !a.internal) out.push(a.address);
+    }
+  }
+  return out;
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

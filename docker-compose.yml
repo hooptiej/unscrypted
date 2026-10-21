@@ -35,6 +35,10 @@ services:
       - UNSCRYPTED_CONFIG=/config/config.json
       - UNSCRYPTED_PERSIST_DIR=/data/persist
       - UNSCRYPTED_LOG_LEVEL=info
+      # Where HomeKit listens and advertises (#36). Set it to the host's main LAN address in your
+      # docker-compose.override.yml if the host has more than one (an ipvlan shim, a dashboard
+      # alias): otherwise Apple devices may connect on the wrong one and live view dies after a second.
+      # - UNSCRYPTED_HAP_BIND=10.0.1.78
       - UNSCRYPTED_ADMIN_PORT=8190
       - UNSCRYPTED_GO2RTC_API_PORT=1986
       # go2rtc WebRTC media (tcp+udp, all interfaces) for the pane's live preview.
