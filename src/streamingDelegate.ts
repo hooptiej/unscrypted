@@ -230,7 +230,46 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     ];
 
     // --- Video ---
-    if (this.camera.copyVideo) {
+    if (this.camera.liveTranscode) {
+      // HomeKit-correct live transcode (#63). Reshape the stream the hub has to
+      // relay: `-tune zerolatency` (which disables B-frames), a short keyframe
+      // interval, and scale/bitrate to what the controller actually asked for in
+      // SETUP. `-c:v copy` can't do any of this, which is why passthrough (main
+      // OR sub) spins on the hub. The recording/prebuffer path is unaffected —
+      // this branch only touches the live view.
+      const w = video.width;
+      const h = video.height;
+      const kbps = video.max_bit_rate;
+      args.push(
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-tune",
+        "zerolatency",
+        "-profile:v",
+        "high",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        String(video.fps),
+        "-vf",
+        `scale='min(${w},iw)':'min(${h},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+        "-b:v",
+        `${kbps}k`,
+        "-maxrate",
+        `${kbps}k`,
+        "-bufsize",
+        `${kbps * 2}k`,
+        "-g",
+        String(video.fps * 2),
+        "-force_key_frames",
+        "expr:gte(t,n_forced*1)",
+        "-bf",
+        "0",
+      );
+    } else if (this.camera.copyVideo) {
       args.push("-an", "-c:v", "copy");
     } else {
       args.push(

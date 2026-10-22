@@ -121,6 +121,15 @@ export interface CameraConfig {
   copyVideo?: boolean;
 
   /**
+   * Transcode the LIVE-VIEW path (only) to a HomeKit-correct shape: libx264
+   * -tune zerolatency (no B-frames), short keyframe interval, scaled to the
+   * controller's requested resolution/bitrate. Default false. This is
+   * independent of `copyVideo` (which governs the recording/prebuffer path),
+   * so recording is never affected. Costs CPU only while a camera is viewed.
+   */
+  liveTranscode?: boolean;
+
+  /**
    * Whether the camera provides an audio track. Default true. Set false for
    * video-only cameras (e.g. the mic is disabled) so ffmpeg doesn't fail trying
    * to map a non-existent audio stream (which kills the whole live view).
@@ -201,6 +210,7 @@ export interface ResolvedCamera {
   hksv: boolean;
   maxRecordingSeconds: number;
   copyVideo: boolean;
+  liveTranscode: boolean;
   audio: boolean;
   manufacturer: string;
   model: string;
@@ -327,6 +337,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       hksv: cam.hksv ?? true,
       maxRecordingSeconds: Math.min(180, cam.maxRecordingSeconds ?? 170),
       copyVideo: cam.copyVideo ?? true,
+      liveTranscode: cam.liveTranscode ?? false,
       audio: cam.audio ?? true,
       manufacturer: cam.manufacturer ?? "Foscam",
       model: cam.model ?? "IP Camera",
