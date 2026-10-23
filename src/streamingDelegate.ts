@@ -55,6 +55,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
 
   private readonly pendingSessions = new Map<string, SessionInfo>();
   private readonly activeSessions = new Map<string, SpawnedFfmpeg[]>();
+  // RTCP return sockets for live sessions, kept open + drained for the life of
+  // the session (#40 keep-alive). HomeKit sends receiver reports to these ports;
+  // if we orphan them, iOS tears the stream down (~30s) while macOS tolerates it.
+  private readonly activeReturnSockets = new Map<string, dgram.Socket[]>();
 
   constructor(
     private readonly camera: ResolvedCamera,
@@ -345,6 +349,30 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     this.activeSessions.set(request.sessionID, [proc]);
     this.pendingSessions.delete(request.sessionID);
 
+    // --- Keep-alive (#40): service HomeKit's RTCP return sockets. ---
+    // HomeKit sends RTCP receiver reports to the return ports we advertised in
+    // prepareStream. We used to orphan those sockets (never read, never closed),
+    // which looks like why iOS tears the stream down at ~30s while macOS lets it
+    // ride. Keep them bound and drain every packet for the life of the session;
+    // close them in stopStream. Prior art: homebridge-camera-ffmpeg, argus #3.
+    // Instrumented: log the FIRST RTCP so we can tell a return-path problem
+    // (no RTCP ever = controller can't reach us) from a different gremlin.
+    let rtcpSeen = 0;
+    const onReturn = (which: string) => (): void => {
+      rtcpSeen++;
+      if (rtcpSeen === 1) {
+        this.log.info(
+          `live view: first RTCP (${which}) from controller for ${this.camera.name} — return path OK`,
+        );
+      }
+    };
+    session.videoReturnSocket.on("message", onReturn("video"));
+    session.audioReturnSocket.on("message", onReturn("audio"));
+    this.activeReturnSockets.set(request.sessionID, [
+      session.videoReturnSocket,
+      session.audioReturnSocket,
+    ]);
+
     // ffmpeg exiting unexpectedly should tear the session down, loudly.
     void proc.done.then((code) => {
       const sessions = this.activeSessions.get(request.sessionID);
@@ -366,6 +394,18 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       }
       this.activeSessions.delete(sessionID);
       this.log.info(`live stream stopped for ${this.camera.name}`);
+    }
+    // Close the live session's RTCP return sockets (fixes the orphan/leak + keep-alive, #40).
+    const returnSockets = this.activeReturnSockets.get(sessionID);
+    if (returnSockets) {
+      for (const s of returnSockets) {
+        try {
+          s.close();
+        } catch {
+          /* ignore */
+        }
+      }
+      this.activeReturnSockets.delete(sessionID);
     }
     const pending = this.pendingSessions.get(sessionID);
     if (pending) {
