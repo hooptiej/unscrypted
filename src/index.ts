@@ -174,6 +174,28 @@ async function main(): Promise<void> {
     );
   }
 
+  // Health heartbeat: a slow resource creep (open FDs / RSS climbing over many
+  // sessions) is what eventually breaks live view after long uptime. Log it
+  // periodically so, if it rots again in prod, there's a trail to diagnose from
+  // rather than a cold "it died". Interval via UNSCRYPTED_HEALTH_INTERVAL_MS
+  // (default 5 min; 0 disables).
+  const healthEvery = Number(process.env.UNSCRYPTED_HEALTH_INTERVAL_MS) || 300000;
+  if (healthEvery > 0) {
+    const health = setInterval(() => {
+      let fd = -1;
+      try {
+        fd = fs.readdirSync("/proc/self/fd").length;
+      } catch {
+        /* not Linux / no procfs */
+      }
+      const rssMb = Math.round(process.memoryUsage().rss / 1048576);
+      log.info(
+        `[health] uptime=${Math.round(process.uptime())}s rss=${rssMb}MB openFDs=${fd}`,
+      );
+    }, healthEvery);
+    health.unref();
+  }
+
   const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
   const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
   const runtime = new BridgeRuntime({

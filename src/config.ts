@@ -337,7 +337,10 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       hksv: cam.hksv ?? true,
       maxRecordingSeconds: Math.min(180, cam.maxRecordingSeconds ?? 170),
       copyVideo: cam.copyVideo ?? true,
-      liveTranscode: cam.liveTranscode ?? false,
+      // Default ON: transcoding the live view to a HomeKit-correct shape is the
+      // fix for the iOS live-view failures (#63). Recording is unaffected (it
+      // uses copyVideo/prebuffer). Set false per-camera to fall back to copy.
+      liveTranscode: cam.liveTranscode ?? true,
       audio: cam.audio ?? true,
       manufacturer: cam.manufacturer ?? "Foscam",
       model: cam.model ?? "IP Camera",
