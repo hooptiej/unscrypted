@@ -144,6 +144,22 @@ async function main(): Promise<void> {
   });
 
   if (hapEnabled) {
+    // UNSCRYPTED_HAP_BIND pins the HAP server + mDNS advertisement to specific
+    // interface(s)/IP(s). On a multi-interface host (e.g. the NAS: enp2s0 .78
+    // plus the ipvlan shim .249, macvlan/docker bridges), advertising on ALL of
+    // them lets a controller connect via a flaky interface (the shim) — whose
+    // HAP connection drops every ~30s and tears the live stream down with it
+    // (see hooptiej/unscrypted#63). Binding to the real LAN IP keeps one stable
+    // connection. Comma-separate for multiple.
+    const hapBindRaw = process.env.UNSCRYPTED_HAP_BIND?.trim();
+    const hapBind = hapBindRaw
+      ? hapBindRaw.includes(",")
+        ? hapBindRaw.split(",").map((s) => s.trim()).filter(Boolean)
+        : hapBindRaw
+      : undefined;
+    if (hapBind) {
+      log.info(`HAP bound to: ${Array.isArray(hapBind) ? hapBind.join(", ") : hapBind}`);
+    }
     // Publish the bridge (starts the HAP server + mDNS advertisement).
     await bridge.publish({
       username: config.bridge.username,
@@ -152,6 +168,7 @@ async function main(): Promise<void> {
       category: Categories.BRIDGE,
       setupID: config.bridge.setupId,
       advertiser: MDNSAdvertiser.CIAO,
+      ...(hapBind ? { bind: hapBind } : {}),
     });
 
     printPairingInfo(log, config, bridge);
