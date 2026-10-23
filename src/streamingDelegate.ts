@@ -48,17 +48,33 @@ interface SessionInfo {
   audioSRTP: Buffer; // key + salt
 }
 
+type LiveVideo = { width: number; height: number; fps: number; max_bit_rate: number; pt: number };
+type LiveAudio = {
+  channel: number;
+  sample_rate: number;
+  max_bit_rate: number;
+  pt: number;
+  codec: AudioStreamingCodecType;
+};
+
+interface ActiveSession {
+  procs: SpawnedFfmpeg[];
+  info: SessionInfo;
+  video: LiveVideo;
+  audio: LiveAudio;
+  watchdog?: NodeJS.Timeout;
+}
+
 export class StreamingDelegate implements CameraStreamingDelegate {
   // HAP sets this when the controller is configured; we use its snapshot
   // handling helpers indirectly. Assigned by the camera module.
   controller?: CameraController;
 
   private readonly pendingSessions = new Map<string, SessionInfo>();
-  private readonly activeSessions = new Map<string, SpawnedFfmpeg[]>();
-  // RTCP return sockets for live sessions, kept open + drained for the life of
-  // the session (#40 keep-alive). HomeKit sends receiver reports to these ports;
-  // if we orphan them, iOS tears the stream down (~30s) while macOS tolerates it.
-  private readonly activeReturnSockets = new Map<string, dgram.Socket[]>();
+  // Active live sessions: ffmpeg proc(s), the SessionInfo (reused to re-spawn
+  // ffmpeg on RECONFIGURE to the same endpoint), the last video/audio params,
+  // and an RTCP-silence watchdog that releases a stale session cleanly (#40/#695).
+  private readonly activeSessions = new Map<string, ActiveSession>();
 
   constructor(
     private readonly camera: ResolvedCamera,
@@ -191,9 +207,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         void this.startStream(request, callback);
         break;
       case StreamRequestTypes.RECONFIGURE:
-        // We don't dynamically reconfigure the running ffmpeg in this first cut.
-        this.log.debug(`stream reconfigure requested (ignored): ${request.sessionID}`);
-        callback();
+        void this.reconfigureStream(request, callback);
         break;
       case StreamRequestTypes.STOP:
         this.stopStream(request.sessionID);
@@ -202,24 +216,12 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     }
   }
 
-  private async startStream(
-    request: Extract<StreamingRequest, { type: StreamRequestTypes.START }>,
-    callback: StreamRequestCallback,
-  ): Promise<void> {
-    const session = this.pendingSessions.get(request.sessionID);
-    if (!session) {
-      callback(new Error("no pending session for stream start"));
-      return;
-    }
-    const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
-    if (!ff) {
-      callback(new Error("ffmpeg unavailable; cannot start live stream"));
-      return;
-    }
-
-    const video = request.video;
-    const audio = request.audio;
-
+  /** Build the live-view ffmpeg command for a session + encode params (shared by START/RECONFIGURE). */
+  private buildLiveArgs(
+    session: SessionInfo,
+    video: LiveVideo,
+    audio: LiveAudio,
+  ): string[] {
     const videoKeySalt = session.videoSRTP.toString("base64");
     const audioKeySalt = session.audioSRTP.toString("base64");
 
@@ -343,69 +345,173 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       );
     }
 
-    const proc = spawnFfmpeg(ff, args, this.log, {
-      label: `live:${this.camera.name}:${request.sessionID.slice(0, 8)}`,
-    });
-    this.activeSessions.set(request.sessionID, [proc]);
+    return args;
+  }
+
+  private async startStream(
+    request: Extract<StreamingRequest, { type: StreamRequestTypes.START }>,
+    callback: StreamRequestCallback,
+  ): Promise<void> {
+    const session = this.pendingSessions.get(request.sessionID);
+    if (!session) {
+      callback(new Error("no pending session for stream start"));
+      return;
+    }
+    const proc = await this.spawnLive(
+      request.sessionID,
+      session,
+      request.video,
+      request.audio,
+    );
+    if (!proc) {
+      callback(new Error("ffmpeg unavailable; cannot start live stream"));
+      return;
+    }
     this.pendingSessions.delete(request.sessionID);
 
-    // --- Keep-alive (#40): service HomeKit's RTCP return sockets. ---
+    // --- Keep-alive (#40/#695): service HomeKit's RTCP return sockets. ---
     // HomeKit sends RTCP receiver reports to the return ports we advertised in
-    // prepareStream. We used to orphan those sockets (never read, never closed),
-    // which looks like why iOS tears the stream down at ~30s while macOS lets it
-    // ride. Keep them bound and drain every packet for the life of the session;
-    // close them in stopStream. Prior art: homebridge-camera-ffmpeg, argus #3.
-    // Instrumented: log the FIRST RTCP so we can tell a return-path problem
-    // (no RTCP ever = controller can't reach us) from a different gremlin.
+    // prepareStream. If we orphan them, iOS tears the stream down (~30s) while
+    // macOS tolerates it. Drain every packet, and reset a watchdog on each one:
+    // when RTCP goes silent (viewer gone / stalled), release the session CLEANLY
+    // so HAP frees it and the next open isn't blocked (#695). Instrumented: log
+    // the first RTCP (return-path proof) and any watchdog fire.
+    const rtcpTimeoutMs = Math.max(
+      30000,
+      Math.min((request.video.rtcp_interval || 0) * 5 * 1000, 300000),
+    );
     let rtcpSeen = 0;
-    const onReturn = (which: string) => (): void => {
+    const bump = (which: string): void => {
       rtcpSeen++;
       if (rtcpSeen === 1) {
         this.log.info(
           `live view: first RTCP (${which}) from controller for ${this.camera.name} — return path OK`,
         );
       }
+      this.armWatchdog(request.sessionID, rtcpTimeoutMs);
     };
-    session.videoReturnSocket.on("message", onReturn("video"));
-    session.audioReturnSocket.on("message", onReturn("audio"));
-    this.activeReturnSockets.set(request.sessionID, [
-      session.videoReturnSocket,
-      session.audioReturnSocket,
-    ]);
-
-    // ffmpeg exiting unexpectedly should tear the session down, loudly.
-    void proc.done.then((code) => {
-      const sessions = this.activeSessions.get(request.sessionID);
-      if (sessions && sessions.includes(proc) && code !== null && code !== 0) {
-        this.log.warn(`live stream ffmpeg exited (code ${code}); stopping session`);
-        this.stopStream(request.sessionID);
-      }
-    });
+    session.videoReturnSocket.on("message", () => bump("video"));
+    session.audioReturnSocket.on("message", () => bump("audio"));
+    this.armWatchdog(request.sessionID, rtcpTimeoutMs);
 
     this.log.info(`live stream started for ${this.camera.name}`);
     callback();
   }
 
+  /** Re-spawn ffmpeg for an existing session with new encode params (RECONFIGURE). */
+  private async reconfigureStream(
+    request: Extract<StreamingRequest, { type: StreamRequestTypes.RECONFIGURE }>,
+    callback: StreamRequestCallback,
+  ): Promise<void> {
+    const active = this.activeSessions.get(request.sessionID);
+    if (!active) {
+      this.log.info(
+        `stream reconfigure for ${this.camera.name} but no active session; ignoring`,
+      );
+      callback();
+      return;
+    }
+    this.log.info(
+      `stream reconfigure for ${this.camera.name}: ${request.video.width}x${request.video.height}@${request.video.fps} ${request.video.max_bit_rate}k — re-spawning ffmpeg`,
+    );
+    const oldProcs = active.procs;
+    const newVideo: LiveVideo = {
+      width: request.video.width,
+      height: request.video.height,
+      fps: request.video.fps,
+      max_bit_rate: request.video.max_bit_rate,
+      pt: active.video.pt,
+    };
+    const proc = await this.spawnLive(
+      request.sessionID,
+      active.info,
+      newVideo,
+      active.audio,
+    );
+    if (!proc) {
+      this.log.warn(`reconfigure re-spawn failed for ${this.camera.name}; stopping`);
+      this.stopStream(request.sessionID);
+      callback(new Error("reconfigure re-spawn failed"));
+      return;
+    }
+    // New ffmpeg is up and recorded as the active proc; retire the old one. Its
+    // exit handler sees it's no longer current and won't tear the session down.
+    for (const p of oldProcs) {
+      p.kill();
+    }
+    callback();
+  }
+
+  /** Build + spawn the live ffmpeg for a session and (re)store the active record. */
+  private async spawnLive(
+    sessionID: string,
+    session: SessionInfo,
+    video: LiveVideo,
+    audio: LiveAudio,
+  ): Promise<SpawnedFfmpeg | undefined> {
+    const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
+    if (!ff) {
+      return undefined;
+    }
+    const args = this.buildLiveArgs(session, video, audio);
+    const proc = spawnFfmpeg(ff, args, this.log, {
+      label: `live:${this.camera.name}:${sessionID.slice(0, 8)}`,
+    });
+    const prev = this.activeSessions.get(sessionID);
+    this.activeSessions.set(sessionID, {
+      procs: [proc],
+      info: session,
+      video,
+      audio,
+      watchdog: prev?.watchdog,
+    });
+
+    // ffmpeg exiting unexpectedly (non-zero) tears the session down, loudly.
+    void proc.done.then((code) => {
+      const cur = this.activeSessions.get(sessionID);
+      if (cur && cur.procs.includes(proc) && code !== null && code !== 0) {
+        this.log.warn(`live stream ffmpeg exited (code ${code}); stopping session`);
+        this.stopStream(sessionID);
+      }
+    });
+    return proc;
+  }
+
+  /** (Re)arm the RTCP-silence watchdog: clean release if the controller goes quiet. */
+  private armWatchdog(sessionID: string, timeoutMs: number): void {
+    const active = this.activeSessions.get(sessionID);
+    if (!active) {
+      return;
+    }
+    if (active.watchdog) {
+      clearTimeout(active.watchdog);
+    }
+    active.watchdog = setTimeout(() => {
+      this.log.info(
+        `live view: no RTCP for ${Math.round(timeoutMs / 1000)}s on ${this.camera.name}; releasing session`,
+      );
+      this.stopStream(sessionID);
+    }, timeoutMs);
+  }
+
   private stopStream(sessionID: string): void {
-    const procs = this.activeSessions.get(sessionID);
-    if (procs) {
-      for (const p of procs) {
+    const active = this.activeSessions.get(sessionID);
+    if (active) {
+      if (active.watchdog) {
+        clearTimeout(active.watchdog);
+      }
+      for (const p of active.procs) {
         p.kill();
+      }
+      // Close the session's RTCP return sockets (fixes the orphan/leak, #40).
+      try {
+        active.info.videoReturnSocket.close();
+        active.info.audioReturnSocket.close();
+      } catch {
+        /* ignore */
       }
       this.activeSessions.delete(sessionID);
       this.log.info(`live stream stopped for ${this.camera.name}`);
-    }
-    // Close the live session's RTCP return sockets (fixes the orphan/leak + keep-alive, #40).
-    const returnSockets = this.activeReturnSockets.get(sessionID);
-    if (returnSockets) {
-      for (const s of returnSockets) {
-        try {
-          s.close();
-        } catch {
-          /* ignore */
-        }
-      }
-      this.activeReturnSockets.delete(sessionID);
     }
     const pending = this.pendingSessions.get(sessionID);
     if (pending) {
