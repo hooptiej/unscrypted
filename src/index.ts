@@ -31,6 +31,48 @@ import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
 import { probeOnvif } from "./onvif";
 import { hasPairingState } from "./util";
+import {
+  captureSnapshotJpeg,
+  renderPlaceholderJpeg,
+  snapshotFailureReason,
+} from "./streamingDelegate";
+
+// Dev/diagnostic entry point for #64: capture a real snapshot from <url>, or on
+// failure render the captioned placeholder, and write the JPEG to <out>. Prints
+// which path won plus a JPEG-magic check, so a dead IP is a deterministic test.
+async function runTestSnapshot(argv: string[], idx: number): Promise<void> {
+  const url = argv[idx + 1];
+  const [wStr, hStr] = (argv[idx + 2] ?? "640x360").split("x");
+  const out = argv[idx + 3] ?? "test-snapshot.jpg";
+  if (!url) {
+    rootLogger.error("usage: --test-snapshot <rtsp-url> <WxH> <out.jpg>");
+    process.exit(2);
+  }
+  const width = parseInt(wStr, 10) || 640;
+  const height = parseInt(hStr, 10) || 360;
+  const ff = await resolveFfmpeg(process.env.FFMPEG_PATH || "ffmpeg", rootLogger);
+  if (!ff) {
+    rootLogger.error("ffmpeg unavailable");
+    process.exit(2);
+  }
+  let buf: Buffer;
+  let kind: string;
+  try {
+    buf = await captureSnapshotJpeg(ff, url, width, height, rootLogger);
+    kind = "live frame";
+  } catch (err) {
+    const reason = snapshotFailureReason((err as Error).message);
+    rootLogger.warn(`capture failed (${reason}): ${(err as Error).message}`);
+    buf = await renderPlaceholderJpeg(ff, width, height, "TestCam", reason, rootLogger);
+    kind = `placeholder (${reason})`;
+  }
+  await (await import("fs/promises")).writeFile(out, buf);
+  const isJpeg = buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8;
+  rootLogger.info(
+    `[test-snapshot] ${kind}: wrote ${out} — ${buf.length} bytes, JPEG=${isJpeg}`,
+  );
+  process.exit(0);
+}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -46,6 +88,16 @@ async function main(): Promise<void> {
   const probeIdx = argv.indexOf("--probe-onvif");
   if (probeIdx >= 0) {
     await runProbe(argv, probeIdx, configPath);
+    return;
+  }
+
+  // --test-snapshot <rtsp-url|dead-host> <WxH> <out.jpg>
+  // Dev/diagnostic (#64): runs the real snapshot path and, on failure, the
+  // captioned placeholder, writing the JPEG to <out>. No HomeKit or config
+  // needed — exercises the silent-source-fail fix end to end.
+  const snapIdx = argv.indexOf("--test-snapshot");
+  if (snapIdx >= 0) {
+    await runTestSnapshot(argv, snapIdx);
     return;
   }
 

@@ -65,6 +65,133 @@ interface ActiveSession {
   watchdog?: NodeJS.Timeout;
 }
 
+const SNAPSHOT_TIMEOUT_MS = 15_000;
+const PLACEHOLDER_TIMEOUT_MS = 8_000;
+// Bundled with the image via fonts-dejavu-core (Debian bookworm-slim). Override
+// for other hosts (e.g. running the --test-snapshot CLI outside the container).
+const FONT_FILE =
+  process.env.UNSCRYPTED_FONT_FILE || "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+
+/** Map a snapshot/ffmpeg failure to a short, human reason shown on the tile (#64). */
+export function snapshotFailureReason(message: string): string {
+  const m = (message || "").toLowerCase();
+  if (m.includes("no route to host")) return "camera unreachable";
+  if (m.includes("connection refused")) return "camera starting up";
+  if (m.includes("timed out") || m.includes("timeout")) return "camera not responding";
+  if (m.includes("401") || m.includes("unauthorized")) return "camera auth failed";
+  if (m.includes("no output") || m.includes("exit 1")) return "no video from camera";
+  if (m.includes("ffmpeg unavailable")) return "snapshot tool missing";
+  return "camera error";
+}
+
+/** Run ffmpeg and collect its stdout into a single Buffer. */
+function runFfmpegToBuffer(
+  ffmpegPath: string,
+  args: string[],
+  log: Logger,
+  label: string,
+  timeoutMs: number,
+): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const ff = spawnFfmpeg(ffmpegPath, args, log, { label });
+    const chunks: Buffer[] = [];
+    ff.proc.stdout.on("data", (c: Buffer) => chunks.push(c));
+    const timer = setTimeout(() => {
+      ff.kill();
+      reject(new Error(`${label} timed out`));
+    }, timeoutMs);
+    void ff.done.then((code) => {
+      clearTimeout(timer);
+      if (chunks.length > 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error(`${label} produced no output (exit ${code})`));
+      }
+    });
+  });
+}
+
+/** Grab a single JPEG frame from an RTSP source, scaled to fit width x height. */
+export function captureSnapshotJpeg(
+  ffmpegPath: string,
+  source: string,
+  width: number,
+  height: number,
+  log: Logger,
+): Promise<Buffer> {
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-rtsp_transport",
+    "tcp",
+    "-i",
+    source,
+    "-frames:v",
+    "1",
+    "-vf",
+    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+    "-f",
+    "mjpeg",
+    "pipe:1",
+  ];
+  return runFfmpegToBuffer(ffmpegPath, args, log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+}
+
+// drawtext metacharacters that must be escaped inside a single text='...' value.
+function escapeDrawtext(s: string): string {
+  return s
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/%/g, "\\%")
+    .replace(/,/g, "\\,");
+}
+
+/**
+ * Render a captioned "camera unavailable" JPEG — no camera source needed. A dark
+ * card with the camera name and a plain-language reason + time, so a dead/flaky
+ * source shows WHAT and WHY on the Home tile instead of a mute spinner (#64).
+ */
+export function renderPlaceholderJpeg(
+  ffmpegPath: string,
+  width: number,
+  height: number,
+  title: string,
+  reason: string,
+  log: Logger,
+): Promise<Buffer> {
+  const w = Math.max(width || 0, 160);
+  const h = Math.max(height || 0, 90);
+  const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const fs1 = Math.max(14, Math.round(h / 9));
+  const fs2 = Math.max(11, Math.round(h / 15));
+  const line1 = escapeDrawtext(title || "Camera");
+  const line2 = escapeDrawtext(`${reason} - ${time}`);
+  const font = `fontfile=${FONT_FILE}:`;
+  const vf = [
+    `drawtext=${font}text='${line1}':fontcolor=white:fontsize=${fs1}:x=(w-text_w)/2:y=(h-text_h)/2-${fs1}`,
+    `drawtext=${font}text='${line2}':fontcolor=0x9aa0a6:fontsize=${fs2}:x=(w-text_w)/2:y=(h/2)+4`,
+  ].join(",");
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    `color=c=0x111317:s=${w}x${h}`,
+    "-frames:v",
+    "1",
+    "-vf",
+    vf,
+    "-f",
+    "mjpeg",
+    "pipe:1",
+  ];
+  return runFfmpegToBuffer(ffmpegPath, args, log, "placeholder", PLACEHOLDER_TIMEOUT_MS);
+}
+
 export class StreamingDelegate implements CameraStreamingDelegate {
   // HAP sets this when the controller is configured; we use its snapshot
   // handling helpers indirectly. Assigned by the camera module.
@@ -88,7 +215,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     request: SnapshotRequest,
     callback: SnapshotRequestCallback,
   ): void {
-    void this.takeSnapshot(request)
+    void this.snapshotWithFallback(request)
       .then((buf) => callback(undefined, buf))
       .catch((err: Error) => {
         this.log.warn(`snapshot failed: ${err.message}`);
@@ -96,55 +223,39 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       });
   }
 
-  private async takeSnapshot(request: SnapshotRequest): Promise<Buffer> {
+  // Real snapshot first; if the source can't be reached or decoded, return a
+  // captioned "camera unavailable" placeholder so the Home tile says WHAT and WHY
+  // instead of a mute spinner or a stale frame (#64). Only if the placeholder
+  // itself can't be rendered do we surface the original error — never worse than
+  // the pre-#64 behaviour.
+  private async snapshotWithFallback(request: SnapshotRequest): Promise<Buffer> {
     const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
     if (!ff) {
       throw new Error("ffmpeg unavailable; cannot produce snapshot");
     }
     // Prefer the sub stream for a cheap snapshot; fall back to main.
     const source = this.camera.rtspSub ?? this.camera.rtspMain;
-    const args = [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      source,
-      "-frames:v",
-      "1",
-      "-vf",
-      `scale=${request.width}:${request.height}:force_original_aspect_ratio=decrease`,
-      "-f",
-      "mjpeg",
-      "pipe:1",
-    ];
-    return await this.runToBuffer(ff, args, "snapshot", 15000);
-  }
-
-  private runToBuffer(
-    ffmpegPath: string,
-    args: string[],
-    label: string,
-    timeoutMs: number,
-  ): Promise<Buffer> {
-    return new Promise<Buffer>((resolve, reject) => {
-      const ff = spawnFfmpeg(ffmpegPath, args, this.log, { label });
-      const chunks: Buffer[] = [];
-      ff.proc.stdout.on("data", (c: Buffer) => chunks.push(c));
-      const timer = setTimeout(() => {
-        ff.kill();
-        reject(new Error(`${label} timed out`));
-      }, timeoutMs);
-      void ff.done.then((code) => {
-        clearTimeout(timer);
-        if (chunks.length > 0) {
-          resolve(Buffer.concat(chunks));
-        } else {
-          reject(new Error(`${label} produced no output (exit ${code})`));
-        }
-      });
-    });
+    try {
+      return await captureSnapshotJpeg(ff, source, request.width, request.height, this.log);
+    } catch (err) {
+      const reason = snapshotFailureReason((err as Error).message);
+      this.log.warn(
+        `snapshot source failed (${reason}): ${(err as Error).message}; serving placeholder`,
+      );
+      try {
+        return await renderPlaceholderJpeg(
+          ff,
+          request.width,
+          request.height,
+          this.camera.name,
+          reason,
+          this.log,
+        );
+      } catch (e2) {
+        this.log.warn(`placeholder render failed: ${(e2 as Error).message}`);
+        throw err; // never worse than the pre-#64 behaviour
+      }
+    }
   }
 
   // ---- Live streaming ------------------------------------------------------

@@ -25,9 +25,10 @@ RUN npm prune --omit=dev
 FROM node:22.11.0-bookworm-slim AS runtime
 WORKDIR /app
 
-# ffmpeg is required for live view, snapshots and recording.
+# ffmpeg is required for live view, snapshots and recording. fonts-dejavu-core
+# supplies the font for drawtext on the "camera unavailable" placeholder (#64).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
