@@ -1,7 +1,8 @@
 /**
  * go2rtc: writes its YAML (mode 0600, it holds camera passwords) to a runtime dir, keeps the
- * binary running under a Supervisor, and talks to its loopback-only HTTP API. go2rtc only feeds
- * the admin pane's previews and feed checks; HomeKit never depends on it.
+ * binary running under a Supervisor, and talks to its loopback-only HTTP API. go2rtc is the only
+ * RTSP client of each camera (#16): HomeKit's pipelines, the dashboard and the pane all read
+ * through it. While it's down, HomeKit falls back to the cameras (see src/source.ts).
  */
 
 import * as fs from "fs";
@@ -22,11 +23,23 @@ export function maskSecretsInLine(line: string): string {
   return line.replace(URL_PASSWORD, "$1***@");
 }
 
+const PRODUCER_ERR = /producer\.go:\d+ > error=("[^"]*"|\S+) url=(\S+)/;
+/** go2rtc's "can't get video" log line, already masked by maskSecretsInLine. */
+export function producerErrorFromLine(line: string): { url: string; error: string } | null {
+  const m = PRODUCER_ERR.exec(line);
+  return m ? { error: m[1].replace(/^"|"$/g, ""), url: m[2].replace(/#.*$/, "") } : null;
+}
+
+const PRODUCER_ERROR_TTL_MS = 60_000;
+
 export class Go2rtcManager {
   private readonly sup: Supervisor;
   private readonly yamlPath: string;
   private configError: string | null = null;
-  private reloading: Promise<void> = Promise.resolve();
+  private reloading: Promise<unknown> = Promise.resolve();
+  private lastYaml: string | null = null;
+  /** The last "can't get video" error per (masked) source URL: the watcher turns it into a reason. */
+  private readonly producerErrors = new Map<string, { error: string; at: number }>();
 
   constructor(private readonly o: Go2rtcOptions) {
     this.yamlPath = path.join(o.runtimeDir, "go2rtc.yaml");
@@ -44,11 +57,22 @@ export class Go2rtcManager {
     });
   }
 
-  private writeYaml(cfg: Pick<ResolvedConfig, "cameras">): void {
+  /** Writes the YAML; returns whether its text differs from what go2rtc was last given. */
+  private writeYaml(cfg: Pick<ResolvedConfig, "cameras">): boolean {
+    const yaml = buildGo2rtcYaml(cfg, this.o.ports);
     fs.mkdirSync(this.o.runtimeDir, { recursive: true, mode: 0o700 });
     const tmp = this.yamlPath + ".tmp";
-    fs.writeFileSync(tmp, buildGo2rtcYaml(cfg, this.o.ports), { mode: 0o600 });
+    fs.writeFileSync(tmp, yaml, { mode: 0o600 });
     fs.renameSync(tmp, this.yamlPath);
+    const changed = yaml !== this.lastYaml;
+    this.lastYaml = yaml;
+    return changed;
+  }
+
+  /** The last producer error go2rtc logged for this masked source URL, if under a minute old. */
+  producerError(maskedUrl: string): { error: string; at: number } | null {
+    const e = this.producerErrors.get(maskedUrl.replace(/#.*$/, ""));
+    return e && Date.now() - e.at < PRODUCER_ERROR_TTL_MS ? e : null;
   }
 
   /** Writes the YAML and starts go2rtc. Never throws: a failure shows up in status() and the log. */
@@ -66,20 +90,25 @@ export class Go2rtcManager {
   }
 
   /**
-   * Rewrites the YAML and restarts the go2rtc child (a few seconds of no preview; HomeKit is
-   * unaffected). Reloads are serialized. Rejects if the YAML can't be written, in which case
-   * go2rtc keeps running with the previous camera list.
+   * Rewrites the YAML and, when its text changed (or `force`), restarts the go2rtc child. A
+   * restart drops every reader for a few seconds, HomeKit's recording buffers included (they
+   * reconnect on their own), so an unchanged config never restarts it. Reloads are serialized.
+   * Rejects if the YAML can't be written, in which case go2rtc keeps running with the previous
+   * camera list.
    */
-  reload(cfg: Pick<ResolvedConfig, "cameras">): Promise<void> {
+  reload(cfg: Pick<ResolvedConfig, "cameras">, opts: { force?: boolean } = {}): Promise<{ restarted: boolean }> {
     const run = async () => {
+      let changed: boolean;
       try {
-        this.writeYaml(cfg);
+        changed = this.writeYaml(cfg);
       } catch (err) {
         throw new Error(`couldn't write ${this.yamlPath} (${(err as Error).message}); go2rtc keeps running with the previous camera list`);
       }
       this.configError = null;
+      if (!changed && !opts.force && this.sup.status().state === "running") return { restarted: false };
       await this.sup.stop();
       this.sup.start();
+      return { restarted: true };
     };
     const next = this.reloading.then(run, run);
     this.reloading = next.catch(() => undefined);   // the caller gets the rejection via `next`
@@ -119,6 +148,14 @@ export class Go2rtcClient {
   async addTempStream(name: string, src: string): Promise<void> {
     const r = await this.req("PUT", `/api/streams?name=${encodeURIComponent(name)}&src=${encodeURIComponent(src)}`);
     if (r.status >= 300) throw new Error(r.body.toString() || `HTTP ${r.status}`);
+  }
+
+  /** GET /api/streams: every stream's producers and consumers. Never starts a producer. */
+  async streams(): Promise<unknown> {
+    const r = await this.req("GET", "/api/streams");
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}${r.body.length ? `: ${r.body.toString().slice(0, 200)}` : ""}`);
+    try { return JSON.parse(r.body.toString()); }
+    catch (err) { throw new Error(`its /api/streams answer wasn't JSON (${(err as Error).message})`); }
   }
 
   async removeStream(name: string): Promise<void> {

@@ -29,6 +29,7 @@ import { rootLogger, setLogLevel, Logger } from "./logger";
 import { resolveFfmpeg } from "./ffmpeg";
 import { UnscryptedCamera } from "./camera";
 import { runSelfTest } from "./selftest";
+import { LivePolicy, SourceSelector } from "./source";
 import { probeOnvif } from "./onvif";
 import { hasPairingState } from "./util";
 import {
@@ -129,7 +130,20 @@ async function main(): Promise<void> {
   }
 
   if (selftest) {
-    const ok = await runSelfTest(config.ffmpegPath, log);
+    // --selftest [--source <rtsp url> [--seconds N] [--audio]]: the source mode runs the real
+    // recording-buffer args against that source (e.g. go2rtc's loopback restream, #16).
+    const argValue = (flag: string) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
+    const source = argValue("--source");
+    if (argv.includes("--source") && (!source || source.startsWith("--"))) {
+      log.error("SELF-TEST NOT RUN: --source needs an RTSP URL after it, e.g. --source rtsp://127.0.0.1:8554/<stream>.");
+      process.exit(2);
+    }
+    const secs = Number(argValue("--seconds") ?? 12);
+    const ok = await runSelfTest(config.ffmpegPath, log, {
+      source,
+      seconds: Number.isFinite(secs) && secs > 0 ? secs : 12,
+      audio: argv.includes("--audio"),
+    });
     process.exit(ok ? 0 : 1);
   }
 
@@ -171,10 +185,40 @@ async function main(): Promise<void> {
     uuid.generate(`unscrypted:bridge:${config.bridge.name}`),
   );
 
+  // go2rtc's ports come before the cameras: HomeKit's pipelines need the restream port (#16).
+  const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
+  const go2rtcWebrtc = envPort("UNSCRYPTED_GO2RTC_WEBRTC_PORT", 8557, log);
+  const go2rtcRtsp = envPort("UNSCRYPTED_GO2RTC_RTSP_PORT", 8554, log);
+  const go2rtcEnabled = process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null;
+  // go2rtc's loopback RTSP restream: the one camera session everything reads from (#16).
+  // UNSCRYPTED_GO2RTC_RTSP=off = every HomeKit pipeline reads the camera directly (0.1.6 behaviour).
+  const rtspPort = go2rtcEnabled && process.env.UNSCRYPTED_GO2RTC_RTSP !== "off" && go2rtcRtsp.error === null ? go2rtcRtsp.port : null;
+  // The live view's source while go2rtc is healthy (#33): "camera" (default) starts on a keyframe in
+  // about a second but is a second connection while someone watches; "go2rtc" keeps one connection
+  // and a viewer joining a held stream waits for the camera's next keyframe (up to one GOP).
+  const liveEnv = process.env.UNSCRYPTED_LIVE_SOURCE;
+  let live: LivePolicy = "camera";
+  if (liveEnv === "go2rtc" || liveEnv === "camera") live = liveEnv;
+  else if (liveEnv) log.warn(`UNSCRYPTED_LIVE_SOURCE=${JSON.stringify(liveEnv)} isn't "camera" or "go2rtc"; the live view reads the camera directly`);
+  const sources = new SourceSelector({
+    rtspPort,
+    live,
+    log: log.child("source"),
+    offReason: !go2rtcEnabled
+      ? (go2rtcApi.error ? `go2rtc is off because ${go2rtcApi.error}` : "go2rtc is switched off in this instance (UNSCRYPTED_GO2RTC=off)")
+      : process.env.UNSCRYPTED_GO2RTC_RTSP === "off"
+        ? "go2rtc's RTSP restream is switched off (UNSCRYPTED_GO2RTC_RTSP=off)"
+        : go2rtcRtsp.error ?? undefined,
+  });
+  sources.setCameras(config.cameras);
+  log.info(rtspPort
+    ? `camera source: HomeKit's recording buffers and snapshots read go2rtc's restream on 127.0.0.1:${rtspPort}; the live view reads ${live === "go2rtc" ? "the restream too" : "the camera directly"} (UNSCRYPTED_LIVE_SOURCE=${live})`
+    : `camera source: every HomeKit pipeline reads the cameras directly (${sources.state().reason})`);
+
   const cameras: UnscryptedCamera[] = [];
   for (const camConfig of config.cameras) {
     try {
-      const cam = new UnscryptedCamera(camConfig, config.ffmpegPath, log);
+      const cam = new UnscryptedCamera(camConfig, config.ffmpegPath, log, sources);
       bridge.addBridgedAccessory(cam.accessory);
       cameras.push(cam);
     } catch (err) {
@@ -194,6 +238,11 @@ async function main(): Promise<void> {
   process.on("unhandledRejection", (e) => {
     log.error(`unhandled rejection (bridge kept running): ${(e as Error)?.stack ?? e}`);
   });
+
+  const testPrebuffer = (process.env.UNSCRYPTED_TEST_PREBUFFER ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (hapEnabled && testPrebuffer.length) {
+    log.warn("UNSCRYPTED_TEST_PREBUFFER is ignored: HomeKit is on, and HomeKit decides when recording buffers run");
+  }
 
   if (hapEnabled) {
     // UNSCRYPTED_HAP_BIND pins the HAP server + mDNS advertisement to specific
@@ -241,6 +290,12 @@ async function main(): Promise<void> {
       "HAP disabled (UNSCRYPTED_HAP=off): this instance is NOT visible to HomeKit. " +
         `${cameras.length} camera(s) configured for status and feed checks only; motion sources not started.`,
     );
+    if (testPrebuffer.length) {
+      const started = cameras.filter((c) => (testPrebuffer.includes("all") || testPrebuffer.includes(c.name)) && c.startPrebufferForTest()).map((c) => c.name);
+      const missing = testPrebuffer.filter((n) => n !== "all" && !started.includes(n));
+      log.warn(`test instance: recording buffer started without HomeKit for ${started.join(", ") || "no camera"} (UNSCRYPTED_TEST_PREBUFFER), to exercise the go2rtc restream` +
+        (missing.length ? `; not started for ${missing.join(", ")} (no such camera, or HKSV is off for it)` : ""));
+    }
   }
 
   // Health heartbeat: a slow resource creep (open FDs / RSS climbing over many
@@ -266,14 +321,13 @@ async function main(): Promise<void> {
   }
 
   const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
-  const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
-  const go2rtcWebrtc = envPort("UNSCRYPTED_GO2RTC_WEBRTC_PORT", 8557, log);
   const dashPort = envPort("UNSCRYPTED_DASH_PORT", 8180, log);
   const runtime = new BridgeRuntime({
     config,
     configPath: resolvedConfigPath,
     bridge: hapEnabled ? bridge : null,
     cameras,
+    sources,
     log,
     ffmpegPath: config.ffmpegPath,
     version: (require("../package.json") as { version: string }).version,
@@ -292,7 +346,9 @@ async function main(): Promise<void> {
       webrtcPort:
         process.env.UNSCRYPTED_GO2RTC_WEBRTC === "off" || go2rtcWebrtc.error ? null : go2rtcWebrtc.port,
       runtimeDir: process.env.UNSCRYPTED_RUNTIME_DIR ?? path.join(os.tmpdir(), "unscrypted"),
-      enabled: process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null,
+      // go2rtc's RTSP server, 127.0.0.1 only. null = off (UNSCRYPTED_GO2RTC_RTSP=off or a bad port).
+      rtspPort,
+      enabled: go2rtcEnabled,
       disabledReason: go2rtcApi.error ?? undefined,
     },
     dash: {

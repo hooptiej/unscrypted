@@ -30,6 +30,31 @@ import { Logger } from "./logger";
 import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU } from "./ffmpeg";
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
+import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
+
+/** ffmpeg socket I/O timeout (µs): a wedged go2rtc or camera ends the read instead of hanging it. */
+const RTSP_TIMEOUT_US = "10000000";
+/**
+ * Input flags that start on the first decodable frame instead of probing for seconds (#33).
+ * Measured on a Boavision 1080p/15fps camera from the NAS: ffmpeg's default probing cost ~2.7 s
+ * on every live start (3.6 s vs 0.9 s to the first frame, direct). RTSP's SDP already carries
+ * the H.264 parameter sets, so there is nothing to probe for.
+ */
+export const LOW_LATENCY_INPUT = ["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0"];
+const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "the camera directly");
+
+/** The live view's input args for the chosen feed (go2rtc's restream or the camera, #16). */
+export function buildLiveInputArgs(feed: FeedChoice): string[] {
+  return ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", ...LOW_LATENCY_INPUT, "-timeout", RTSP_TIMEOUT_US, "-i", feed.url];
+}
+
+/** A one-frame JPEG snapshot of the chosen feed, scaled to fit width x height. */
+export function buildSnapshotArgs(feed: FeedChoice, width: number, height: number): string[] {
+  return [
+    "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", ...LOW_LATENCY_INPUT, "-timeout", RTSP_TIMEOUT_US, "-i", feed.url,
+    "-frames:v", "1", "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease`, "-f", "mjpeg", "pipe:1",
+  ];
+}
 
 interface SessionInfo {
   address: string;
@@ -114,28 +139,13 @@ function runFfmpegToBuffer(
 /** Grab a single JPEG frame from an RTSP source, scaled to fit width x height. */
 export function captureSnapshotJpeg(
   ffmpegPath: string,
-  source: string,
+  source: string | FeedChoice,
   width: number,
   height: number,
   log: Logger,
 ): Promise<Buffer> {
-  const args = [
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-rtsp_transport",
-    "tcp",
-    "-i",
-    source,
-    "-frames:v",
-    "1",
-    "-vf",
-    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
-    "-f",
-    "mjpeg",
-    "pipe:1",
-  ];
-  return runFfmpegToBuffer(ffmpegPath, args, log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+  const feed: FeedChoice = typeof source === "string" ? { url: source, via: "camera" } : source;
+  return runFfmpegToBuffer(ffmpegPath, buildSnapshotArgs(feed, width, height), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
 }
 
 // drawtext metacharacters that must be escaped inside a single text='...' value.
@@ -207,7 +217,16 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     private readonly camera: ResolvedCamera,
     private readonly ffmpegPath: string,
     private readonly log: Logger,
+    /** Where to read the camera from at each spawn (go2rtc's restream or the camera, #16). */
+    private readonly pick: FeedPicker = directPicker(camera),
+    /** Told when a read through go2rtc fails, so a camera go2rtc keeps failing on can go direct. */
+    private readonly onFailure?: FeedFailure,
   ) {}
+
+  private reportFailure(feed: FeedChoice, why: string): void {
+    try { this.onFailure?.(feed, why); }
+    catch (err) { this.log.error(`couldn't report a failed read to the source selector: ${(err as Error).message}`); }
+  }
 
   // ---- Snapshots -----------------------------------------------------------
 
@@ -233,15 +252,18 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     if (!ff) {
       throw new Error("ffmpeg unavailable; cannot produce snapshot");
     }
-    // Prefer the sub stream for a cheap snapshot; fall back to main.
-    const source = this.camera.rtspSub ?? this.camera.rtspMain;
+    // The cheapest still: a stream go2rtc already holds, else the sub stream (never main while a
+    // sub exists, #55), or the camera itself while go2rtc is down.
+    const feed = this.pick("snapshot");
+    if (!feed) throw new Error("no stream URL configured for this camera");
     try {
-      return await captureSnapshotJpeg(ff, source, request.width, request.height, this.log);
+      return await captureSnapshotJpeg(ff, feed, request.width, request.height, this.log);
     } catch (err) {
       const reason = snapshotFailureReason((err as Error).message);
       this.log.warn(
-        `snapshot source failed (${reason}): ${(err as Error).message}; serving placeholder`,
+        `snapshot ${readsFrom(feed)} failed (${reason}): ${(err as Error).message}; serving placeholder`,
       );
+      this.reportFailure(feed, `snapshot: ${(err as Error).message}`);
       try {
         return await renderPlaceholderJpeg(
           ff,
@@ -329,6 +351,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
 
   /** Build the live-view ffmpeg command for a session + encode params (shared by START/RECONFIGURE). */
   private buildLiveArgs(
+    feed: FeedChoice,
     session: SessionInfo,
     video: LiveVideo,
     audio: LiveAudio,
@@ -336,15 +359,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const videoKeySalt = session.videoSRTP.toString("base64");
     const audioKeySalt = session.audioSRTP.toString("base64");
 
-    const args: string[] = [
-      "-hide_banner",
-      "-loglevel",
-      "warning",
-      "-rtsp_transport",
-      "tcp",
-      "-i",
-      this.camera.rtspMain,
-    ];
+    const args: string[] = buildLiveInputArgs(feed);
 
     // --- Video ---
     if (this.camera.liveTranscode) {
@@ -564,7 +579,13 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     if (!ff) {
       return undefined;
     }
-    const args = this.buildLiveArgs(session, video, audio);
+    const feed = this.pick("live");
+    if (!feed) {
+      this.log.error("live view can't start: this camera has no main stream URL");
+      return undefined;
+    }
+    const args = this.buildLiveArgs(feed, session, video, audio);
+    this.log.info(`live view reading ${readsFrom(feed)}`);
     const proc = spawnFfmpeg(ff, args, this.log, {
       label: `live:${this.camera.name}:${sessionID.slice(0, 8)}`,
     });
@@ -581,7 +602,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     void proc.done.then((code) => {
       const cur = this.activeSessions.get(sessionID);
       if (cur && cur.procs.includes(proc) && code !== null && code !== 0) {
-        this.log.warn(`live stream ffmpeg exited (code ${code}); stopping session`);
+        this.log.warn(`live stream ffmpeg exited (code ${code}) while reading ${readsFrom(feed)}; stopping session`);
+        this.reportFailure(feed, `live view ffmpeg exited with code ${code}`);
         this.stopStream(sessionID);
       }
     });

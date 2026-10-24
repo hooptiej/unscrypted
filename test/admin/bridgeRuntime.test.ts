@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as net from "net";
-import { BridgeRuntime, probeRtsp } from "../../src/bridgeRuntime";
+import { BridgeRuntime } from "../../src/bridgeRuntime";
 import { loadConfig } from "../../src/config";
 import { UnscryptedCamera } from "../../src/camera";
 import { Logger, setLogLevel } from "../../src/logger";
@@ -27,7 +27,7 @@ function setup(dash: { host?: string; port: number; enabled: boolean } = { port:
   let restarts = 0;
   const rt = new BridgeRuntime({
     config, configPath: file, bridge: null, cameras, log, ffmpegPath: "ffmpeg", version: "test",
-    admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, runtimeDir: dir, enabled: false },
+    admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, rtspPort: null, runtimeDir: dir, enabled: false },
     dash: { host: "127.0.0.1", ...dash, dir: path.join(dir, "dash"), title: "Homedash - TEST" },
     requestRestart: () => { restarts++; },
   });
@@ -113,13 +113,6 @@ test("reload-go2rtc without go2rtc says why", async () => {
   assert.equal(lastApplied().ok, false);
   assert.match(lastApplied().error.happened, /isn't running/);
   assert.equal(rt.status().go2rtc.state, "stopped");
-});
-
-test("probeRtsp reports an unparseable URL and a closed port", async () => {
-  assert.match((await probeRtsp("not a url")).err ?? "", /can't be parsed/);
-  const r = await probeRtsp("rtsp://127.0.0.1:1/x", 1000);
-  assert.equal(r.ok, false);
-  assert.ok(r.err);
 });
 
 test("dashboard switched off: says so, and the status shows it stopped with the reason", async () => {

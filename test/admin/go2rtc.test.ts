@@ -30,7 +30,7 @@ test("passwords in URLs are masked in go2rtc log lines", () => {
 test("manager with a missing binary reports 'missing' and still writes the yaml", async () => {
   const dir = tempDir("unscr-g2r-");
   const m = new Go2rtcManager({ binary: path.join(dir, "no-such-go2rtc"), runtimeDir: path.join(dir, "rt"),
-    ports: { api: 1999, webrtc: null }, log });
+    ports: { api: 1999, webrtc: null, rtsp: null }, log });
   m.start({ cameras: [{ name: "Cam", rtspMain: "rtsp://h/1", audio: true }] } as any);
   const end = Date.now() + 5000;
   while (m.status().state !== "missing" && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
@@ -43,7 +43,7 @@ test("manager reports a yaml write failure instead of throwing", async () => {
   const dir = tempDir("unscr-g2r-");
   const blocker = path.join(dir, "file-not-dir");
   fs.writeFileSync(blocker, "x");
-  const m = new Go2rtcManager({ binary: "go2rtc", runtimeDir: path.join(blocker, "rt"), ports: { api: 1999, webrtc: null }, log });
+  const m = new Go2rtcManager({ binary: "go2rtc", runtimeDir: path.join(blocker, "rt"), ports: { api: 1999, webrtc: null, rtsp: null }, log });
   assert.doesNotThrow(() => m.start({ cameras: [{ name: "Cam", rtspMain: "rtsp://h/1", audio: true }] } as any));
   assert.match(m.status().lastError ?? "", /go2rtc\.yaml/);
   assert.equal(m.status().state, "stopped");

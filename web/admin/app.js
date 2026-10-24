@@ -246,10 +246,26 @@ function snapshotTile(stream) {
   return tile;
 }
 
-function reachText(c) {
-  if (c.reachable === null) return el("span", { class: "muted" }, "not checked yet");
-  if (c.reachable) return el("span", { class: "good" }, "reachable");
-  return el("span", { class: "badtext" }, `unreachable: ${c.reachError || "no reason given"}`);
+// {{t:<ms>}} tokens in bridge text become the viewer's local time.
+function localise(text) {
+  return String(text || "").replace(/\{\{t:(\d+)\}\}/g, (_, ms) => new Date(Number(ms)).toLocaleTimeString());
+}
+
+const FEED_LABEL = { streaming: ["good", "video flowing"], idle: ["muted", "idle (nobody is reading it right now)"], starting: ["muted", "connecting"],
+  stalled: ["badtext", "connected, but the camera stopped sending video"], down: ["badtext", "down"], unknown: ["muted", "unknown"] };
+
+// go2rtc's view of a stream: it is the camera's only client, so this is also "is the camera up?".
+function feedText(f) {
+  if (!f) return el("span", { class: "muted" }, "not watched in this instance");
+  const [cls, label] = FEED_LABEL[f.state] || ["muted", f.state];
+  return el("span", { class: cls }, f.reason ? `${label}: ${f.reason}` : label);
+}
+
+// Where HomeKit's next read of this camera goes, and why when it isn't the usual.
+function viaText(c) {
+  if (c.direct) return el("span", { class: "badtext" }, localise(c.direct.text));
+  if (c.via === "go2rtc") return el("span", { class: "good" }, "through go2rtc (one connection per camera)");
+  return el("span", { class: "muted" }, "the camera directly");
 }
 
 const MOTION_LABEL = { "foscam-cgi": "Foscam CGI", onvif: "ONVIF", none: "none" };
@@ -269,9 +285,14 @@ async function renderCameras() {
     } else {
       add("Motion source", MOTION_LABEL[s.motionKind] || s.motionKind);
       add("HKSV", s.hksv ? "on" : "off");
-      add("Network", reachText(s));
+      add("Video (go2rtc)", feedText(s.feed));
+      if (s.subFeed) add("Sub stream (go2rtc)", feedText(s.subFeed));
+      add("HomeKit reads", viaText(s));
       add("Live viewers", String(s.liveSessions));
       add("Recording", s.recordingActive ? "on" : "off");
+      if (s.prebuffer) add("Recording buffer", s.prebuffer.running
+        ? `running, reading ${s.prebuffer.via === "go2rtc" ? "through go2rtc" : "the camera directly"}${s.prebuffer.lastFragmentAt ? `, last video ${ago(s.prebuffer.lastFragmentAt)}` : ", no video yet"}`
+        : "not running (HomeKit hasn't asked for recording)");
       add("Last motion", ago(s.lastMotionAt));
       if (s.pendingRestart) add("Pending", el("span", { class: "badtext" }, "change waits for a bridge restart"));
     }
@@ -541,6 +562,7 @@ async function renderStatus() {
   add("Paired", s.hapEnabled ? (s.paired ? "yes" : "not yet") : "n/a (HomeKit off)");
   add("go2rtc", `${s.go2rtc.state}, ${s.go2rtc.restarts} restart${s.go2rtc.restarts === 1 ? "" : "s"}`);
   add("go2rtc last error", s.go2rtc.lastError || "none");
+  if (s.homekitSource) add("HomeKit reads cameras", el("span", { class: s.homekitSource.mode === "direct" ? "badtext" : "" }, localise(s.homekitSource.text)));
   if (s.dash) {
     add("Dashboard", `${s.dash.state}, ${s.dash.restarts} restart${s.dash.restarts === 1 ? "" : "s"}`);
     add("Dashboard last error", s.dash.lastError || "none");
