@@ -135,3 +135,38 @@ test("a settings file with no migration needed reports none", () => {
   fs.writeFileSync(f, JSON.stringify({ services: DEFAULTS.services }));
   assert.deepEqual(loadSettings(f).migrated, []);
 });
+
+// #25: the background glow knobs
+test("glow knobs default to 0% and save as whole percents from -100 to +100", () => {
+  assert.deepEqual(DEFAULTS.glow, { intensity: 0, size: 0 });
+  const s = applySettingsEdit(DEFAULTS, { glow: { intensity: "-100", size: 100 } }, ctx);
+  assert.deepEqual(s.glow, { intensity: -100, size: 100 });
+  assert.deepEqual(applySettingsEdit(s, { glow: { size: 25 } }, ctx).glow, { intensity: -100, size: 25 }, "a partial edit keeps the other knob");
+  assert.deepEqual(DEFAULTS.glow, { intensity: 0, size: 0 }, "the defaults aren't mutated");
+});
+
+test("a bad glow value is refused with the field, the range and nothing saved", () => {
+  const refused = (edit: unknown, field: RegExp, why: RegExp) => assert.throws(() => applySettingsEdit(DEFAULTS, edit, ctx), (e: unknown) =>
+    e instanceof UserError && field.test(e.body.happened) && why.test(e.body.happened) && /Nothing was saved/.test(e.body.changed) && /save again/.test(e.body.next));
+  refused({ glow: { intensity: 101 } }, /Glow intensity/, /between -100 and 100/);
+  refused({ glow: { size: -150 } }, /Glow size/, /between -100 and 100/);
+  refused({ glow: { size: 12.5 } }, /Glow size/, /whole number/);
+  refused({ glow: { intensity: "lots" } }, /Glow intensity/, /whole number/);
+  refused({ glow: { intensity: "" } }, /Glow intensity/, /is empty/);
+  refused({ glow: { intensity: null } }, /Glow intensity/, /is empty/);
+  refused({ glow: { glare: 5 } }, /Background glow/, /unknown setting "glare"/);
+  refused({ glow: 50 }, /Background glow/, /pair of percents/);
+});
+
+test("a hand-edited glow in settings.json is clamped on load, and the dashboard is told why", () => {
+  const f = path.join(tempDir("unscr-dash-"), "settings.json");
+  fs.writeFileSync(f, JSON.stringify({ glow: { intensity: 250, size: "big" } }));
+  const r = loadSettings(f);
+  assert.deepEqual(r.settings.glow, { intensity: 100, size: 0 });
+  assert.match(r.warning!, /glow\.intensity is 250, so it's 100%/);
+  assert.match(r.warning!, /glow\.size isn't a number/);
+  fs.writeFileSync(f, JSON.stringify({ idleSeconds: 45 }));
+  const ok = loadSettings(f);
+  assert.deepEqual(ok.settings.glow, { intensity: 0, size: 0 }, "an older file without glow gets 0% for both");
+  assert.equal(ok.warning, null);
+});

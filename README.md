@@ -159,6 +159,7 @@ The living-room camera dashboard (formerly the separate Homedash app) runs insid
 - **Settings** live in `./data/dash/` (`settings.json`, `fonts/`, the photo cache) and are changed on the admin pane's settings page, behind the admin password (see [Dashboard settings](#dashboard-settings)).
 - **Off switch:** `UNSCRYPTED_DASH=off`. A dashboard crash restarts only the dashboard (backoff 1 s doubling to 60 s); the HomeKit bridge and the admin pane carry on.
 - **Rebuilding the image restarts HomeKit too** (a few seconds of "No Response" in Home, and any recording in progress stops). Batch dashboard changes into as few prod deploys as possible. On the test instance, `web/dash` is bind-mounted read-only, so page-only changes need no rebuild.
+- **Background glow:** a soft olive wash that follows the sun along the bottom edge, warming at dawn and dusk. Two sliders under Display on the settings page tune it, each -100% to +100% (0% is the standard look). **Glow intensity** scales its strength: -100% turns it off, +100% doubles it. **Glow size** scales the ellipse, never smaller than 10% or larger than 200%. Both apply day and night for now. (hooptiej/unscrypted#25)
 - **The Mac kiosk** that shows it full screen lives in [`scripts/mac-kiosk/`](scripts/mac-kiosk/).
 
 ### Its own IP address (so `http://homedash.local` works with no port)

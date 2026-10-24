@@ -55,6 +55,8 @@ export interface SpawnedFfmpeg {
   /** Resolves with the exit code (or null on signal). */
   done: Promise<number | null>;
   kill: () => void;
+  /** The last ~4 KB of stderr so far: the reason ffmpeg gave, for callers that decide on it (#78). */
+  stderrTail: () => string;
 }
 
 /**
@@ -111,7 +113,7 @@ export function spawnFfmpeg(
     }
   };
 
-  return { proc, done, kill };
+  return { proc, done, kill, stderrTail: () => stderrTail };
 }
 
 /** SRTP suite string ffmpeg expects for HomeKit. */
