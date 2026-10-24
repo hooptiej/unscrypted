@@ -43,15 +43,30 @@ const RTSP_TIMEOUT_US = "10000000";
 export const LOW_LATENCY_INPUT = ["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0"];
 const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "the camera directly");
 
+/**
+ * How ffmpeg looks at the input before it starts (#78). "fast" is LOW_LATENCY_INPUT: right for the
+ * Boavisions (~1.1 s to the first frame). A Foscam FI9803P sends audio first and its keyframe late,
+ * so with "fast" ffmpeg gives up before it ever sees video ("Output file #0 does not contain any
+ * stream", exit 1 in ~0.7 s) on every snapshot and live view. "full" is ffmpeg's default probing
+ * (a frame in ~6 s on that camera). A camera starts "fast" and is switched to "full" the first time
+ * it misses; nothing to configure.
+ */
+export type ProbeMode = "fast" | "full";
+const probeArgs = (probe: ProbeMode): string[] => (probe === "fast" ? LOW_LATENCY_INPUT : []);
+/** ffmpeg's one line for "I stopped probing before I saw a video stream". */
+export const PROBE_MISS = /does not contain any stream/i;
+/** True when a failed ffmpeg run was the fast probe missing the video stream, not the camera or go2rtc failing. */
+export const isProbeMiss = (code: number | null, stderr: string): boolean => code !== 0 && PROBE_MISS.test(stderr || "");
+
 /** The live view's input args for the chosen feed (go2rtc's restream or the camera, #16). */
-export function buildLiveInputArgs(feed: FeedChoice): string[] {
-  return ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", ...LOW_LATENCY_INPUT, "-timeout", RTSP_TIMEOUT_US, "-i", feed.url];
+export function buildLiveInputArgs(feed: FeedChoice, probe: ProbeMode = "fast"): string[] {
+  return ["-hide_banner", "-loglevel", "warning", "-rtsp_transport", "tcp", ...probeArgs(probe), "-timeout", RTSP_TIMEOUT_US, "-i", feed.url];
 }
 
 /** A one-frame JPEG snapshot of the chosen feed, scaled to fit width x height. */
-export function buildSnapshotArgs(feed: FeedChoice, width: number, height: number): string[] {
+export function buildSnapshotArgs(feed: FeedChoice, width: number, height: number, probe: ProbeMode = "fast"): string[] {
   return [
-    "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", ...LOW_LATENCY_INPUT, "-timeout", RTSP_TIMEOUT_US, "-i", feed.url,
+    "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", ...probeArgs(probe), "-timeout", RTSP_TIMEOUT_US, "-i", feed.url,
     "-frames:v", "1", "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease`, "-f", "mjpeg", "pipe:1",
   ];
 }
@@ -109,6 +124,12 @@ export function snapshotFailureReason(message: string): string {
   return "camera error";
 }
 
+/** A failed ffmpeg run, with what it said, so the caller can tell a probe miss from a real failure (#78). */
+export class FfmpegRunError extends Error {
+  constructor(message: string, readonly code: number | null, readonly stderr: string) { super(message); }
+  get probeMiss(): boolean { return isProbeMiss(this.code, this.stderr); }
+}
+
 /** Run ffmpeg and collect its stdout into a single Buffer. */
 function runFfmpegToBuffer(
   ffmpegPath: string,
@@ -123,29 +144,42 @@ function runFfmpegToBuffer(
     ff.proc.stdout.on("data", (c: Buffer) => chunks.push(c));
     const timer = setTimeout(() => {
       ff.kill();
-      reject(new Error(`${label} timed out`));
+      reject(new FfmpegRunError(`${label} timed out`, null, ff.stderrTail()));
     }, timeoutMs);
     void ff.done.then((code) => {
       clearTimeout(timer);
       if (chunks.length > 0) {
         resolve(Buffer.concat(chunks));
       } else {
-        reject(new Error(`${label} produced no output (exit ${code})`));
+        reject(new FfmpegRunError(`${label} produced no output (exit ${code})`, code, ff.stderrTail()));
       }
     });
   });
 }
 
-/** Grab a single JPEG frame from an RTSP source, scaled to fit width x height. */
-export function captureSnapshotJpeg(
+/**
+ * Grab a single JPEG frame from an RTSP source, scaled to fit width x height. Starts with the
+ * given probe mode; when the fast probe misses the video stream (#78) it says so, calls
+ * `onProbeMiss` (so the camera remembers), and tries once more with full probing.
+ */
+export async function captureSnapshotJpeg(
   ffmpegPath: string,
   source: string | FeedChoice,
   width: number,
   height: number,
   log: Logger,
+  probe: ProbeMode = "fast",
+  onProbeMiss?: () => void,
 ): Promise<Buffer> {
   const feed: FeedChoice = typeof source === "string" ? { url: source, via: "camera" } : source;
-  return runFfmpegToBuffer(ffmpegPath, buildSnapshotArgs(feed, width, height), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+  try {
+    return await runFfmpegToBuffer(ffmpegPath, buildSnapshotArgs(feed, width, height, probe), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+  } catch (err) {
+    if (probe !== "fast" || !(err instanceof FfmpegRunError) || !err.probeMiss) throw err;
+    log.info(`snapshot ${readsFrom(feed)}: the fast probe found no video stream (the camera sends its video late); retrying with full probing`);
+    onProbeMiss?.();
+    return runFfmpegToBuffer(ffmpegPath, buildSnapshotArgs(feed, width, height, "full"), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+  }
 }
 
 // drawtext metacharacters that must be escaped inside a single text='...' value.
@@ -228,6 +262,17 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     catch (err) { this.log.error(`couldn't report a failed read to the source selector: ${(err as Error).message}`); }
   }
 
+  /** How this camera's reads probe the input (#78): fast until the first miss, full from then on. */
+  probe: ProbeMode = "fast";
+
+  /** Remember that this camera needs full probing, and say so once. */
+  private useFullProbe(where: string): void {
+    if (this.probe === "full") return;
+    this.probe = "full";
+    this.log.warn(`"${this.camera.name}": ffmpeg's fast probe found no video stream on a ${where} (this camera sends its video late, like the Foscam FI9803P). ` +
+      "Live view and snapshots for it use full probing from now on: a few seconds slower to the first frame, but they work. Other cameras are unaffected. (#78)");
+  }
+
   // ---- Snapshots -----------------------------------------------------------
 
   handleSnapshotRequest(
@@ -257,13 +302,14 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const feed = this.pick("snapshot");
     if (!feed) throw new Error("no stream URL configured for this camera");
     try {
-      return await captureSnapshotJpeg(ff, feed, request.width, request.height, this.log);
+      return await captureSnapshotJpeg(ff, feed, request.width, request.height, this.log, this.probe, () => this.useFullProbe("snapshot"));
     } catch (err) {
       const reason = snapshotFailureReason((err as Error).message);
       this.log.warn(
         `snapshot ${readsFrom(feed)} failed (${reason}): ${(err as Error).message}; serving placeholder`,
       );
-      this.reportFailure(feed, `snapshot: ${(err as Error).message}`);
+      // A probe miss is ffmpeg giving up early, not the feed failing: it never counts toward sending the camera direct (#78).
+      if (!(err instanceof FfmpegRunError && err.probeMiss)) this.reportFailure(feed, `snapshot: ${(err as Error).message}`);
       try {
         return await renderPlaceholderJpeg(
           ff,
@@ -355,11 +401,12 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     session: SessionInfo,
     video: LiveVideo,
     audio: LiveAudio,
+    probe: ProbeMode = this.probe,
   ): string[] {
     const videoKeySalt = session.videoSRTP.toString("base64");
     const audioKeySalt = session.audioSRTP.toString("base64");
 
-    const args: string[] = buildLiveInputArgs(feed);
+    const args: string[] = buildLiveInputArgs(feed, probe);
 
     // --- Video ---
     if (this.camera.liveTranscode) {
@@ -584,8 +631,9 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       this.log.error("live view can't start: this camera has no main stream URL");
       return undefined;
     }
-    const args = this.buildLiveArgs(feed, session, video, audio);
-    this.log.info(`live view reading ${readsFrom(feed)}`);
+    const probe = this.probe;
+    const args = this.buildLiveArgs(feed, session, video, audio, probe);
+    this.log.info(`live view reading ${readsFrom(feed)}${probe === "full" ? " (full probing)" : ""}`);
     const proc = spawnFfmpeg(ff, args, this.log, {
       label: `live:${this.camera.name}:${sessionID.slice(0, 8)}`,
     });
@@ -598,14 +646,22 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       watchdog: prev?.watchdog,
     });
 
-    // ffmpeg exiting unexpectedly (non-zero) tears the session down, loudly.
-    void proc.done.then((code) => {
+    // ffmpeg exiting unexpectedly (non-zero) tears the session down, loudly. One exception (#78): the
+    // fast probe missing the video stream is retried once with full probing, same session, same endpoint.
+    void proc.done.then(async (code) => {
       const cur = this.activeSessions.get(sessionID);
-      if (cur && cur.procs.includes(proc) && code !== null && code !== 0) {
-        this.log.warn(`live stream ffmpeg exited (code ${code}) while reading ${readsFrom(feed)}; stopping session`);
-        this.reportFailure(feed, `live view ffmpeg exited with code ${code}`);
+      if (!(cur && cur.procs.includes(proc) && code !== null && code !== 0)) return;
+      if (probe === "fast" && isProbeMiss(code, proc.stderrTail())) {
+        this.useFullProbe("live view");
+        const again = await this.spawnLive(sessionID, session, cur.video, cur.audio);
+        if (again) return;
+        this.log.warn(`live stream couldn't be restarted with full probing for ${this.camera.name}; stopping session`);
         this.stopStream(sessionID);
+        return;
       }
+      this.log.warn(`live stream ffmpeg exited (code ${code}) while reading ${readsFrom(feed)}; stopping session`);
+      this.reportFailure(feed, `live view ffmpeg exited with code ${code}`);
+      this.stopStream(sessionID);
     });
     return proc;
   }
