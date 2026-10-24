@@ -27,7 +27,7 @@ const rt = new DashRuntime({ dir, title, env: hapOff ? "test" : "prod", adminPor
 process.on("message", (raw: unknown) => {
   const m = checkToDash(raw);
   if (typeof m === "string") { log.warn(`ignored a malformed message from the bridge: ${m}`); return; }
-  if (m.type === "cameras") rt.cameras = m.cameras; else rt.bridge = m.bridge;
+  if (m.type === "cameras") { rt.cameras = m.cameras; rt.camerasLoaded = true; } else rt.bridge = m.bridge;
 });
 process.on("disconnect", () => { log.warn("lost the connection to the bridge; exiting (the bridge restarts the dashboard)"); process.exit(0); });
 process.on("unhandledRejection", (e) => log.error(`unhandled rejection in the dashboard (kept running): ${(e as Error)?.stack ?? e}`));
@@ -107,7 +107,7 @@ setTimeout(() => void photoLoop(), 1500).unref();
 const server = createDashServer({
   webRoot: path.join(__dirname, "..", "..", "web", "dash"), title,
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
-  publicConfig: () => rt.publicConfig(), state: () => rt.state(), allowedStreams: () => rt.allowedStreams(),
+  publicConfig: () => rt.publicConfig(), state: () => rt.state(), allowedStreams: () => rt.allowedStreams(), camerasLoaded: () => rt.camerasLoaded,
   go2rtcInfo: () => rt.bridge?.go2rtc ?? { state: "unknown", lastError: "the bridge hasn't reported yet", nextRetryAt: null },
   photos: () => rt.photoList(), photoFile: (id) => rt.photos.file(id), fontsDir: path.join(dir, "fonts"), log,
 });

@@ -211,7 +211,7 @@ async function renderLogin(setupError) {
   el("h1", {}, NEXT ? "Sign in for the dashboard settings" : "Sign in"),
   el("label", { class: "field", for: "pw" }, "Admin password", pw),
   btn,
-  el("p", { class: "hint" }, "The password is in secrets/admin_password next to the container's compose file. Signing in keeps you signed in on this browser for 30 days, or until the bridge restarts."),
+  el("p", { class: "hint" }, "The password is in secrets/admin_password next to the container's compose file. Signing in keeps you signed in on this browser for 30 days, or until you sign out."),
   out);
   if (setupError) out.append(errorBox(setupError));
   app.replaceChildren(form);

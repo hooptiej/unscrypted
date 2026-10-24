@@ -172,6 +172,8 @@ export class BridgeRuntime {
       this.dash = new Supervisor({
         name: "dash", log: log.child("dash"), onState: () => this.pushStatus(),
         start: () => {
+          // #12: a listen error belongs to the attempt that hit it; a fresh start gets a clean slate (it reports again if it still fails).
+          this.dashListenError = null;
           // An allowlisted env, not ...process.env: the open dashboard process gets no secret paths.
           const pick = (k: string) => (process.env[k] !== undefined ? { [k]: process.env[k] as string } : {});
           const child = fork(dashEntry, [], { env: {
