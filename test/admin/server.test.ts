@@ -433,3 +433,12 @@ test("credentials: each reveal is logged by name, with no value in the log", asy
     for (const secret of ["s3cret", "pw2", "onvifpw", "letmein"]) assert.ok(!all.includes(secret), secret);
   } finally { s2.close(); }
 });
+
+test("the pane asks for logins only by POST from the Show button, and re-masks after 60 s", () => {
+  const js = fs.readFileSync(path.join(__dirname, "../../web/admin/app.js"), "utf8");
+  const calls = js.match(/api\("[A-Z]+", `\/api\/cameras\/\$\{encodeURIComponent\(cam\.name\)\}\/credentials`/g) ?? [];
+  assert.deepEqual(calls.map((c) => c.slice(5, 9)), ["POST"], "exactly one call, a POST");
+  const at = js.indexOf("/credentials`");
+  assert.ok(js.lastIndexOf('showBtn.addEventListener("click"', at) > js.lastIndexOf("function loginBox", at), "inside the Show click handler");
+  assert.match(js, /REVEAL_MS = 60_000/);
+});
