@@ -17,7 +17,7 @@ import * as crypto from "crypto";
 import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin, ToBridge } from "./ipc";
 import { UserError, toErrorJson } from "./errors";
-import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit } from "./configStore";
+import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera } from "./configStore";
 import { Config, ResolvedCamera, resolveConfig } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
@@ -29,7 +29,7 @@ import { loadSettings, saveSettings, applySettingsEdit, effectiveCameras, GRID_M
 import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
 
 type Applied = Extract<ToAdmin, { type: "applied" }>;
-type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "restart-bridge" } | { type: "reload-go2rtc" };
+type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "remove"; name: string } | { type: "restart-bridge" } | { type: "reload-go2rtc" };
 
 export interface AdminDeps {
   configPath: string;
@@ -515,6 +515,40 @@ export function createAdminServer(d: AdminDeps): http.Server {
         }
         if (!reply) {
           return json(res, 202, { ...extra, message: `Saved to config.json, but the bridge didn't confirm applying it within ${APPLY_TIMEOUT_MS / 1000}s. The change is NOT live yet. Use "Restart bridge" to apply it.` });
+        }
+        if (!reply.ok) return json(res, 500, { ...extra, error: { ...reply.error, changed: `${savedChanged} ${reply.error.changed}` } });
+        return json(res, 200, { ...extra, mode: reply.mode, message: reply.message });
+      }
+
+      // #8: remove a camera. The body must repeat the name (the pane's warning box sends it), so a
+      // stray DELETE can't take a camera out of Home by accident.
+      if (camMatch && method === "DELETE") {
+        const name = decodeURIComponent(camMatch[1]);
+        attempted = `Remove camera "${name}"`;
+        const body = (await readJson(req, attempted)) as { confirm?: unknown } | null;
+        if (!body || body.confirm !== name) {
+          throw new UserError({ attempted, happened: "The request didn't confirm the camera's name.", changed: "Nothing was changed.",
+            next: "Use the Remove button on the camera's page and confirm there." }, 400);
+        }
+        const raw = readRawConfig(d.configPath);
+        const { next, removed } = removeCameraFromConfig(raw, name);
+        let keptAt: string;
+        try { keptAt = keepRemovedCamera(d.configPath, removed); } catch (err) {
+          throw new UserError({ attempted, happened: `Couldn't save a copy of the camera's settings first (${(err as Error).message}).`, changed: "Nothing was changed; the camera is still there.",
+            next: "Check that the config folder is writable by the container, then try again." }, 500);
+        }
+        const { backupPath, warning } = writeConfigAtomic(d.configPath, next);
+        log.info(`camera "${name}" removed from config.json; its entry is kept at ${keptAt}`);
+        const extra = { saved: true, backupPath, keptAt, notes: [] as string[], ...(warning ? { warning } : {}) };
+        const savedChanged = `config.json WAS saved without "${name}" (its entry is kept at ${keptAt}${backupPath ? `, the previous config.json at ${backupPath}` : ""}); the running bridge did not apply it.`;
+        let reply: Applied | null;
+        try {
+          reply = await askBridge({ type: "remove", name });
+        } catch (err) {
+          return json(res, 500, { ...extra, error: { attempted, happened: `Removed from config.json, but the bridge couldn't be told about it: ${(err as Error).message}`, changed: savedChanged, next: "Use \"Restart bridge\" to apply it." } });
+        }
+        if (!reply) {
+          return json(res, 202, { ...extra, message: `Removed from config.json, but the bridge didn't confirm within ${APPLY_TIMEOUT_MS / 1000}s. The camera is NOT gone from Home yet. Use "Restart bridge" to apply it.` });
         }
         if (!reply.ok) return json(res, 500, { ...extra, error: { ...reply.error, changed: `${savedChanged} ${reply.error.changed}` } });
         return json(res, 200, { ...extra, mode: reply.mode, message: reply.message });

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  redactCamera, applyCameraEdit, writeConfigAtomic, readRawConfig,
+  redactCamera, applyCameraEdit, writeConfigAtomic, readRawConfig, removeCameraFromConfig, keepRemovedCamera,
 } from "../../src/admin/configStore";
 import { UserError } from "../../src/admin/errors";
 import { tempDir } from "../helpers/tmp";
@@ -114,4 +114,30 @@ test("unreadable config.json is a UserError saying what to do", () => {
   const file = path.join(dir, "config.json");
   fs.writeFileSync(file, "{ not json");
   assert.throws(() => readRawConfig(file), (e: unknown) => e instanceof UserError && e.body.next.length > 0);
+});
+
+test("#8: removing a camera takes exactly that entry out, and an unknown name is a 404 that changes nothing", () => {
+  const raw = { bridge: { name: "U" }, cameras: [
+    { name: "Garage", rtspMain: "rtsp://admin:s3cret@10.0.0.3:554/11" },
+    { name: "Front", host: "10.0.0.5", rtspUser: "admin", rtspPassword: "pw2", hksv: true },
+  ] } as any;
+  const { next, removed } = removeCameraFromConfig(raw, "Garage");
+  assert.deepEqual(next.cameras.map((c: any) => c.name), ["Front"]);
+  assert.equal(removed.name, "Garage");
+  assert.ok(removed.rtspMain!.includes("s3cret"), "the removed entry keeps its login, so it can be put back");
+  assert.equal(raw.cameras.length, 2, "the input isn't mutated");
+  assert.throws(() => removeCameraFromConfig(raw, "Shed"), (e: unknown) => e instanceof UserError && e.status === 404 && /No camera called "Shed"/.test(e.body.happened));
+});
+
+test("#8: the removed entry is kept as its own file, private, under removed-cameras/", () => {
+  const dir = tempDir("unscr-removed-");
+  const cfg = path.join(dir, "config.json");
+  const file = keepRemovedCamera(cfg, { name: "Back Yard/odd:name", rtspMain: "rtsp://u:p@h/1", hksv: true } as any);
+  assert.ok(file.startsWith(path.join(dir, "removed-cameras")));
+  assert.match(path.basename(file), /^Back_Yard_odd_name-\d{4}-\d{2}-\d{2}T.*\.json$/);
+  const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(kept.camera.name, "Back Yard/odd:name");
+  assert.equal(kept.camera.rtspMain, "rtsp://u:p@h/1");
+  assert.ok(kept.removedAt);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });
