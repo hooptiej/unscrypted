@@ -346,6 +346,13 @@ async function init() {
     if (dirty && !window.confirm("Discard your unsaved changes and go back to the dashboard?")) return;
     void leave();
   });
+  const toadmin = $("toadmin");
+  if (toadmin) {
+    if (fromDash) toadmin.hidden = true;  // kiosk never jumps to the camera admin
+    else toadmin.addEventListener("click", (e) => {
+      if (dirty && !window.confirm("Discard your unsaved changes and go to the camera admin?")) e.preventDefault();
+    });
+  }
   $("signout").addEventListener("click", async () => {
     const r = await api("POST", "/api/logout");
     if (r.error) { sayError(r.error); return; }
