@@ -81,7 +81,8 @@ async function icloudPost(io: IcloudIO, host: string, token: string, endpoint: s
 }
 
 export async function photosFromIcloud(url: string, cacheDir: string, limit: number, io: IcloudIO,
-  publish?: (album: string, files: string[]) => void, sleep: Sleep = realSleep): Promise<{ album: string; files: string[]; failed: number; total: number }> {
+  publish?: (album: string, files: string[]) => void, sleep: Sleep = realSleep,
+  warn: (msg: string) => void = (m) => console.warn(m)): Promise<{ album: string; files: string[]; failed: number; total: number }> {
   const token = icloudToken(url);
   const first = await icloudPost(io, icloudHost(token), token, "webstream", { streamCtag: null });
   const host = first.host;
@@ -121,7 +122,7 @@ export async function photosFromIcloud(url: string, cacheDir: string, limit: num
         if (attempt === 2) {
           failed++;
           fs.rmSync(part, { force: true });
-          console.warn(`photos: skipped ${guid} after 3 tries: ${(err as Error).message}`);
+          warn(`photos: skipped ${guid} after 3 tries: ${(err as Error).message}`);
         } else await sleep(1500 * (attempt + 1));   // DNS and CDN blips are transient
       }
     }
@@ -139,7 +140,9 @@ export class PhotoLibrary {
   /** True when the last refresh failed outright (retry in a minute); partial misses wait for the normal refresh. */
   retrySoon = false;
 
-  constructor(private readonly io: IcloudIO = defaultIcloudIO, private readonly sleep: Sleep = realSleep) {}
+  /** `warn` carries per-photo download failures to the dashboard's log (#12: the Logger, not console.warn). */
+  constructor(private readonly io: IcloudIO = defaultIcloudIO, private readonly sleep: Sleep = realSleep,
+    private readonly warn: (msg: string) => void = (m) => console.warn(m)) {}
 
   private publish(album: string, files: string[], caption: string): void {
     const by = new Map<string, string>();
@@ -164,7 +167,7 @@ export class PhotoLibrary {
           this.error = "No iCloud album link is set. Add one in the dashboard settings (admin password needed).";
           return;
         }
-        const r = await photosFromIcloud(s.icloudUrl, cacheDir, limit, this.io, (a, f) => this.publish(a, f, s.caption), this.sleep);
+        const r = await photosFromIcloud(s.icloudUrl, cacheDir, limit, this.io, (a, f) => this.publish(a, f, s.caption), this.sleep, this.warn);
         this.publish(r.album, r.files, s.caption);
         this.error = r.failed ? `${r.failed} of ${r.total} photos couldn't be downloaded; showing the other ${r.files.length}. They're retried on the next refresh.` : null;
       } else {

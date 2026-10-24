@@ -5,8 +5,9 @@
  *
  * Security: signed session cookie (HttpOnly, SameSite=Strict, 30 days), a per-session CSRF token
  * plus an Origin check on every state-changing request, login lockout, CSP / no framing /
- * nosniff on every response. Secrets never leave this process: the camera list is redacted, and
- * the go2rtc proxy only passes the three read-only things the pane needs.
+ * nosniff on every response. The camera list is redacted; a camera's logins leave this process
+ * only through POST /api/cameras/<name>/credentials (signed in + CSRF, one camera, #18). The go2rtc
+ * proxy only passes the three read-only things the pane needs.
  */
 
 import * as http from "http";
@@ -17,7 +18,7 @@ import * as crypto from "crypto";
 import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin, ToBridge } from "./ipc";
 import { UserError, toErrorJson } from "./errors";
-import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera } from "./configStore";
+import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
 import { Config, ResolvedCamera, resolveConfig } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
@@ -229,7 +230,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         ? "Wait for go2rtc to restart and try again. If it stays down, check `docker logs unscrypted` for go2rtc lines."
         : "go2rtc is switched off or missing in this instance; the Status page says why." }, 503);
   };
-  const needAuth = () => new UserError({ attempted: "Use the admin pane", happened: "You're not signed in (or your session expired, or the pane restarted, which signs everyone out).", changed: "Nothing.", next: "Sign in again." }, 401);
+  const needAuth = () => new UserError({ attempted: "Use the admin pane", happened: "You're not signed in (or your session expired, or you signed out on another tab).", changed: "Nothing.", next: "Sign in again." }, 401);
 
   const askBridge = async (m: BridgeRequest): Promise<Applied | null> => d.bridge.request(m, APPLY_TIMEOUT_MS);
 
@@ -272,7 +273,12 @@ export function createAdminServer(d: AdminDeps): http.Server {
         const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the NAS, then reload." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
         let body: Buffer;
-        try { body = fs.readFileSync(path.join(dash.dir, "fonts", name)); } catch { throw gone(); }
+        try { body = fs.readFileSync(path.join(dash.dir, "fonts", name)); } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
+          if (code === "ENOENT") throw gone();
+          log.warn(`dashboard font "${name}" is in the fonts folder but couldn't be read (${code})`);
+          throw new UserError({ attempted, happened: `The font file "${name}" is in the dashboard's fonts folder but couldn't be read (${code}).`, changed: "Nothing.", next: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), then reload." }, 500);
+        }
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length) });
         return res.end(body);
       }
@@ -428,6 +434,21 @@ export function createAdminServer(d: AdminDeps): http.Server {
           status: d.bridge.status()?.cameras ?? [],
           notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS },
         });
+      }
+
+      // One camera's logins, for the signed-in admin's Show button (#18). POST only, so it carries the
+      // CSRF token and the Origin check like any write; the camera list above stays redacted.
+      const credMatch = /^\/api\/cameras\/([^/]+)\/credentials$/.exec(url.pathname);
+      if (credMatch && method === "POST") {
+        const name = decodeURIComponent(credMatch[1]);
+        attempted = `Show the logins for "${name}"`;
+        const cam = readRawConfig(d.configPath).cameras.find((c) => c.name === name);
+        if (!cam) {
+          throw new UserError({ attempted, happened: `No camera called "${name}" is in config.json.`, changed: "Nothing.",
+            next: "Reload the page; the camera may have been removed or renamed by hand in config.json." }, 404);
+        }
+        log.info(`credentials for "${name}" shown`);
+        return json(res, 200, cameraLogins(cam), { "cache-control": "no-store" });
       }
 
       const checkDel = /^\/api\/cameras\/check\/([^/]+)$/.exec(url.pathname);

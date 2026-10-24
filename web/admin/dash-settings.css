@@ -29,6 +29,9 @@ input[type=text],input[type=number],select{width:100%;background:var(--bg);color
   border:calc(2*var(--u)) solid var(--line);border-radius:calc(8*var(--u));padding:calc(10*var(--u)) calc(15*var(--u));
   font:inherit;font-size:calc(31*var(--u))}
 input:focus,select:focus,button:focus-visible{outline:calc(3*var(--u)) solid var(--acc);outline-offset:calc(1*var(--u))}
+.knob{display:grid;grid-template-columns:1fr calc(110*var(--u));gap:calc(14*var(--u));align-items:center}
+input[type=range]{width:100%;height:calc(33*var(--u));margin:0;accent-color:var(--acc)}
+.knob output{font-size:calc(28*var(--u));text-align:right;font-variant-numeric:tabular-nums}
 input[type=checkbox]{width:calc(33*var(--u));height:calc(33*var(--u));accent-color:var(--acc)}
 input:disabled,select:disabled{opacity:.45;cursor:not-allowed}
 .camhead,.cam{display:grid;grid-template-columns:1fr calc(220*var(--u)) calc(90*var(--u)) calc(170*var(--u)) calc(110*var(--u));
