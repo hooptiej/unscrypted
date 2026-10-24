@@ -169,6 +169,12 @@ By default the dashboard listens on every address at port 8180. To give it its o
 2. Set `UNSCRYPTED_DASH_HOST=10.0.1.248` and `UNSCRYPTED_DASH_PORT=80` in the compose environment, and `UNSCRYPTED_ADMIN_URL` / `UNSCRYPTED_DASH_URL` (see [Dashboard settings](#dashboard-settings)), then `docker compose up -d`.
 3. The mDNS name (`homedash-mdns` publishing `homedash.local` → `.248`) and the kiosk URL don't change.
 
+**Note:** on this NAS, `10.0.1.249` is now the ipvlan shim's address (below), not a test dashboard. There's no standing test instance; pick another free address if you ever give the test dashboard its own IP.
+
+### Status lights for apps on an ipvlan network (the shim)
+
+unscrypted runs with host networking, and a Linux host can't talk to its own ipvlan containers (Constructicon and Questlog sit on the `questlog-lan` ipvlan). [`scripts/nas/ipvlan-shim.sh`](scripts/nas/ipvlan-shim.sh) gives the host a small ipvlan interface (`ipvlshim`, `10.0.1.249/32`) and one `/32` route per app address, so the dashboard's http checks reach them. Nothing else on the LAN changes. The script is idempotent: it runs at every boot as a **TrueNAS post-init command** (System → Advanced → Init/Shutdown Scripts: `bash '<path>/ipvlan-shim.sh'`, when Post Init) and is safe to run by hand. Before using it on another install, edit the parent interface, the shim address (check it's free on the whole LAN and reserve it in DHCP) and the app list at the top. Without the shim, set those lights to `{"kind": "blocked", "reason": "..."}` in the dashboard settings so they say why they're red. (hooptiej/unscrypted#11)
+
 If the address isn't on the NAS yet, the dashboard doesn't start and says so plainly in the log and on the admin pane's Status ("The address 10.0.1.248 isn't on this machine (EADDRNOTAVAIL)… Add 10.0.1.248 to the NAS's network"). It keeps retrying (up to once a minute) and starts on its own once the address appears. HomeKit and the admin pane are unaffected either way. HomeKit stays on the NAS's main address.
 
 ## Admin pane

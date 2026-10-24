@@ -5,7 +5,7 @@ import * as net from "net";
 import * as path from "path";
 import { tempDir } from "../helpers/tmp";
 import { DashRuntime } from "../../src/dash/runtime";
-import { saveSettings, DEFAULTS } from "../../src/dash/settings";
+import { saveSettings, DEFAULTS, IPVLAN_REASON, ServiceNode } from "../../src/dash/settings";
 import { Logger, setLogLevel } from "../../src/logger";
 
 setLogLevel("error");
@@ -18,9 +18,9 @@ function closedPort(): Promise<number> {
   });
 }
 
-function runtime() {
+function runtime(services = DEFAULTS.services) {
   const dir = tempDir("unscr-dashrt-");
-  saveSettings(path.join(dir, "settings.json"), { ...DEFAULTS, cameras: [
+  saveSettings(path.join(dir, "settings.json"), { ...DEFAULTS, services, cameras: [
     { camera: "DogCamTest", label: "DogCam", shown: true, stream: "main" },
     { camera: "GarageCamTest", label: "Garagecam", shown: true, stream: "sub" },
     { camera: "Couch Cam", label: "Couch", shown: false, stream: "main" },
@@ -84,7 +84,12 @@ test("a camera dropped from config.json is dropped from the probe state", async 
 });
 
 test("service lights reach /api/state with their reasons and a timestamp", async () => {
-  const rt = runtime();
+  // Hermetic: the ipvlan lights are "blocked" here (an install without the shim), so the result
+  // doesn't depend on whether this machine can reach the real Constructicon/Questlog.
+  const noShim = (ns: ServiceNode[]): ServiceNode[] => ns.map((n) => ({ ...n,
+    check: /^(constructicon|questlog)/.test(n.id) ? { kind: "blocked", reason: IPVLAN_REASON } : n.check,
+    children: n.children ? noShim(n.children) : undefined }));
+  const rt = runtime(noShim(DEFAULTS.services));
   assert.deepEqual({ s: (rt.state() as any).services, at: (rt.state() as any).servicesAt }, { s: [], at: null });
   rt.bridge = { hapEnabled: false, paired: false, go2rtc: { state: "running", lastError: null, nextRetryAt: null } };
   await rt.pollServices();
@@ -100,7 +105,7 @@ test("service lights reach /api/state with their reasons and a timestamp", async
   assert.match(kids.homekit.reason, /HomeKit is off on this instance/);
   assert.equal(kids.homekit.short, "HomeKit off (test)");
   assert.equal(kids.constructicon.state, "down");
-  assert.match(kids.constructicon.reason, /can't be checked from the NAS's own network yet/);
+  assert.match(kids.constructicon.reason, /can't be checked from the NAS's own network/);
   assert.equal(kids.constructicon.short, "can't check yet");
   assert.equal(kids.scrypted, undefined, "the Scrypted light is gone (owner Q2 = a)");
   const reasons = JSON.stringify(st.services, (k, v) => (k === "link" ? undefined : v));
