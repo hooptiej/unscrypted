@@ -50,6 +50,7 @@ const server = createAdminServer({
   title: process.env.UNSCRYPTED_ADMIN_TITLE || (hapOff ? "unscrypted admin - TEST" : "unscrypted admin"),
   // The bridge passes the dashboard's folder and port; UNSCRYPTED_DASH_URL only when it lives elsewhere.
   dash: { dir: process.env.UNSCRYPTED_DASH_DIR || "/data/dash", port: Number(process.env.UNSCRYPTED_DASH_PORT ?? 8180), url: dashUrl.url, host: process.env.UNSCRYPTED_DASH_HOST || "0.0.0.0" },
+  constructicon: { tokenFile: process.env.UNSCRYPTED_CONSTRUCTICON_TOKEN_FILE || "/run/secrets/constructicon_token" },
   log,
   bridge: {
     status: () => latest,

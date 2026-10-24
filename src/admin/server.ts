@@ -28,6 +28,7 @@ import { Logger } from "../logger";
 import { streamNames } from "./go2rtcConfig";
 import { loadSettings, saveSettings, applySettingsEdit, effectiveCameras, GRID_MAX, FONT_FILE } from "../dash/settings";
 import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
+import { ConstructiconFonts, cachedFontFile } from "./constructicon";
 
 type Applied = Extract<ToAdmin, { type: "applied" }>;
 type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "remove"; name: string } | { type: "restart-bridge" } | { type: "reload-go2rtc" };
@@ -53,6 +54,8 @@ export interface AdminDeps {
    * (UNSCRYPTED_DASH_URL, e.g. http://10.0.1.248/ once it has its own address). Defaults: /data/dash, 8180, derived.
    */
   dash?: { dir: string; port: number; url: string | null; host?: string };
+  /** The Constructicon font list (#14): where the read-only token file is. Default /run/secrets/constructicon_token. */
+  constructicon?: { tokenFile: string; fetchImpl?: typeof fetch };
   log?: Logger;
 }
 
@@ -233,6 +236,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
   const needAuth = () => new UserError({ attempted: "Use the admin pane", happened: "You're not signed in (or your session expired, or you signed out on another tab).", changed: "Nothing.", next: "Sign in again." }, 401);
 
   const askBridge = async (m: BridgeRequest): Promise<Applied | null> => d.bridge.request(m, APPLY_TIMEOUT_MS);
+  const cx = new ConstructiconFonts({ tokenFile: d.constructicon?.tokenFile ?? "/run/secrets/constructicon_token", fetchImpl: d.constructicon?.fetchImpl });
 
   const statusNotices = (s: BridgeStatus): string[] => {
     const notes: string[] = [];
@@ -396,12 +400,41 @@ export function createAdminServer(d: AdminDeps): http.Server {
           return json(res, 200, { saved: true, backupPath, settings: next, message: "Saved. The dashboard reloads with it within a few seconds." });
         }
         const cur = loadSettings(dashSettingsFile);
+        // #14: Constructicon's fonts, with a reason when the list can't be had. Never blocks the page: a
+        // Constructicon that's down just means this part says so and the folder fonts stand.
+        const cxUrl = cur.settings.constructicon.url;
+        const cxList = await cx.list(cxUrl);
+        const inFolder = new Set(fonts.fonts.map((f) => f.file));
+        const constructicon = {
+          url: cxUrl, available: cx.availability(cxUrl).available && !cxList.error, reason: cxList.error,
+          fonts: cxList.fonts.map((f) => ({ ...f, file: inFolder.has(cachedFontFile(f.slug, f.ext)) ? cachedFontFile(f.slug, f.ext) : null })),
+        };
         return json(res, 200, {
           settings: cur.settings, warning: [cur.warning, fonts.warning].filter(Boolean).join(" ") || null,
           cameras: effectiveCameras(cur.settings, names).map((c) => ({ ...c, hasSub: withSub ? withSub.includes(c.camera) : null })),
           fonts: fonts.fonts, systemFonts: Object.keys(SYSTEM_FONTS), gridMax: GRID_MAX, dashUrl: dashUrlFor(req),
-          lights: await dashLights(),
+          lights: await dashLights(), constructicon,
         });
+      }
+
+      // #14: copy one Constructicon font into the fonts folder, so it becomes an ordinary folder font
+      // (the dashboard serves it offline). The page then picks it like any other file.
+      if (url.pathname === "/api/dash/fonts/constructicon" && method === "POST") {
+        attempted = "Fetch a font from Constructicon";
+        const body = (await readJson(req, attempted)) as { slug?: unknown } | null;
+        const slug = typeof body?.slug === "string" ? body.slug : "";
+        if (!slug) throw new UserError({ attempted, happened: "No font was named.", changed: "Nothing.", next: "Pick a font under \"From Constructicon\" and try again." }, 400);
+        const cxUrl2 = loadSettings(dashSettingsFile).settings.constructicon.url;
+        const avail = cx.availability(cxUrl2);
+        if (!avail.available) throw new UserError({ attempted, happened: `The Constructicon font list isn't available: ${avail.reason}.`, changed: "Nothing; the folder and system fonts still work.", next: "Fix that, save, and reload this page." }, 409);
+        const fontsDir = path.join(dash.dir, "fonts");
+        let got: { file: string; name: string };
+        try { got = await cx.fetchInto(cxUrl2, slug, fontsDir); } catch (err) {
+          throw new UserError({ attempted, happened: `${(err as Error).message}.`, changed: "Nothing was saved; the folder and system fonts still work.",
+            next: "Check that Constructicon is up and the token is current, then try again." }, 502);
+        }
+        log.info(`dashboard font "${got.name}" fetched from Constructicon into ${fontsDir}/${got.file}`);
+        return json(res, 200, { ...got, fonts: listFonts(fontsDir).fonts, message: `"${got.name}" is in the fonts folder now; pick it and save.` });
       }
 
       if (url.pathname === "/api/status" && method === "GET") {
