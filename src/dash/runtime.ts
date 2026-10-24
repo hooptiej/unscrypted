@@ -23,6 +23,8 @@ export interface DashRuntimeOptions {
 
 export class DashRuntime {
   cameras: DashCamera[] = [];
+  /** False until the bridge's first camera list arrives (#53): the video path says "starting", not "not in config.json". */
+  camerasLoaded = false;
   bridge: DashBridgeInfo | null = null;
   settings: DashSettings;
   settingsWarning: string | null;
@@ -38,12 +40,13 @@ export class DashRuntime {
   weather: Weather | null = null;
   weatherError: string | null = null;
   weatherErrorSince: number | null = null;
-  readonly photos = new PhotoLibrary();
+  readonly photos: PhotoLibrary;
   get photoCacheDir(): string { return path.join(this.o.dir, "cache", "icloud"); }
   private wxLoc: { key: string; loc: { lat: number; lon: number; label: string } | null } | null = null;
 
   constructor(private readonly o: DashRuntimeOptions) {
     this.settingsFile = path.join(o.dir, "settings.json");
+    this.photos = new PhotoLibrary(undefined, undefined, (m) => o.log.warn(m));
     const s = loadSettings(this.settingsFile);
     this.settings = s.settings; this.settingsWarning = s.warning; this.settingsMtime = s.mtimeMs;
     if (s.warning) o.log.warn(s.warning);

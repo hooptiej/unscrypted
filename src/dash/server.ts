@@ -40,6 +40,10 @@ export interface DashDeps {
   fontsDir: string;
   /** Live views open at once through this server (default 16). */
   maxStreams?: number;
+  /** Live views one address may hold at once (default 8, #12): one tab or bot can't starve the kiosk. */
+  maxPerIp?: number;
+  /** False until the bridge has sent its first camera list (#53); a video connection before that is "still starting", not "not in config.json". */
+  camerasLoaded?: () => boolean;
   log?: Logger;
 }
 
@@ -122,7 +126,14 @@ export function createDashServer(d: DashDeps): http.Server {
           next: "Put the file in data/dash/fonts on the NAS, or pick another font in the dashboard settings." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
         let body: Buffer;
-        try { body = fs.readFileSync(path.join(d.fontsDir, name)); } catch { throw gone(); }
+        try { body = fs.readFileSync(path.join(d.fontsDir, name)); } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
+          if (code === "ENOENT") throw gone();
+          // #12: not "isn't in the folder" when it is; say what the read actually hit (EACCES, EISDIR, ...).
+          log.warn(`font "${name}" is in the fonts folder but couldn't be read (${code})`);
+          throw new UserError({ attempted, happened: `The font file "${name}" is in the dashboard's fonts folder but couldn't be read (${code}).`, changed: "Nothing; the page uses a system font instead.",
+            next: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), or pick another font in the dashboard settings." }, 500);
+        }
         // Fonts never change under the same name; a day's cache keeps the kiosk's reloads light.
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length), "cache-control": "public, max-age=86400" });
         return res.end(body);
@@ -134,7 +145,12 @@ export function createDashServer(d: DashDeps): http.Server {
         const notThere = () => new UserError({ attempted, happened: "That photo isn't in the slideshow any more (the album or folder changed).", changed: "Nothing.", next: "Nothing to do; the slideshow moves on to the next photo." }, 404);
         if (!file) throw notThere();
         let body: Buffer;
-        try { body = fs.readFileSync(file); } catch { throw notThere(); }
+        try { body = fs.readFileSync(file); } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
+          if (code === "ENOENT") throw notThere();
+          log.warn(`slideshow photo ${id} couldn't be read (${code})`);
+          throw new UserError({ attempted, happened: `That photo is in the slideshow but couldn't be read (${code}).`, changed: "Nothing.", next: "Check the photo folder's permissions on the NAS; the slideshow moves on to the next photo." }, 500);
+        }
         res.writeHead(200, { "content-type": PHOTO_EXT[path.extname(file).toLowerCase()] ?? "image/jpeg", "content-length": String(body.length) });
         return res.end(body);
       }
@@ -158,10 +174,13 @@ export function createDashServer(d: DashDeps): http.Server {
   // only, at most maxStreams at once. The video itself flows from go2rtc's WebRTC port directly.
   let open = 0;
   const maxStreams = d.maxStreams ?? 16;
+  const maxPerIp = d.maxPerIp ?? 8;
+  const openByIp = new Map<string, number>();
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://x");
-    const refuse = (code: string, why: string) => {
-      log.warn(`refused a dashboard video connection from ${req.socket.remoteAddress}: ${why}`);
+    const ip = req.socket.remoteAddress ?? "unknown";
+    const refuse = (code: string, why: string, level: "warn" | "info" = "warn") => {
+      log[level](`refused a dashboard video connection from ${ip}: ${why}`);
       socket.end(`HTTP/1.1 ${code}\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${why}\n`);
     };
     socket.on("error", () => socket.destroy());   // a browser that vanished mid-handshake
@@ -172,12 +191,22 @@ export function createDashServer(d: DashDeps): http.Server {
     if (!STREAM_NAME.test(src)) return refuse("400 Bad Request", `${JSON.stringify(src.slice(0, 80))} isn't a stream name`);
     // The admin pane's feed-check streams are never the dashboard's, whatever a camera is called.
     if (src.startsWith("check_")) return refuse("403 Forbidden", `"${src}" is an admin feed check, not a dashboard camera`);
+    // #53: in the first second after a restart the camera list hasn't arrived yet; that's "starting", not a config.json problem.
+    if (d.camerasLoaded && !d.camerasLoaded()) return refuse("503 Service Unavailable", "the dashboard is still starting (the bridge hasn't sent its camera list yet); the tile retries in a moment", "info");
     if (!d.allowedStreams().has(src)) return refuse("403 Forbidden", `"${src}" isn't one of the cameras in config.json`);
     if (!go2rtcUp()) return refuse("503 Service Unavailable", go2rtcWhy());
     if (open >= maxStreams) return refuse("503 Service Unavailable", `too many live views open at once (${maxStreams}); close one and the tile retries`);
+    const mine = openByIp.get(ip) ?? 0;
+    if (mine >= maxPerIp) return refuse("503 Service Unavailable", `too many live views open from this device at once (${maxPerIp} of the ${maxStreams} total); close one and the tile retries`);
     open++;
+    openByIp.set(ip, mine + 1);
     let counted = true;
-    const done = () => { if (counted) { counted = false; open--; } };
+    const done = () => {
+      if (!counted) return;
+      counted = false; open--;
+      const left = (openByIp.get(ip) ?? 1) - 1;
+      if (left > 0) openByIp.set(ip, left); else openByIp.delete(ip);
+    };
     const target = new URL(d.go2rtcApi);
     const filter = new ClientFrameFilter();
     let upgraded = false;

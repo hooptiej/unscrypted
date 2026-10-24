@@ -229,7 +229,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         ? "Wait for go2rtc to restart and try again. If it stays down, check `docker logs unscrypted` for go2rtc lines."
         : "go2rtc is switched off or missing in this instance; the Status page says why." }, 503);
   };
-  const needAuth = () => new UserError({ attempted: "Use the admin pane", happened: "You're not signed in (or your session expired, or the pane restarted, which signs everyone out).", changed: "Nothing.", next: "Sign in again." }, 401);
+  const needAuth = () => new UserError({ attempted: "Use the admin pane", happened: "You're not signed in (or your session expired, or you signed out on another tab).", changed: "Nothing.", next: "Sign in again." }, 401);
 
   const askBridge = async (m: BridgeRequest): Promise<Applied | null> => d.bridge.request(m, APPLY_TIMEOUT_MS);
 
@@ -272,7 +272,12 @@ export function createAdminServer(d: AdminDeps): http.Server {
         const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the NAS, then reload." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
         let body: Buffer;
-        try { body = fs.readFileSync(path.join(dash.dir, "fonts", name)); } catch { throw gone(); }
+        try { body = fs.readFileSync(path.join(dash.dir, "fonts", name)); } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
+          if (code === "ENOENT") throw gone();
+          log.warn(`dashboard font "${name}" is in the fonts folder but couldn't be read (${code})`);
+          throw new UserError({ attempted, happened: `The font file "${name}" is in the dashboard's fonts folder but couldn't be read (${code}).`, changed: "Nothing.", next: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), then reload." }, 500);
+        }
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length) });
         return res.end(body);
       }
