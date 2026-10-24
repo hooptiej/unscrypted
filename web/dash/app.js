@@ -106,9 +106,12 @@ function stopStream(t) {
 }
 const videoOf = (el) => (el ? el.querySelector("video") : null);
 
+const liveLabel = (cam) => `live · ${cam.which === "sub" ? "sub" : "main"}`;
+
 function render(t) {
   const st = t.camSt;
-  let why = null, badge = "live";
+  // "live · main" / "live · sub" (#22): on a small tile 1080p and 360p look alike, so say which.
+  let why = null, badge = liveLabel(t.cam);
   if (!st) {
     why = "Checking the camera…"; badge = "checking…";
   } else if (!st.up) {
@@ -350,6 +353,7 @@ function closeFull() {
 function openFull(cam) {
   closeFull();
   $("fname").textContent = cam.label;
+  document.querySelector("#full .flive").textContent = liveLabel(cam);
   if (playerReady) {
     fullEl = makeStream(cam);
     $("fullv").prepend(fullEl);
