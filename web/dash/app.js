@@ -242,9 +242,10 @@ const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 
 function glowFor(min, rise, set) {
+  /* Daytime keys +50% (#24, owner: "+50% on both"): 0.20 -> 0.30, 0.16 -> 0.24; night 0.07 unchanged. */
   const k = [
-    [rise - 60, OLIVE, 0.07], [rise - 45, OLIVE, 0.0], [rise, WARM, 0.20], [rise + 90, OLIVE, 0.16],
-    [set - 90, OLIVE, 0.16], [set, WARM, 0.20], [set + 60, OLIVE, 0.07],
+    [rise - 60, OLIVE, 0.07], [rise - 45, OLIVE, 0.0], [rise, WARM, 0.30], [rise + 90, OLIVE, 0.24],
+    [set - 90, OLIVE, 0.24], [set, WARM, 0.30], [set + 60, OLIVE, 0.07],
   ];
   let rgb = OLIVE, alpha = 0.07;
   if (min > k[0][0] && min < k[k.length - 1][0]) {
@@ -260,17 +261,20 @@ function glowFor(min, rise, set) {
   }
   /* rest in the bottom-right corner at night; cross the bottom edge between sunrise and sunset */
   const x = min < rise - 45 ? 100 : clamp01((min - rise) / (set - rise)) * 100;
-  return { rgb, alpha, x };
+  /* size: 60% at night, 90% (+50%, #24) by day, easing in over dawn and out over dusk */
+  const day = min < rise ? clamp01((min - (rise - 45)) / 45) : min > set ? clamp01(1 - (min - set) / 60) : 1;
+  const size = Math.round(lerp(60, 90, day));
+  return { rgb, alpha, x, size };
 }
 
 function applyBackground() {
   const now = new Date();
   const min = overrideMin !== null ? overrideMin : now.getHours() * 60 + now.getMinutes();
-  const { rgb, alpha, x } = glowFor(min, sunTimes.rise, sunTimes.set);
+  const { rgb, alpha, x, size } = glowFor(min, sunTimes.rise, sunTimes.set);
   const c = $("stage").style;
   c.backgroundColor = BASE;
   c.backgroundImage =
-    `radial-gradient(ellipse 60% 60% at ${x.toFixed(1)}% 100%, rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)}), transparent 100%)`;
+    `radial-gradient(ellipse ${size}% ${size}% at ${x.toFixed(1)}% 100%, rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)}), transparent 100%)`;
 }
 setInterval(applyBackground, 30 * 1000);
 
