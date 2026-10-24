@@ -89,7 +89,7 @@ For cameras that have no Foscam CGI, unscrypted subscribes to the camera's ONVIF
 | `host` / `port` | ONVIF device service host and port. Default port `80`. **Generic XM/Sofia cameras serve ONVIF on `8080`** (port 80 is the web UI); set it explicitly if the device service 404s. |
 | `username` / `password` | ONVIF account (WS-Security digest auth). Often the same as the RTSP login. |
 | `pollIntervalMs` | PullPoint long-poll window in ms (default `60000`). Ignored for push cameras. |
-| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `8000`). |
+| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `60000`, i.e. 60s — long enough that outdoor wind-gust gaps don't clear the sensor and flap HomeKit's event channel; see #65). |
 | `notifyPort` | For push cameras (see below): TCP port the local notification receiver listens on. Default `0` (ephemeral). Set a fixed port if a firewall sits between unscrypted and the cameras. One receiver is shared across all ONVIF cameras. |
 | `notifyHost` | Override the local IP advertised to the camera as the notification consumer address (default: auto-detected). Set this if auto-detection picks the wrong NIC, e.g. in Docker with a custom network. |
 
@@ -124,8 +124,9 @@ Runs ffmpeg against a generated test pattern through the real fragmented-MP4 →
 ### Docker (e.g. TrueNAS)
 
 ```bash
-mkdir -p config data
+mkdir -p config data secrets
 cp config.example.json config/config.json   # edit it
+openssl rand -base64 18 > secrets/admin_password && chmod 600 secrets/admin_password   # admin pane sign-in
 docker compose up -d --build
 docker compose logs -f                       # watch for the pairing QR / code
 ```
@@ -137,11 +138,76 @@ Two folders sit next to the compose file:
 | Folder | Mounted at | Holds |
 |---|---|---|
 | `./config` | `/config` | `config.json` (camera passwords: gitignored, never commit it). |
-| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. |
+| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. Also `admin-session.key`, the admin pane's sign-in key (made on first start, mode 600; deleting it only signs everyone out), and `dash/`, the dashboard's settings, fonts and photo cache. |
+| `./secrets` | `/run/secrets` (read-only) | `admin_password`: one line, the admin pane's password (gitignored, mode 600). |
 
 The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir` in `config.json`. If the keys are found in the ignored `persistDir` while `/data/persist` is empty, the bridge refuses to start and says which files to copy where, rather than starting as a new bridge (#4).
 
 **Upgrading from 0.1.0** (config mounted as a single file, keys possibly in an anonymous volume at `/config/persist`): back up the keys from the running container first, then move `config.json` into `./config/` and copy the keys into `./data/persist/` before the first start of the new version. Check `docker inspect unscrypted` for a volume mounted at `/config`.
+
+## Dashboard
+
+The living-room camera dashboard (formerly the separate Homedash app) runs inside the same container, as its own supervised child process: `http://<host>:8180` (test instance: `http://10.0.1.78:8181`, tab title `Homedash - TEST`). It shows up to four live camera tiles (WebRTC, video only, straight from the bundled go2rtc), service status lights, the weather and a photo slideshow.
+
+- **Open and watch-only, by design.** There's no sign-in: anyone on the LAN can watch the cameras, the same as Homedash. Every non-GET request gets a 405. It never sends passwords, RTSP URLs, camera IPs, the setup code or tokens, and it only opens live video for the cameras in `config.json` (at most 16 viewers at once).
+- **Settings** live in `./data/dash/` (`settings.json`, `fonts/`, the photo cache) and are changed on the admin pane's settings page, behind the admin password (see [Dashboard settings](#dashboard-settings)).
+- **Off switch:** `UNSCRYPTED_DASH=off`. A dashboard crash restarts only the dashboard (backoff 1 s doubling to 60 s); the HomeKit bridge and the admin pane carry on.
+- **Rebuilding the image restarts HomeKit too** (a few seconds of "No Response" in Home, and any recording in progress stops). Batch dashboard changes into as few prod deploys as possible. On the test instance, `web/dash` is bind-mounted read-only, so page-only changes need no rebuild.
+- **The Mac kiosk** that shows it full screen lives in [`scripts/mac-kiosk/`](scripts/mac-kiosk/).
+
+### Its own IP address (so `http://homedash.local` works with no port)
+
+By default the dashboard listens on every address at port 8180. To give it its own address on port 80 (prod `10.0.1.248`, `homedash.local`; test `10.0.1.249`, `homedash-test.local`):
+
+1. **Add the address to the NAS first** (TrueNAS network settings, as a second address on the LAN interface; TrueNAS tests it and reverts on its own if you don't confirm). Reserve it in UniFi, or keep it outside the DHCP pool.
+2. Set `UNSCRYPTED_DASH_HOST=10.0.1.248` and `UNSCRYPTED_DASH_PORT=80` in the compose environment, and `UNSCRYPTED_ADMIN_URL` / `UNSCRYPTED_DASH_URL` (see [Dashboard settings](#dashboard-settings)), then `docker compose up -d`.
+3. The mDNS name (`homedash-mdns` publishing `homedash.local` → `.248`) and the kiosk URL don't change.
+
+If the address isn't on the NAS yet, the dashboard doesn't start and says so plainly in the log and on the admin pane's Status ("The address 10.0.1.248 isn't on this machine (EADDRNOTAVAIL)… Add 10.0.1.248 to the NAS's network"). It keeps retrying (up to once a minute) and starts on its own once the address appears. HomeKit and the admin pane are unaffected either way. HomeKit stays on the NAS's main address.
+
+## Admin pane
+
+A small web page for the cameras, served by the same container: `http://<host>:8190` (on the NAS, `http://10.0.1.78:8190`).
+
+- **Sign-in:** the password is the one line in `./secrets/admin_password`. Sessions last 30 days and survive restarts (the signing key is kept in `./data/admin-session.key`). Five wrong passwords from one computer pause sign-in there for 5 minutes. If the password file is missing or empty, or the key file is unreadable or the wrong size, the pane says so and what to do; the HomeKit bridge keeps running either way.
+- **What it does:** list cameras (passwords are never sent to the browser; they show as set, and URLs show `rtsp://user:***@host/...`), check a feed (a test frame through the bundled go2rtc), a live preview (WebRTC, the way Homedash plays these cameras: they don't play over MSE), edit a camera, add a camera, and show the pairing code and bridge status.
+- **How changes take effect:** logins, stream addresses and motion timings apply live to that one camera. New cameras are added live. Changes that Home itself sees (HKSV on/off, prebuffer, motion source type, model) are saved and wait for **Restart bridge** (about 30 seconds of "No Response" in Home).
+- **Don't rename cameras.** A camera's name is its identity in Home: renaming it would make Home see a new camera and drop the old one's room, settings and recordings. The pane refuses renames and warns that a new camera's name is permanent. Don't rename them by hand in `config.json` either.
+- **go2rtc** (1.9.14, pinned by version and SHA-256 in the Dockerfile) runs inside the container for feed checks and previews only. Its API listens on `127.0.0.1` and is reached only through the signed-in pane. HomeKit streaming doesn't use it.
+- The admin pane and go2rtc run as supervised child processes: if either crashes it's restarted with backoff (1 s doubling to 60 s), and HomeKit is unaffected.
+
+### Dashboard settings
+
+The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open and watch-only. Its settings are a separate page on the admin pane, behind the same password: **`http://<host>:8190/dash-settings`** (test: `http://10.0.1.78:8191/dash-settings`). It's Homedash's own one-screen page: fonts, which cameras show and in what order (at most 4; a fifth is refused with a message), each tile's dashboard-only label (the HomeKit name never changes) and main or sub stream, display timings, the photo slideshow and the weather place. Saving writes `./data/dash/settings.json` (the previous copy is kept as `settings.json.bak`); the dashboard reloads with it within a few seconds.
+
+- **The dashboard's Settings button** opens that page with `?from=dash`. Not signed in, it asks for the password first and comes straight back. From the kiosk, the page idles back to the dashboard after the fullscreen timeout and **signs that browser out**, so the living room never stays signed in.
+- **Different addresses:** when the dashboard and the pane don't share a host (for example the dashboard on its own IP at port 80), set `UNSCRYPTED_ADMIN_URL` (e.g. `http://10.0.1.78:8190`, where the Settings button goes) and `UNSCRYPTED_DASH_URL` (e.g. `http://10.0.1.248/`, where the settings page sends you back). Unset, both are worked out from the browser's address and the ports. A bad value is ignored, and the dashboard says so.
+- **Fonts** are files in `./data/dash/fonts` (`.otf`, `.ttf`, `.woff`, `.woff2`), with display names in `./data/dash/fonts/names.json` (`{ "<file>": "<name>" }`). **Photos** come from an iCloud shared-album link (cached in `./data/dash/cache/icloud`) or a folder.
+
+### Ports
+
+| Port | What | Where it listens |
+|---|---|---|
+| `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces |
+| `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces |
+| `8180/tcp` | Dashboard, open and watch-only (`UNSCRYPTED_DASH_PORT`; own IP: port `80` on `UNSCRYPTED_DASH_HOST`) | all interfaces, or `UNSCRYPTED_DASH_HOST` |
+| `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
+| `8557/tcp+udp` | go2rtc WebRTC video for the live preview (`UNSCRYPTED_GO2RTC_WEBRTC_PORT`; `UNSCRYPTED_GO2RTC_WEBRTC=off` turns the preview off) | all interfaces |
+| `8099-8102/tcp` | ONVIF push notifications (`onvif.notifyPort`) | all interfaces |
+| Test instance | admin `8191`, dashboard `8181`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, no HomeKit | |
+
+### Test instance
+
+`docker-compose.test.yml` runs a second copy for trying changes before they reach the real bridge. It runs with **HomeKit off** (`UNSCRYPTED_HAP=off`): it never publishes a bridge and never starts motion sources, so it can't appear in the family's Home app or take prod's ONVIF port. Its page title is `unscrypted admin - TEST`.
+
+Run it from its own folder (on the NAS, `~/unscrypted-test`), with its own `config/`, `data/` and `secrets/`:
+
+```bash
+cd ~/unscrypted-test
+sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypted-test up -d --build
+```
+
+The `-p unscrypted-test` project name and the `unscrypted-test` container name keep it apart from prod. The test instance pulls the same cameras over RTSP while you use it, so each camera has one more viewer for that time.
 
 ## HomeKit codec constraints (as implemented)
 

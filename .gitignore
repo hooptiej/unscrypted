@@ -10,6 +10,10 @@ config.yaml
 config.yml
 config.local.json
 
+# admin password (secrets/admin_password); only the placeholder is tracked
+secrets/*
+!secrets/.gitkeep
+
 # HAP pairing state (persisted accessory keys + paired-controller data)
 persist/
 *.persist

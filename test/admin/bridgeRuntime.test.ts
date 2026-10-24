@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as net from "net";
 import { BridgeRuntime, probeRtsp } from "../../src/bridgeRuntime";
 import { loadConfig } from "../../src/config";
 import { UnscryptedCamera } from "../../src/camera";
@@ -13,7 +14,7 @@ import { tempDir } from "../helpers/tmp";
 setLogLevel("error");
 const log = new Logger("test");
 
-function setup() {
+function setup(dash: { host?: string; port: number; enabled: boolean } = { port: 0, enabled: false }) {
   const dir = tempDir("unscr-rt-");
   const file = path.join(dir, "config.json");
   const raw: any = {
@@ -27,6 +28,7 @@ function setup() {
   const rt = new BridgeRuntime({
     config, configPath: file, bridge: null, cameras, log, ffmpegPath: "ffmpeg", version: "test",
     admin: { port: 0, enabled: false }, go2rtc: { binary: "go2rtc", apiPort: 0, webrtcPort: null, runtimeDir: dir, enabled: false },
+    dash: { host: "127.0.0.1", ...dash, dir: path.join(dir, "dash"), title: "Homedash - TEST" },
     requestRestart: () => { restarts++; },
   });
   const sent: ToAdmin[] = [];
@@ -118,4 +120,73 @@ test("probeRtsp reports an unparseable URL and a closed port", async () => {
   const r = await probeRtsp("rtsp://127.0.0.1:1/x", 1000);
   assert.equal(r.ok, false);
   assert.ok(r.err);
+});
+
+test("dashboard switched off: says so, and the status shows it stopped with the reason", async () => {
+  const { rt } = setup();
+  rt.start();
+  await rt.stop();
+  assert.equal(rt.status().dash.state, "stopped");
+  assert.match(rt.status().dash.lastError ?? "", /disabled \(UNSCRYPTED_DASH=off\)/);
+});
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once("error", reject);
+    s.listen(0, "127.0.0.1", () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); });
+  });
+}
+async function waitFor(what: string, ok: () => boolean | Promise<boolean>, ms = 15_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await ok()) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`timed out waiting for: ${what}`);
+}
+const healthy = async (port: number) => {
+  try { return (await fetch(`http://127.0.0.1:${port}/healthz`)).status === 200; } catch { return false; }
+};
+
+test("a crashed dashboard child is restarted, and the bridge keeps running", { timeout: 40_000 }, async () => {
+  const port = await freePort();
+  const { rt } = setup({ port, enabled: true });
+  rt.start();
+  try {
+    await waitFor("the dashboard to answer /healthz", () => healthy(port));
+    const child = (rt as any).dash.child();
+    const firstPid = child.pid;
+    child.kill("SIGKILL");   // as hard a crash as it gets
+    await waitFor("the supervisor to notice the crash", () => rt.status().dash.restarts >= 1);
+    // The bridge is still answering for itself while the dashboard is down.
+    assert.equal(rt.status().cameras[0].name, "Garage");
+    await waitFor("the dashboard to come back", async () => rt.status().dash.state === "running" && await healthy(port));
+    assert.notEqual((rt as any).dash.child().pid, firstPid);
+    assert.equal(rt.status().dash.restarts, 1);
+  } finally {
+    await rt.stop();
+  }
+});
+
+test("dashboard can't bind (port taken): status says why in words, the bridge keeps running", { timeout: 30_000 }, async () => {
+  const blocker = net.createServer();
+  await new Promise<void>((r) => blocker.listen(0, "127.0.0.1", () => r()));
+  const port = (blocker.address() as net.AddressInfo).port;
+  const { rt } = setup({ host: "127.0.0.1", port, enabled: true });
+  rt.start();
+  try {
+    await waitFor("the dashboard's bind failure to reach the bridge", () => /EADDRINUSE/.test(rt.status().dash.lastError ?? ""));
+    assert.match(rt.status().dash.lastError!, /Something else is already listening on 127\.0\.0\.1:\d+/);
+    assert.match(rt.status().dash.lastError!, /UNSCRYPTED_DASH_PORT/);
+    assert.equal(rt.status().cameras[0].name, "Garage");   // the bridge is fine
+    // Free the port: the supervisor's next retry comes up and the reason clears.
+    await new Promise<void>((r) => blocker.close(() => r()));
+    // (lastError then falls back to the supervisor's record of the last exit, which it keeps on purpose.)
+    await waitFor("the dashboard to come up once the port is free", async () => await healthy(port) && !/EADDRINUSE/.test(rt.status().dash.lastError ?? ""), 20_000);
+    assert.equal(rt.status().dash.state, "running");
+  } finally {
+    blocker.close();
+    await rt.stop();
+  }
 });

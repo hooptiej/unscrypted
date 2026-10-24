@@ -24,6 +24,9 @@ import {
   loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
 } from "./auth";
 import { Logger } from "../logger";
+import { streamNames } from "./go2rtcConfig";
+import { loadSettings, saveSettings, applySettingsEdit, effectiveCameras, GRID_MAX, FONT_FILE } from "../dash/settings";
+import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
 
 type Applied = Extract<ToAdmin, { type: "applied" }>;
 type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "restart-bridge" } | { type: "reload-go2rtc" };
@@ -44,6 +47,11 @@ export interface AdminDeps {
     /** Resolves with the bridge's answer, or null if it didn't answer in time. Rejects if it can't be sent. */
     request(m: BridgeRequest, timeoutMs: number): Promise<Applied | null>;
   };
+  /**
+   * The dashboard's settings folder, its port, and its public base URL when it isn't this host
+   * (UNSCRYPTED_DASH_URL, e.g. http://10.0.1.248/ once it has its own address). Defaults: /data/dash, 8180, derived.
+   */
+  dash?: { dir: string; port: number; url: string | null; host?: string };
   log?: Logger;
 }
 
@@ -55,14 +63,17 @@ export const PREBUFFER_FIELDS = ["rtspMain", "host", "rtspPort", "rtspUser", "rt
 
 const COOKIE = "unscrypted_admin";
 const APPLY_TIMEOUT_MS = 10_000;
-const STATIC: Record<string, string> = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css" };
+const STATIC: Record<string, string> = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
+  "/dash-settings.js": "dash-settings.js", "/dash-settings.css": "dash-settings.css" };
+/** Homedash's one-screen settings page (owner Q8 = b), its own page behind the admin sign-in. */
+export const DASH_SETTINGS_PATH = "/dash-settings";
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 const STREAM_NAME = /^[a-z0-9_]{1,64}$/;
 /** The only go2rtc paths the proxy passes (all read-only). Its stream-editing API stays loopback-only. */
 const GO2RTC_FILES = new Set(["/video-rtc.js", "/video-stream.js"]);
 const FEEDCHECK_NAME = "__feedcheck__";
 
-function securityHeaders(req: http.IncomingMessage): Record<string, string> {
+export function securityHeaders(req: http.IncomingMessage): Record<string, string> {
   const host = /^[A-Za-z0-9.\-:[\]]+$/.test(req.headers.host ?? "") ? req.headers.host! : "";
   const ws = host ? ` ws://${host} wss://${host}` : "";
   return {
@@ -94,6 +105,39 @@ function resolvedCamera(raw: Config, name: string): ResolvedCamera | undefined {
 
 export function createAdminServer(d: AdminDeps): http.Server {
   const log = d.log ?? new Logger("admin");
+  const dash = d.dash ?? { dir: "/data/dash", port: 8180, url: null };
+  const dashSettingsFile = path.join(dash.dir, "settings.json");
+  /** Where the dashboard is, as the browser should reach it. */
+  const dashUrlFor = (req: http.IncomingMessage): string => {
+    if (dash.url) return dash.url.endsWith("/") ? dash.url : dash.url + "/";
+    const host = /^(\[[^\]]+\]|[A-Za-z0-9.-]+)/.exec(req.headers.host ?? "")?.[1] ?? "localhost";
+    return `http://${host}:${dash.port}/`;
+  };
+  /**
+   * The dashboard's own status lights (open data: names, states and reasons, no addresses), read
+   * from the dashboard over the loopback or its own address, so the settings page shows the full
+   * reasons. Never throws: a failure is the error text the page shows in their place.
+   */
+  const dashLights = (): Promise<{ services: unknown[] | null; at: number | null; error: string | null }> => new Promise((resolve) => {
+    const host = !dash.host || dash.host === "0.0.0.0" || dash.host === "::" ? "127.0.0.1" : dash.host;
+    const fail = (why: string) => resolve({ services: null, at: null,
+      error: `Couldn't read the status lights from the dashboard (${why}). Their reasons show on the dashboard itself; if it's down, the admin pane's Status tab says why.` });
+    const r = http.get({ host, port: dash.port, path: "/api/state", timeout: 1500, headers: { accept: "application/json" } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c: string) => { body += c; if (body.length > 1_000_000) r.destroy(new Error("its answer was too big")); });
+      res.on("end", () => {
+        if (res.statusCode !== 200) return fail(`it answered ${res.statusCode}`);
+        try {
+          const j = JSON.parse(body) as { services?: unknown; servicesAt?: unknown };
+          if (!Array.isArray(j.services)) return fail("its answer had no status lights");
+          resolve({ services: j.services, at: typeof j.servicesAt === "number" ? j.servicesAt : null, error: null });
+        } catch (err) { fail(`its answer wasn't JSON: ${(err as Error).message}`); }
+      });
+    });
+    r.on("timeout", () => r.destroy(new Error("no answer within 1.5 s")));
+    r.on("error", (err: NodeJS.ErrnoException) => fail(err.code === "ECONNREFUSED" ? "connection refused: it isn't running" : err.message));
+  });
   // Read once at start. A bad key file disables sign-in (every request gets its 503) rather than
   // being replaced; the bridge and /healthz carry on.
   let secret: Buffer = Buffer.alloc(0);
@@ -112,11 +156,41 @@ export function createAdminServer(d: AdminDeps): http.Server {
   const tempStreams = new Map<string, NodeJS.Timeout>();
   const g2 = d.go2rtcApi ? new Go2rtcClient(d.go2rtcApi) : null;
 
+  // Signed-out sessions. A session is a signed, stateless cookie, so clearing the cookie alone left a
+  // copied one working for 30 days; signing out (the kiosk's idle return does) now kills it on the
+  // server too. Kept beside the key (hashes and expiry times only), so it survives a restart.
+  const revokedFile = d.sessionKeyFile + ".revoked";
+  const revoked = new Map<string, number>();
+  const sessionHash = (c: string) => crypto.createHash("sha256").update(c).digest("base64url");
+  try {
+    const raw = JSON.parse(fs.readFileSync(revokedFile, "utf8")) as Record<string, unknown>;
+    for (const [h, exp] of Object.entries(raw)) if (typeof exp === "number" && exp > Date.now()) revoked.set(h, exp);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn(`couldn't read the signed-out sessions list ${revokedFile} (${(err as Error).message}); sessions signed out before this restart work again until they expire. Signing out still works from now on.`);
+    }
+  }
+  /** Returns an error message when the list couldn't be saved (the session is still revoked until a restart). */
+  const revoke = (c: string): string | null => {
+    const now = Date.now();
+    for (const [h, exp] of revoked) if (exp <= now) revoked.delete(h);
+    revoked.set(sessionHash(c), Number(c.split(".")[0]) || now + SESSION_DAYS * 864e5);
+    try {
+      const tmp = `${revokedFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(revoked)), { mode: 0o600 });
+      fs.renameSync(tmp, revokedFile);
+      return null;
+    } catch (err) {
+      log.warn(`signed out, but couldn't save ${revokedFile} (${(err as Error).message}); that session would work again after a restart.`);
+      return (err as Error).message;
+    }
+  };
+
   const cookieOf = (req: http.IncomingMessage) =>
     (req.headers.cookie ?? "").split(";").map((s) => s.trim()).find((s) => s.startsWith(COOKIE + "="))?.slice(COOKIE.length + 1);
   const sessionOf = (req: http.IncomingMessage): string | null => {
     const c = cookieOf(req);
-    return c && !keyError && verifySession(c, secret) ? c : null;
+    return c && !keyError && verifySession(c, secret) && !revoked.has(sessionHash(c)) ? c : null;
   };
   const json = (res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
     res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
@@ -167,6 +241,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
     if (s.go2rtc.state !== "running") {
       notes.push(`go2rtc is ${s.go2rtc.state}${s.go2rtc.lastError ? ` (${s.go2rtc.lastError})` : ""}: snapshots, feed checks and live previews are unavailable. HomeKit is unaffected.`);
     }
+    if (s.dash && s.dash.state !== "running") {
+      notes.push(`The dashboard is ${s.dash.state}${s.dash.lastError ? ` (${s.dash.lastError})` : ""}: the living-room display can't load until it's back. HomeKit is unaffected.`);
+    }
     try {
       const ports = [...new Set(readRawConfig(d.configPath).cameras.filter((c) => c.onvif).map((c) => c.onvif!.notifyPort ?? 0))];
       if (ports.length === 1) {
@@ -188,6 +265,32 @@ export function createAdminServer(d: AdminDeps): http.Server {
     try {
       if (url.pathname === "/healthz") return json(res, 200, { ok: true });
       if (url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
+      if (method === "GET" && url.pathname.startsWith("/dash-fonts/")) {
+        // The same font files the open dashboard serves, for the settings page's live preview.
+        attempted = "Load a dashboard font for the preview";
+        const name = url.pathname.slice("/dash-fonts/".length);
+        const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the NAS, then reload." }, 404);
+        if (!FONT_FILE.test(name)) throw gone();
+        let body: Buffer;
+        try { body = fs.readFileSync(path.join(dash.dir, "fonts", name)); } catch { throw gone(); }
+        res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length) });
+        return res.end(body);
+      }
+      if (method === "GET" && url.pathname === DASH_SETTINGS_PATH) {
+        attempted = "Open the dashboard settings";
+        if (!sessionOf(req)) {
+          // Sign in first, then come straight back here (the pane's sign-in honours ?next=).
+          const next = encodeURIComponent(DASH_SETTINGS_PATH + (url.searchParams.get("from") === "dash" ? "?from=dash" : ""));
+          return json(res, 302, { error: { attempted, happened: "The dashboard settings need the admin password, and you're not signed in.", changed: "Nothing.", next: "Sign in; you'll come straight back here." } },
+            { location: `/?next=${next}#/login` });
+        }
+        let body: string;
+        try { body = fs.readFileSync(path.join(d.webRoot, "dash-settings.html"), "utf8"); } catch (err) {
+          throw new UserError({ attempted, happened: `The settings page is missing from this build (${(err as Error).message}).`, changed: "Nothing; the dashboard and HomeKit are unaffected.", next: "Rebuild the image (the Dockerfile must copy web/ into it)." }, 500);
+        }
+        res.writeHead(200, { "content-type": MIME[".html"] });
+        return res.end(body.replace(/__TITLE__/g, d.title.replace(/^unscrypted admin/, "Homedash settings")));
+      }
       if (method === "GET" && STATIC[url.pathname]) {
         attempted = "Load the admin pane";
         const file = path.join(d.webRoot, STATIC[url.pathname]);
@@ -208,7 +311,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
         let setupError = null;
         if (keyError) setupError = keyError.body;
         else try { loadAdminPassword(d.passwordFile); } catch (err) { setupError = toErrorJson(err, "Start the admin pane's sign-in").body.error; }
-        return json(res, 200, { signedIn: Boolean(s), csrf: s ? csrfToken(secret, s) : null, title: d.title, setupError });
+        // Where the dashboard is and its idle time: the kiosk's sign-in page idles back there. Nothing secret.
+        return json(res, 200, { signedIn: Boolean(s), csrf: s ? csrfToken(secret, s) : null, title: d.title, setupError,
+          dash: { url: dashUrlFor(req), idleSeconds: loadSettings(dashSettingsFile).settings.idleSeconds } });
       }
 
       if (keyError) throw keyError;   // 503: the sign-in key file is unreadable or the wrong length
@@ -254,7 +359,43 @@ export function createAdminServer(d: AdminDeps): http.Server {
       }
 
       if (url.pathname === "/api/logout" && method === "POST") {
-        return json(res, 200, { ok: true }, { "set-cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+        const saveErr = revoke(session);
+        return json(res, 200, { ok: true, ...(saveErr ? { warning: `Signed out. The sign-out couldn't be saved to disk (${saveErr}), so this session would work again after the admin pane restarts.` } : {}) },
+          { "set-cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+      }
+
+      if (url.pathname === "/api/dash/settings" && (method === "GET" || method === "PUT")) {
+        attempted = method === "GET" ? "Load the dashboard settings" : "Save the dashboard settings";
+        const raw = readRawConfig(d.configPath);
+        const names = raw.cameras.map((c) => c.name);
+        let withSub: string[] | undefined;
+        try {
+          const sn = streamNames(resolveConfig(raw, "/").cameras);
+          withSub = names.filter((n) => sn.get(n)?.sub);
+        } catch (err) {
+          withSub = undefined;   // config.json doesn't resolve right now: sub can't be checked, the dash falls back to main
+          log.warn(`dashboard settings: couldn't work out which cameras have a sub stream: ${(err as Error).message}`);
+        }
+        const fonts = listFonts(path.join(dash.dir, "fonts"));
+        if (method === "PUT") {
+          const edit = await readJson(req, attempted);
+          const cur = loadSettings(dashSettingsFile);
+          const next = applySettingsEdit(cur.settings, edit, { cameras: names, fontFiles: fonts.fonts.map((f) => f.file), withSub });
+          let backupPath: string | null;
+          try { ({ backupPath } = saveSettings(dashSettingsFile, next)); } catch (err) {
+            throw new UserError({ attempted, happened: `${dashSettingsFile} couldn't be written (${(err as Error).message}).`, changed: "Nothing was saved; the dashboard keeps its current settings.",
+              next: "Check that ./data/dash on the NAS exists and is writable by the container, then save again." }, 500);
+          }
+          log.info(`dashboard settings saved (${Object.keys(edit).join(", ")})`);
+          return json(res, 200, { saved: true, backupPath, settings: next, message: "Saved. The dashboard reloads with it within a few seconds." });
+        }
+        const cur = loadSettings(dashSettingsFile);
+        return json(res, 200, {
+          settings: cur.settings, warning: [cur.warning, fonts.warning].filter(Boolean).join(" ") || null,
+          cameras: effectiveCameras(cur.settings, names).map((c) => ({ ...c, hasSub: withSub ? withSub.includes(c.camera) : null })),
+          fonts: fonts.fonts, systemFonts: Object.keys(SYSTEM_FONTS), gridMax: GRID_MAX, dashUrl: dashUrlFor(req),
+          lights: await dashLights(),
+        });
       }
 
       if (url.pathname === "/api/status" && method === "GET") {

@@ -18,7 +18,7 @@ export interface CameraStatus {
 
 export interface BridgeStatus {
   bridgeName: string; pin: string; setupURI: string; paired: boolean; hapPort: number | null; hapEnabled: boolean;
-  cameras: CameraStatus[]; go2rtc: ChildStatus; startedAt: number; version: string;
+  cameras: CameraStatus[]; go2rtc: ChildStatus; dash: ChildStatus; startedAt: number; version: string;
 }
 
 export type ApplyMode = "live" | "added" | "restart-needed";
