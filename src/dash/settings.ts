@@ -28,6 +28,8 @@ export interface DashSettings {
   weather: { place: string; lat: number | null; lon: number | null; unit: "fahrenheit" | "celsius"; refreshSeconds: number };
   photos: { source: "folder" | "icloud"; folder: string; icloudUrl: string; rotateSeconds: number; refreshMinutes: number; maxPhotos: number; caption: string };
   fonts: { ui: FontSpec; clock: FontSpec };
+  /** Where Constructicon is (#14), e.g. http://10.0.1.240; "" = the Constructicon font list is off. The token is a secrets file, never here. */
+  constructicon: { url: string };
   services: ServiceNode[];
 }
 
@@ -65,6 +67,7 @@ export const DEFAULTS: DashSettings = {
   weather: { place: "", lat: null, lon: null, unit: "fahrenheit", refreshSeconds: 600 },
   photos: { source: "folder", folder: "/data/dash/photos", icloudUrl: "", rotateSeconds: 20, refreshMinutes: 30, maxPhotos: 0, caption: "" },
   fonts: { ui: { kind: "system", family: "sans" }, clock: { kind: "system", family: "inherit" } },
+  constructicon: { url: "" },
   services: DEFAULT_SERVICES,
 };
 
@@ -94,6 +97,7 @@ export function loadSettings(file: string): { settings: DashSettings; warning: s
       weather: { ...d.weather, ...(raw.weather ?? {}) },
       photos: { ...d.photos, ...(raw.photos ?? {}) },
       fonts: { ...d.fonts, ...(raw.fonts ?? {}) },
+      constructicon: { url: typeof raw.constructicon?.url === "string" ? raw.constructicon.url : "" },
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
       services: Array.isArray(raw.services) ? raw.services.map(renameOldServer) : d.services,
     };
@@ -181,6 +185,18 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
     }
     if ("lat" in w) s.weather.lat = coord(w.lat, -90, 90, "Latitude");
     if ("lon" in w) s.weather.lon = coord(w.lon, -180, 180, "Longitude");
+  }
+  if ("constructicon" in edit) {
+    const c = edit.constructicon ?? {};
+    if ("url" in c) {
+      const u = text(c.url, 200, "Constructicon address").replace(/\/+$/, "");
+      if (u) {
+        let ok = false;
+        try { const p = new URL(u); ok = (p.protocol === "http:" || p.protocol === "https:") && (p.pathname === "/" || p.pathname === "") && !p.search && !p.hash && !p.username; } catch { ok = false; }
+        if (!ok) throw bad("Constructicon address", `must be just http(s)://host[:port] (for example http://10.0.1.240), or empty to switch the Constructicon font list off; "${u}" isn't`);
+      }
+      s.constructicon.url = u;
+    }
   }
   if ("photos" in edit) {
     const p = edit.photos ?? {};

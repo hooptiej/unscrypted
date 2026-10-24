@@ -242,3 +242,80 @@ test("signing out (the kiosk's idle return does this first) kills that session o
     assert.equal((await fetch(b + "/api/dash/settings", { headers: { cookie: s2.cookie } })).status, 200);
   } finally { re.closeAllConnections(); re.close(); }
 });
+
+test("#14: GET says why Constructicon fonts aren't available; a good address + token lists them; POST copies one into the folder", async () => {
+  const s = await login();
+  let r = await fetch(base + "/api/dash/settings", { headers: { cookie: s.cookie } });
+  let j = await r.json();
+  assert.equal(j.constructicon.available, false);
+  assert.match(j.constructicon.reason, /no Constructicon address is set/);
+  assert.deepEqual(j.constructicon.fonts, []);
+
+  // A fake Constructicon and a token file, wired through a second admin server.
+  const fake = http.createServer((req, res) => {
+    if (req.url === "/api/brand-assets" && req.headers.authorization === "Bearer tok-xyz") {
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify([{ slug: "AlbLight0001", title: "AlbertusMT-Light.otf" }, { slug: "rMrRHh34w5nN", title: "AlbertusMT.otf" }]));
+    }
+    if (req.url === "/f/AlbLight0001") { res.setHeader("content-type", "font/otf"); return res.end("OTTO-light"); }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>((r2) => fake.listen(0, "127.0.0.1", () => r2()));
+  const cxBase = `http://127.0.0.1:${(fake.address() as AddressInfo).port}`;
+  const tokenFile = path.join(dir, "constructicon_token");
+  fs.writeFileSync(tokenFile, "tok-xyz\n");
+  const a = createAdminServer({
+    configPath: path.join(dir, "config.json"), passwordFile: path.join(dir, "pw"), go2rtcApi: "",
+    sessionKeyFile: path.join(dir, "admin-session.key"), webRoot: path.join(__dirname, "../../web/admin"), title: "unscrypted admin - TEST",
+    dash: { dir: dashDir, port: 8181, url: null }, constructicon: { tokenFile },
+    bridge: { status: () => null, request: async () => null },
+  });
+  await new Promise<void>((r2) => a.listen(0, "127.0.0.1", () => r2()));
+  const b = `http://127.0.0.1:${(a.address() as AddressInfo).port}`;
+  try {
+    const lr = await fetch(b + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "letmein" }) });
+    const sess = { cookie: lr.headers.get("set-cookie")!.split(";")[0], csrf: (await lr.json()).csrf as string };
+    const hdr = { cookie: sess.cookie, "x-csrf-token": sess.csrf, "content-type": "application/json" };
+
+    const badUrl = await fetch(b + "/api/dash/settings", { method: "PUT", headers: hdr, body: JSON.stringify({ constructicon: { url: "ftp://nope/x" } }) });
+    assert.equal(badUrl.status, 400);
+    assert.match((await badUrl.json()).error.happened, /Constructicon address: must be just http\(s\):\/\/host/);
+
+    const saved = await fetch(b + "/api/dash/settings", { method: "PUT", headers: hdr, body: JSON.stringify({ constructicon: { url: cxBase + "/" } }) });
+    assert.equal(saved.status, 200);
+    assert.equal((await saved.json()).settings.constructicon.url, cxBase, "a trailing slash is dropped");
+
+    r = await fetch(b + "/api/dash/settings", { headers: { cookie: sess.cookie } });
+    j = await r.json();
+    assert.equal(j.constructicon.available, true);
+    assert.equal(j.constructicon.reason, null);
+    assert.deepEqual(j.constructicon.fonts, [
+      { slug: "rMrRHh34w5nN", name: "AlbertusMT", ext: "otf", file: null },
+      { slug: "AlbLight0001", name: "AlbertusMT-Light", ext: "otf", file: null },
+    ]);
+    assert.doesNotMatch(JSON.stringify(j), /tok-xyz/, "the token never reaches the browser");
+
+    const noSlug = await fetch(b + "/api/dash/fonts/constructicon", { method: "POST", headers: hdr, body: "{}" });
+    assert.equal(noSlug.status, 400);
+    const got = await fetch(b + "/api/dash/fonts/constructicon", { method: "POST", headers: hdr, body: JSON.stringify({ slug: "AlbLight0001" }) });
+    assert.equal(got.status, 200);
+    const g = await got.json();
+    assert.equal(g.file, "cx-AlbLight0001.otf");
+    assert.equal(g.name, "AlbertusMT-Light");
+    assert.ok(g.fonts.some((f: any) => f.file === "cx-AlbLight0001.otf" && f.name === "AlbertusMT-Light"), "the folder listing now has it, named");
+    assert.equal(fs.readFileSync(path.join(dashDir, "fonts", "cx-AlbLight0001.otf"), "utf8"), "OTTO-light");
+    // and it can be chosen and saved like any folder font
+    const pick = await fetch(b + "/api/dash/settings", { method: "PUT", headers: hdr, body: JSON.stringify({ fonts: { clock: { kind: "file", file: "cx-AlbLight0001.otf" } } }) });
+    assert.equal(pick.status, 200);
+    r = await fetch(b + "/api/dash/settings", { headers: { cookie: sess.cookie } });
+    j = await r.json();
+    assert.equal(j.constructicon.fonts.find((f: any) => f.slug === "AlbLight0001").file, "cx-AlbLight0001.otf", "listed as already in the folder");
+    // unsigned: refused like everything else
+    assert.equal((await fetch(b + "/api/dash/fonts/constructicon", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "AlbLight0001" }) })).status, 401);
+  } finally {
+    a.close(); fake.close();
+    fs.rmSync(path.join(dashDir, "fonts", "cx-AlbLight0001.otf"), { force: true });
+    fs.writeFileSync(path.join(dashDir, "fonts", "names.json"), JSON.stringify({ "rMrRHh34w5nN.otf": "AlbertusMT" }));
+    await fetch(b + "/api/dash/settings", { method: "PUT" }).catch(() => undefined);
+  }
+});

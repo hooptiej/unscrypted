@@ -74,6 +74,22 @@ function fontSelect(select, role, spec) {
     files.append(o);
   }
   select.append(files);
+  // #14: Constructicon's fonts. Never hidden: when the list can't be had, the group is there, greyed out, and says why.
+  const cx = loaded.constructicon || { available: false, reason: "this admin pane doesn't know about Constructicon fonts", fonts: [] };
+  const grp = document.createElement("optgroup");
+  if (cx.available) {
+    grp.label = cx.fonts.length ? "From Constructicon" : "From Constructicon (no font files there yet)";
+    for (const f of cx.fonts) {
+      if (f.file && loaded.fonts.some((x) => x.file === f.file)) continue;   // already in the folder: listed above
+      const o = document.createElement("option");
+      o.value = `cx:${f.slug}`; o.textContent = `${f.name} (copy from Constructicon)`;
+      grp.append(o);
+    }
+  } else {
+    grp.label = `From Constructicon (unavailable: ${cx.reason || "no reason given"})`;
+    grp.disabled = true;
+  }
+  select.append(grp);
   select.value = spec.kind === "file" ? `file:${spec.file}` : `system:${spec.family}`;
   if (!select.value) {
     // The saved font file is gone: show that instead of quietly picking another.
@@ -84,6 +100,24 @@ function fontSelect(select, role, spec) {
   }
 }
 const parseFont = (v) => { const i = v.indexOf(":"); const kind = v.slice(0, i), rest = v.slice(i + 1); return kind === "file" ? { kind: "file", file: rest } : { kind: "system", family: rest }; };
+
+/* A "cx:<slug>" pick: copy the font into the folder first, then select it as a folder font (#14). */
+async function pickConstructicon(select, role) {
+  const v = select.value;
+  if (!v.startsWith("cx:")) return;
+  const slug = v.slice(3);
+  const prev = select.dataset.prev || `system:${role === "clock" ? "inherit" : "sans"}`;
+  select.disabled = true;
+  say("ok", "Copying the font from Constructicon\u2026");
+  const r = await api("POST", "/api/dash/fonts/constructicon", { slug });
+  select.disabled = false;
+  if (r.error) { sayError(r.error); select.value = prev; return; }
+  loaded.fonts = r.fonts;
+  const spec = { kind: "file", file: r.file };
+  fontSelect($("fontUi"), "ui", $("fontUi") === select ? spec : parseFont($("fontUi").value));
+  fontSelect($("fontClock"), "clock", $("fontClock") === select ? spec : parseFont($("fontClock").value));
+  say("ok", r.message || `"${r.name}" is in the fonts folder now; save to use it.`);
+}
 
 async function updatePreview() {
   const css = async (spec, fallback) => {
@@ -209,6 +243,7 @@ function render(data) {
   dashUrl = data.dashUrl || dashUrl;
   $("back").href = dashUrl;
   const s = data.settings;
+  $("cxUrl").value = s.constructicon ? s.constructicon.url : "";
   fontSelect($("fontUi"), "ui", s.fonts.ui);
   fontSelect($("fontClock"), "clock", s.fonts.clock);
   void updatePreview();
@@ -239,6 +274,7 @@ function payload() {
   if ($("wxLon").value !== String(s.weather.lon ?? "")) wx.lon = $("wxLon").value;
   return {
     fonts: { ui: parseFont($("fontUi").value), clock: parseFont($("fontClock").value) },
+    constructicon: { url: $("cxUrl").value },
     cameras: [...$("cams").children].filter((r) => !r.classList.contains("missing")).map((r) => ({
       camera: r.dataset.camera,
       label: r.querySelector("input[type=text]").value,
@@ -285,8 +321,11 @@ async function init() {
   setInterval(tickPreview, 1000);
   if (/TEST/.test(document.title)) $("env").hidden = false;
   ["input", "change"].forEach((e) => document.addEventListener(e, () => { dirty = true; }, true));
-  $("fontUi").addEventListener("change", () => void updatePreview());
-  $("fontClock").addEventListener("change", () => void updatePreview());
+  for (const [id, role] of [["fontUi", "ui"], ["fontClock", "clock"]]) {
+    const sel = $(id);
+    sel.addEventListener("focus", () => { if (!sel.value.startsWith("cx:")) sel.dataset.prev = sel.value; });
+    sel.addEventListener("change", async () => { await pickConstructicon(sel, role); void updatePreview(); });
+  }
   $("save").addEventListener("click", () => void save());
   $("back").addEventListener("click", (e) => {
     e.preventDefault();

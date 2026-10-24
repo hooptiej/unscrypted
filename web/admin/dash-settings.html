@@ -28,6 +28,8 @@
       <div class="row"><label for="fontClock">Clock font</label><select id="fontClock"></select></div>
       <div class="preview" id="preview"><span id="previewTime"></span><small id="previewName"></small></div>
       <p class="hint">"Fonts folder" lists the font files in data/dash/fonts on the NAS (names from names.json there). To add one, drop the file in that folder and reload this page.</p>
+      <div class="row"><label for="cxUrl">Constructicon address</label><input type="text" id="cxUrl" placeholder="http://10.0.1.240" autocomplete="off" spellcheck="false"></div>
+      <p class="hint" id="cxHint">"From Constructicon" lists the font files kept in Constructicon as brand assets. Picking one copies it into the fonts folder once, so the dashboard keeps it even when Constructicon is down. Needs a read-only Constructicon token in secrets/constructicon_token; save the address, then reload this page.</p>
     </section>
     <section>
       <h2>Display</h2>
