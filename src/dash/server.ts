@@ -22,6 +22,8 @@ export interface PublicConfig {
   /** `which`: the stream the tile actually plays (a "sub" pick on a camera with no sub plays main). */
   cameras: { id: string; label: string; stream: string; which: "main" | "sub" }[];
   fonts: { ui: unknown; clock: unknown };
+  /** Background glow knobs (#25), percents from -100 to +100; 0 = the default look. */
+  glow: { intensity: number; size: number };
 }
 
 export interface DashDeps {

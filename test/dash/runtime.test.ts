@@ -198,3 +198,12 @@ test("the Settings button's target comes from config, and a bad UNSCRYPTED_ADMIN
   const bad = new DashRuntime({ dir, title: "T", env: "prod", adminPort: 8190, log, adminUrl: null, adminUrlError: "UNSCRYPTED_ADMIN_URL (\"x\") isn't a web address" });
   assert.match((bad.state() as any).notices.join(" "), /UNSCRYPTED_ADMIN_URL/);
 });
+
+test("glow knobs (#25) reach the open page: 0% by default, the saved percents after a save", async () => {
+  const rt = runtime();
+  assert.deepEqual(rt.publicConfig().glow, { intensity: 0, size: 0 });
+  await new Promise((r) => setTimeout(r, 20));   // a distinct mtime
+  saveSettings(rt.settingsFile, { ...rt.settings, glow: { intensity: 40, size: -25 } });
+  assert.equal(rt.reloadSettingsIfChanged(fs.statSync(rt.settingsFile).mtimeMs), true);
+  assert.deepEqual(rt.publicConfig().glow, { intensity: 40, size: -25 });
+});
