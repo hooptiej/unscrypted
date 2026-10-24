@@ -124,8 +124,9 @@ Runs ffmpeg against a generated test pattern through the real fragmented-MP4 →
 ### Docker (e.g. TrueNAS)
 
 ```bash
-mkdir -p config data
+mkdir -p config data secrets
 cp config.example.json config/config.json   # edit it
+openssl rand -base64 18 > secrets/admin_password && chmod 600 secrets/admin_password   # admin pane sign-in
 docker compose up -d --build
 docker compose logs -f                       # watch for the pairing QR / code
 ```
@@ -137,7 +138,8 @@ Two folders sit next to the compose file:
 | Folder | Mounted at | Holds |
 |---|---|---|
 | `./config` | `/config` | `config.json` (camera passwords: gitignored, never commit it). |
-| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. |
+| `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. Also `admin-session.key`, the admin pane's sign-in key (made on first start, mode 600; deleting it only signs everyone out), and `dash/`, the dashboard's settings, fonts and photo cache. |
+| `./secrets` | `/run/secrets` (read-only) | `admin_password`: one line, the admin pane's password (gitignored, mode 600). |
 
 The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir` in `config.json`. If the keys are found in the ignored `persistDir` while `/data/persist` is empty, the bridge refuses to start and says which files to copy where, rather than starting as a new bridge (#4).
 

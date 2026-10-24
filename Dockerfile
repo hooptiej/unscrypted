@@ -38,6 +38,18 @@ ENV UNSCRYPTED_PERSIST_DIR=/data/persist
 COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+
+# ---- go2rtc (feed checks and previews in the admin pane, and the dashboard's live tiles).
+# Pinned version + checksum, never latest. The checksum is the release asset's SHA-256 as
+# published by GitHub for v1.9.14 (and re-hashed on the NAS). ADD --checksum fails the build on
+# any mismatch. (Re-applied from f68c95c on the old lineage; the 0.1.x trunk never baked it.)
+ARG GO2RTC_VERSION=1.9.14
+ARG GO2RTC_SHA256=32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6
+ADD --checksum=sha256:${GO2RTC_SHA256} \
+    https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_amd64 /usr/local/bin/go2rtc
+RUN chmod 0755 /usr/local/bin/go2rtc \
+    && /usr/local/bin/go2rtc -version | grep -F "go2rtc version ${GO2RTC_VERSION} "
+
 # The admin pane's and dashboard's pages, scripts and styles (the servers read <dist>/../web/*).
 COPY web ./web
 

@@ -27,6 +27,10 @@ services:
       # HAP pairing state lives in ./data/persist. NEVER delete ./data: losing it means
       # re-adding every camera in the Home app.
       - ./data:/data
+      # Admin pane password: one line in ./secrets/admin_password (gitignored, mode 600).
+      # The folder is mounted, not the file, so a missing file is a clear "no password" message
+      # in the pane instead of Docker quietly creating a folder named admin_password.
+      - ./secrets:/run/secrets:ro
     environment:
       - UNSCRYPTED_CONFIG=/config/config.json
       - UNSCRYPTED_PERSIST_DIR=/data/persist

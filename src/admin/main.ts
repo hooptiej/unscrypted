@@ -41,7 +41,7 @@ const port = Number(process.env.UNSCRYPTED_ADMIN_PORT ?? 8190);
 const host = process.env.UNSCRYPTED_ADMIN_HOST || "0.0.0.0";
 const server = createAdminServer({
   configPath: process.env.UNSCRYPTED_CONFIG ?? "/config/config.json",
-  passwordFile: process.env.UNSCRYPTED_ADMIN_PASSWORD_FILE ?? "/run/secrets/unscrypted_admin_password",
+  passwordFile: process.env.UNSCRYPTED_ADMIN_PASSWORD_FILE ?? "/run/secrets/admin_password",
   // The bridge sets this next to the HAP pairing state (persistDir's parent, /data in Docker).
   sessionKeyFile: process.env.UNSCRYPTED_ADMIN_KEY_FILE || "/data/admin-session.key",
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
