@@ -28,10 +28,16 @@ export interface DashSettings {
   weather: { place: string; lat: number | null; lon: number | null; unit: "fahrenheit" | "celsius"; refreshSeconds: number };
   photos: { source: "folder" | "icloud"; folder: string; icloudUrl: string; rotateSeconds: number; refreshMinutes: number; maxPhotos: number; caption: string };
   fonts: { ui: FontSpec; clock: FontSpec };
+  /**
+   * Background glow knobs (#25), whole percents from -100 to +100. 0 is the look #24 shipped;
+   * intensity scales the glow's strength (-100 = no glow, +100 = double), size scales its ellipse.
+   */
+  glow: { intensity: number; size: number };
   services: ServiceNode[];
 }
 
 export const GRID_MAX = 4;
+export const GLOW_MIN = -100, GLOW_MAX = 100;
 export const FONT_FILE = /^[A-Za-z0-9_-]{1,64}\.(otf|ttf|woff2?)$/;
 
 /** Owner Q1 = c: the ipvlan apps can't be reached from the host network yet, and the light says so. */
@@ -65,6 +71,7 @@ export const DEFAULTS: DashSettings = {
   weather: { place: "", lat: null, lon: null, unit: "fahrenheit", refreshSeconds: 600 },
   photos: { source: "folder", folder: "/data/dash/photos", icloudUrl: "", rotateSeconds: 20, refreshMinutes: 30, maxPhotos: 0, caption: "" },
   fonts: { ui: { kind: "system", family: "sans" }, clock: { kind: "system", family: "inherit" } },
+  glow: { intensity: 0, size: 0 },
   services: DEFAULT_SERVICES,
 };
 
@@ -89,15 +96,17 @@ export function loadSettings(file: string): { settings: DashSettings; warning: s
     const raw = JSON.parse(text);
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("it isn't a JSON object");
     const d = clone(DEFAULTS);
+    const glow = loadGlow(raw.glow);
     const s: DashSettings = {
       ...d, ...raw,
       weather: { ...d.weather, ...(raw.weather ?? {}) },
       photos: { ...d.photos, ...(raw.photos ?? {}) },
       fonts: { ...d.fonts, ...(raw.fonts ?? {}) },
+      glow: glow.glow,
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
       services: Array.isArray(raw.services) ? raw.services.map(renameOldServer) : d.services,
     };
-    return { settings: s, warning: null, mtimeMs };
+    return { settings: s, warning: glow.fixed.length ? `${file}: ${glow.fixed.join("; ")}. Save the dashboard settings page to fix the file.` : null, mtimeMs };
   } catch (err) {
     // The parser's message quotes a piece of the file (hosts, the album link), and this warning is shown on
     // the open dashboard, so say where, never what.
@@ -106,6 +115,25 @@ export function loadSettings(file: string): { settings: DashSettings; warning: s
     const why = err instanceof SyntaxError ? `it isn't valid JSON${pos ? ` (near character ${pos})` : ""}` : "it isn't a JSON object";
     return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${why}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs };
   }
+}
+
+/**
+ * The glow knobs from a hand-edited file: a missing one is 0 (today's look), an out-of-range one is
+ * clamped and a non-number one is 0, each said in `fixed` so the open dashboard can show why.
+ */
+function loadGlow(v: unknown): { glow: DashSettings["glow"]; fixed: string[] } {
+  const g = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const fixed: string[] = [];
+  if (v !== undefined && g !== v) fixed.push("glow isn't an object, so the background glow uses 0% for both knobs");
+  const one = (key: "intensity" | "size"): number => {
+    if (!(key in g)) return 0;
+    const n = typeof g[key] === "number" ? (g[key] as number) : NaN;
+    if (!Number.isFinite(n)) { fixed.push(`glow.${key} isn't a number, so it's 0%`); return 0; }
+    const c = Math.round(Math.max(GLOW_MIN, Math.min(GLOW_MAX, n)));
+    if (c !== n) fixed.push(`glow.${key} is ${n}, so it's ${c}% (whole numbers from ${GLOW_MIN} to ${GLOW_MAX})`);
+    return c;
+  };
+  return { glow: { intensity: one("intensity"), size: one("size") }, fixed };
 }
 
 /** The old default's rollup was called "Server"; it checks the NAS itself, so it's "NAS" now (owner eye-check). */
@@ -206,6 +234,17 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
     for (const role of Object.keys(f)) if (role !== "ui" && role !== "clock") throw bad("Fonts", `unknown font role "${role}"`);
     if (f.ui) s.fonts.ui = font(f.ui, "ui", ctx.fontFiles);
     if (f.clock) s.fonts.clock = font(f.clock, "clock", ctx.fontFiles);
+  }
+  if ("glow" in edit) {
+    const g = edit.glow;
+    if (!g || typeof g !== "object" || Array.isArray(g)) throw bad("Background glow", "must be a pair of percents (intensity and size)");
+    for (const k of Object.keys(g)) if (k !== "intensity" && k !== "size") throw bad("Background glow", `unknown setting "${k}" (only intensity and size)`);
+    const pct = (v: unknown, label: string): number => {
+      if (v === null || v === undefined || String(v).trim() === "") throw bad(label, `is empty; it must be a whole percent from ${GLOW_MIN} to ${GLOW_MAX} (0 = today's look)`);
+      return int(v, GLOW_MIN, GLOW_MAX, label);
+    };
+    if ("intensity" in g) s.glow.intensity = pct(g.intensity, "Glow intensity (%)");
+    if ("size" in g) s.glow.size = pct(g.size, "Glow size (%)");
   }
   return s;
 }
