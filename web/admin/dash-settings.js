@@ -237,6 +237,16 @@ function camRow(cam) {
   return row;
 }
 
+/* ---------- background glow knobs (#25): -100..+100 %, 0 = the standard look ---------- */
+const GLOW_KNOBS = [["glowIntensity", "intensity"], ["glowSize", "size"]];
+const pctText = (v) => `${v > 0 ? "+" : ""}${v}%`;
+function showKnob(id) {
+  const input = $(id);
+  const v = Number(input.value);
+  $(`${id}Out`).textContent = pctText(v);
+  input.setAttribute("aria-valuetext", v === 0 ? "0%, the standard look" : pctText(v));
+}
+
 /* ---------- load and save ---------- */
 function render(data) {
   loaded = data;
@@ -262,6 +272,8 @@ function render(data) {
   $("idle").value = s.idleSeconds;
   $("reload").value = s.reloadMinutes;
   $("poll").value = s.pollSeconds;
+  const glow = s.glow || { intensity: 0, size: 0 };
+  for (const [id, key] of GLOW_KNOBS) { $(id).value = glow[key] ?? 0; showKnob(id); }
   if (data.warning) say("err", data.warning);
   $("save").disabled = false;
 }
@@ -284,6 +296,7 @@ function payload() {
     photos: { source: $("phSource").value, icloudUrl: $("phUrl").value, folder: $("phFolder").value, rotateSeconds: $("phSecs").value, caption: $("phCap").value },
     weather: wx,
     idleSeconds: $("idle").value, reloadMinutes: $("reload").value, pollSeconds: $("poll").value,
+    glow: { intensity: $("glowIntensity").value, size: $("glowSize").value },
   };
 }
 
@@ -326,6 +339,7 @@ async function init() {
     sel.addEventListener("focus", () => { if (!sel.value.startsWith("cx:")) sel.dataset.prev = sel.value; });
     sel.addEventListener("change", async () => { await pickConstructicon(sel, role); void updatePreview(); });
   }
+  for (const [id] of GLOW_KNOBS) { $(id).addEventListener("input", () => showKnob(id)); showKnob(id); }
   $("save").addEventListener("click", () => void save());
   $("back").addEventListener("click", (e) => {
     e.preventDefault();

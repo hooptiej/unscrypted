@@ -376,3 +376,109 @@ test("a bad sign-in key file refuses the pane with a clear 503 and isn't replace
     assert.equal(fs.readFileSync(bad, "utf8"), "too short");
   } finally { s2.close(); }
 });
+
+test("#8: DELETE needs the name confirmed; then it saves without the camera, keeps its entry, and tells the bridge", async () => {
+  const s = await login();
+  const frontEntry = JSON.parse(readCfg()).cameras.find((c: any) => c.name === "Front");   // put back afterwards: later tests use Front
+  const unconfirmed = await send("DELETE", "/api/cameras/Front", {}, s);
+  assert.equal(unconfirmed.status, 400);
+  assert.match((await unconfirmed.json()).error.happened, /didn't confirm the camera's name/);
+  assert.ok(JSON.parse(readCfg()).cameras.some((c: any) => c.name === "Front"), "nothing changed");
+
+  bridgeReply = (m) => ({ type: "applied", reqId: "x", ok: true, mode: "removed", message: `removed ${m.name}` });
+  try {
+    const r = await send("DELETE", "/api/cameras/Front", { confirm: "Front" }, s);
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.saved, true);
+    assert.equal(j.mode, "removed");
+    assert.ok(j.keptAt && fs.existsSync(j.keptAt), "the camera's entry is kept as a file");
+    const kept = JSON.parse(fs.readFileSync(j.keptAt, "utf8"));
+    assert.equal(kept.camera.onvif.password, "onvifpw", "the kept entry is the full entry, logins included");
+    assert.ok(!JSON.parse(readCfg()).cameras.some((c: any) => c.name === "Front"), "config.json no longer has it");
+    assert.deepEqual(applied.at(-1), { type: "remove", name: "Front" });
+    const again = await send("DELETE", "/api/cameras/Front", { confirm: "Front" }, s);
+    assert.equal(again.status, 404);
+    assert.match((await again.json()).error.happened, /No camera called "Front"/);
+  } finally {
+    const cfg = JSON.parse(readCfg());
+    if (!cfg.cameras.some((x: any) => x.name === "Front")) { cfg.cameras.push(frontEntry); fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(cfg, null, 2)); }
+    bridgeReply = (m) => ({ type: "applied", reqId: "x", ok: true, mode: "live", message: `applied ${m.name}` });
+  }
+});
+
+test("#8: DELETE without a session or without the token is refused, nothing written", async () => {
+  const before = readCfg();
+  const anon = await send("DELETE", "/api/cameras/Garage", { confirm: "Garage" });
+  assert.equal(anon.status, 401);
+  const s = await login();
+  const noTok = await fetch(base + "/api/cameras/Garage", { method: "DELETE", headers: { cookie: s.cookie, "content-type": "application/json" }, body: JSON.stringify({ confirm: "Garage" }) });
+  assert.equal(noTok.status, 403);
+  assert.equal(readCfg(), before);
+});
+
+const creds = (name: string) => `/api/cameras/${encodeURIComponent(name)}/credentials`;
+
+test("credentials: not signed in is a 401, no CSRF token is a 403, cross-site is a 403", async () => {
+  const anon = await send("POST", creds("Garage"), {});
+  assert.equal(anon.status, 401);
+  assert.ok(!(await anon.text()).includes("s3cret"));
+  const s = await login();
+  const noTok = await fetch(base + creds("Garage"), { method: "POST", headers: { cookie: s.cookie, "content-type": "application/json" }, body: "{}" });
+  assert.equal(noTok.status, 403);
+  assert.ok(!(await noTok.text()).includes("s3cret"));
+  const evil = await fetch(base + creds("Garage"), { method: "POST", headers: { cookie: s.cookie, "x-csrf-token": s.csrf, origin: "http://evil.example" } });
+  assert.equal(evil.status, 403);
+  assert.ok(!(await evil.text()).includes("s3cret"));
+  const get = await fetch(base + creds("Garage"), { headers: { cookie: s.cookie } });
+  assert.equal(get.status, 404, "a plain GET (a link, a prefetch) never shows them");
+});
+
+test("credentials: one camera's logins, never cached; the list stays redacted", async () => {
+  const s = await login();
+  const r = await send("POST", creds("Garage"), {}, s);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await r.json(), { name: "Garage", rtsp: { user: "admin", password: "s3cret" }, foscam: null, onvif: null, webUi: null });
+  const f = await (await send("POST", creds("Front"), {}, s)).json();
+  assert.deepEqual(f.rtsp, { user: "admin", password: "pw2" });
+  assert.deepEqual(f.onvif, { user: "admin", password: "onvifpw" });
+  assert.equal(f.webUi, "http://10.0.0.5");
+  assert.ok(!JSON.stringify(f).includes("s3cret"), "only the camera asked for");
+  const list = await (await fetch(base + "/api/cameras", { headers: { cookie: s.cookie } })).text();
+  for (const secret of ["s3cret", "pw2", "onvifpw"]) assert.ok(!list.includes(secret), secret);
+});
+
+test("credentials: an unknown camera is a 404 in the four-part shape", async () => {
+  const s = await login();
+  const r = await send("POST", creds("Nope"), {}, s);
+  assert.equal(r.status, 404);
+  const e = (await r.json()).error;
+  for (const k of ["attempted", "happened", "changed", "next"]) assert.ok(e[k].length > 0, k);
+  assert.match(e.happened, /Nope/);
+});
+
+test("credentials: each reveal is logged by name, with no value in the log", async () => {
+  const lines: string[] = [];
+  const rec = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+  const fake: any = { debug: rec, info: rec, warn: rec, error: rec, child: () => fake };
+  const s2 = makeServer({ log: fake });
+  const b2 = await listen(s2);
+  try {
+    const s = await login(b2);
+    const r = await fetch(b2 + creds("Front"), { method: "POST", headers: { cookie: s.cookie, "x-csrf-token": s.csrf } });
+    assert.equal(r.status, 200);
+    assert.ok(lines.includes('credentials for "Front" shown'), lines.join("\n"));
+    const all = lines.join("\n");
+    for (const secret of ["s3cret", "pw2", "onvifpw", "letmein"]) assert.ok(!all.includes(secret), secret);
+  } finally { s2.close(); }
+});
+
+test("the pane asks for logins only by POST from the Show button, and re-masks after 60 s", () => {
+  const js = fs.readFileSync(path.join(__dirname, "../../web/admin/app.js"), "utf8");
+  const calls = js.match(/api\("[A-Z]+", `\/api\/cameras\/\$\{encodeURIComponent\(cam\.name\)\}\/credentials`/g) ?? [];
+  assert.deepEqual(calls.map((c) => c.slice(5, 9)), ["POST"], "exactly one call, a POST");
+  const at = js.indexOf("/credentials`");
+  assert.ok(js.lastIndexOf('showBtn.addEventListener("click"', at) > js.lastIndexOf("function loginBox", at), "inside the Show click handler");
+  assert.match(js, /REVEAL_MS = 60_000/);
+});

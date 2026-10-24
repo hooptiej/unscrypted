@@ -5,7 +5,7 @@ import * as net from "net";
 import * as path from "path";
 import { tempDir } from "../helpers/tmp";
 import { DashRuntime } from "../../src/dash/runtime";
-import { saveSettings, DEFAULTS } from "../../src/dash/settings";
+import { saveSettings, DEFAULTS, IPVLAN_REASON, ServiceNode } from "../../src/dash/settings";
 import { Logger, setLogLevel } from "../../src/logger";
 
 setLogLevel("error");
@@ -18,15 +18,31 @@ function closedPort(): Promise<number> {
   });
 }
 
-function runtime() {
+function runtime(services = DEFAULTS.services) {
   const dir = tempDir("unscr-dashrt-");
-  saveSettings(path.join(dir, "settings.json"), { ...DEFAULTS, cameras: [
+  saveSettings(path.join(dir, "settings.json"), { ...DEFAULTS, services, cameras: [
     { camera: "DogCamTest", label: "DogCam", shown: true, stream: "main" },
     { camera: "GarageCamTest", label: "Garagecam", shown: true, stream: "sub" },
     { camera: "Couch Cam", label: "Couch", shown: false, stream: "main" },
   ] });
   return new DashRuntime({ dir, title: "Homedash - TEST", env: "test", adminPort: 8191, log });
 }
+
+test("config says which stream each tile actually plays, for the 'live · main/sub' tag (#22)", () => {
+  const rt = runtime();
+  rt.cameras = [
+    { name: "DogCamTest", main: "dogcamtest", sub: "dogcamtest_sub", probe: null },
+    { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub", probe: null },
+  ];
+  const cams = (rt.publicConfig() as any).cameras;
+  assert.deepEqual(cams.map((c: any) => [c.label, c.which, c.stream]), [
+    ["DogCam", "main", "dogcamtest"],
+    ["Garagecam", "sub", "garagecamtest_sub"],
+  ]);
+  // Set to sub, but the camera has no sub stream: it plays main, and says so.
+  rt.cameras = [{ name: "GarageCamTest", main: "garagecamtest", sub: null, probe: null }];
+  assert.deepEqual((rt.publicConfig() as any).cameras.map((c: any) => [c.which, c.stream]), [["main", "garagecamtest"]]);
+});
 
 test("probes shown cameras: up, and down with a plain reason but no address", async () => {
   const live = net.createServer((s) => s.destroy());
@@ -56,8 +72,8 @@ test("probes shown cameras: up, and down with a plain reason but no address", as
 
     const cfg = rt.publicConfig();
     assert.deepEqual(cfg.cameras, [
-      { id: "dogcamtest", label: "DogCam", stream: "dogcamtest" },
-      { id: "garagecamtest", label: "Garagecam", stream: "garagecamtest_sub" },
+      { id: "dogcamtest", label: "DogCam", stream: "dogcamtest", which: "main" },
+      { id: "garagecamtest", label: "Garagecam", stream: "garagecamtest_sub", which: "sub" },
     ]);
     const all = JSON.stringify(cfg) + JSON.stringify(rt.state());
     assert.doesNotMatch(all, /rtsp:/);
@@ -84,7 +100,12 @@ test("a camera dropped from config.json is dropped from the probe state", async 
 });
 
 test("service lights reach /api/state with their reasons and a timestamp", async () => {
-  const rt = runtime();
+  // Hermetic: the ipvlan lights are "blocked" here (an install without the shim), so the result
+  // doesn't depend on whether this machine can reach the real Constructicon/Questlog.
+  const noShim = (ns: ServiceNode[]): ServiceNode[] => ns.map((n) => ({ ...n,
+    check: /^(constructicon|questlog)/.test(n.id) ? { kind: "blocked", reason: IPVLAN_REASON } : n.check,
+    children: n.children ? noShim(n.children) : undefined }));
+  const rt = runtime(noShim(DEFAULTS.services));
   assert.deepEqual({ s: (rt.state() as any).services, at: (rt.state() as any).servicesAt }, { s: [], at: null });
   rt.bridge = { hapEnabled: false, paired: false, go2rtc: { state: "running", lastError: null, nextRetryAt: null } };
   await rt.pollServices();
@@ -100,7 +121,7 @@ test("service lights reach /api/state with their reasons and a timestamp", async
   assert.match(kids.homekit.reason, /HomeKit is off on this instance/);
   assert.equal(kids.homekit.short, "HomeKit off (test)");
   assert.equal(kids.constructicon.state, "down");
-  assert.match(kids.constructicon.reason, /can't be checked from the NAS's own network yet/);
+  assert.match(kids.constructicon.reason, /can't be checked from the NAS's own network/);
   assert.equal(kids.constructicon.short, "can't check yet");
   assert.equal(kids.scrypted, undefined, "the Scrypted light is gone (owner Q2 = a)");
   const reasons = JSON.stringify(st.services, (k, v) => (k === "link" ? undefined : v));
@@ -181,4 +202,13 @@ test("the Settings button's target comes from config, and a bad UNSCRYPTED_ADMIN
   assert.equal(set.publicConfig().settingsUrl, "http://10.0.1.78:8190/dash-settings?from=dash");
   const bad = new DashRuntime({ dir, title: "T", env: "prod", adminPort: 8190, log, adminUrl: null, adminUrlError: "UNSCRYPTED_ADMIN_URL (\"x\") isn't a web address" });
   assert.match((bad.state() as any).notices.join(" "), /UNSCRYPTED_ADMIN_URL/);
+});
+
+test("glow knobs (#25) reach the open page: 0% by default, the saved percents after a save", async () => {
+  const rt = runtime();
+  assert.deepEqual(rt.publicConfig().glow, { intensity: 0, size: 0 });
+  await new Promise((r) => setTimeout(r, 20));   // a distinct mtime
+  saveSettings(rt.settingsFile, { ...rt.settings, glow: { intensity: 40, size: -25 } });
+  assert.equal(rt.reloadSettingsIfChanged(fs.statSync(rt.settingsFile).mtimeMs), true);
+  assert.deepEqual(rt.publicConfig().glow, { intensity: 40, size: -25 });
 });

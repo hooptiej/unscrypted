@@ -166,12 +166,16 @@ const NEXT = (() => {
   return n && /^\/dash-settings(\?from=dash)?$/.test(n) ? n : null;
 })();
 let loginIdleTimer = null;
-/* Arrived from the kiosk's Settings button: if nobody types, go back to the dashboard. */
+/* Arrived from the kiosk's Settings button: if nobody types, go back to the dashboard.
+   Esc goes back right away (#27); it doesn't count as activity, so it never restarts the wait. */
 function loginIdleReturn(dash) {
   if (!NEXT || !NEXT.endsWith("from=dash") || !dash || !dash.url || loginIdleTimer) return;
   const total = Math.max(15, dash.idleSeconds || 30);
   let last = Date.now();
-  ["pointerdown", "keydown", "input"].forEach((e) => window.addEventListener(e, () => { last = Date.now(); }, { capture: true }));
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && location.hash === "#/login") { e.preventDefault(); location.href = dash.url; }
+  }, { capture: true });
+  ["pointerdown", "keydown", "input"].forEach((e) => window.addEventListener(e, (ev) => { if (ev.key !== "Escape") last = Date.now(); }, { capture: true }));
   const note = el("p", { class: "hint" });
   app.querySelector("form")?.append(note);
   loginIdleTimer = setInterval(() => {
@@ -207,7 +211,7 @@ async function renderLogin(setupError) {
   el("h1", {}, NEXT ? "Sign in for the dashboard settings" : "Sign in"),
   el("label", { class: "field", for: "pw" }, "Admin password", pw),
   btn,
-  el("p", { class: "hint" }, "The password is in secrets/admin_password next to the container's compose file. Signing in keeps you signed in on this browser for 30 days, or until the bridge restarts."),
+  el("p", { class: "hint" }, "The password is in secrets/admin_password next to the container's compose file. Signing in keeps you signed in on this browser for 30 days, or until you sign out."),
   out);
   if (setupError) out.append(errorBox(setupError));
   app.replaceChildren(form);
@@ -270,6 +274,101 @@ function viaText(c) {
 
 const MOTION_LABEL = { "foscam-cgi": "Foscam CGI", onvif: "ONVIF", none: "none" };
 
+// ---------- camera logins (#18) ----------
+// The list only has user names. Passwords come from POST /api/cameras/<name>/credentials, one
+// camera at a time, only when Show is pressed; they re-mask on Hide or after REVEAL_MS.
+
+const MASKED = "••••••••";
+const REVEAL_MS = 60_000;
+const LOGIN_LABEL = { rtsp: "RTSP", foscam: "Foscam CGI", onvif: "ONVIF" };
+
+/** The user names the redacted list already carries (no passwords), so nothing is fetched on load. */
+function listedLogins(cam) {
+  const urlUser = (u) => { const m = /^rtsp:\/\/([^:/@]+):[^@]*@/i.exec(u || ""); return m ? decodeURIComponent(m[1]) : null; };
+  const rtspUser = cam.rtspUser !== undefined || cam.rtspPassword !== undefined ? (cam.rtspUser || "") : (urlUser(cam.rtspMain) ?? urlUser(cam.rtspSub));
+  return {
+    rtsp: rtspUser !== null ? { user: rtspUser } : null,
+    foscam: cam.foscam ? { user: cam.foscam.username || "" } : null,
+    onvif: cam.onvif ? { user: cam.onvif.username || "" } : null,
+  };
+}
+
+/** Copy to the clipboard. The pane is plain http on the LAN, where navigator.clipboard doesn't exist, so fall back to a selection copy. */
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return null; } catch (err) { /* fall through to the selection copy */ }
+  }
+  const ta = el("textarea", { readonly: true, class: "copybuf", "aria-hidden": "true" });
+  ta.value = text;
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  return ok ? null : "The browser refused to copy. Press Show, select the text and copy it by hand.";
+}
+
+function copyButton(label, getValue, out) {
+  const b = el("button", { type: "button", class: "link", onclick: async () => {
+    const v = getValue();
+    if (v === null) { out.replaceChildren(el("span", { class: "badtext" }, "Press Show first: the password isn't loaded yet.")); return; }
+    const err = await copyText(v);
+    out.replaceChildren(err ? el("span", { class: "badtext" }, err) : el("span", { class: "good" }, `${label} copied.`));
+    if (!err) setTimeout(() => { if (out.textContent === `${label} copied.`) out.replaceChildren(); }, 3000);
+  } }, "Copy");
+  b.setAttribute("aria-label", `Copy ${label.toLowerCase()}`);
+  return b;
+}
+
+function loginBox(cam) {
+  const box = el("div", { class: "logins" });
+  const rows = el("dl", { class: "facts" });
+  const out = el("div", { class: "small", role: "status" });
+  const showBtn = el("button", { type: "button", class: "secondary small" }, "👁 Show");
+  let shown = null;   // the server's answer while shown, else null
+  let timer = null;
+
+  const draw = () => {
+    const src = shown || listedLogins(cam);
+    rows.replaceChildren();
+    for (const kind of ["rtsp", "foscam", "onvif"]) {
+      const l = src[kind];
+      if (!l) continue;
+      const pw = shown ? l.password : null;
+      rows.append(
+        el("dt", {}, `${LOGIN_LABEL[kind]} user`),
+        el("dd", {}, el("span", { class: "secret" }, l.user || "(none)"), " ", copyButton(`${LOGIN_LABEL[kind]} user name`, () => l.user, out)),
+        el("dt", {}, `${LOGIN_LABEL[kind]} password`),
+        el("dd", {}, el("span", { class: "secret" }, pw === null ? MASKED : (pw || "(empty)")), " ", copyButton(`${LOGIN_LABEL[kind]} password`, () => pw, out)));
+    }
+    if (shown) {
+      rows.append(el("dt", {}, "Web UI"), el("dd", {}, shown.webUi
+        ? el("a", { href: shown.webUi, target: "_blank", rel: "noopener noreferrer" }, shown.webUi)
+        : el("span", { class: "muted" }, "No address in config.json to link to.")));
+    }
+    if (!rows.childNodes.length) rows.append(el("dt", {}, "Logins"), el("dd", { class: "muted" }, "None in config.json for this camera."));
+    showBtn.textContent = shown ? "Hide" : "👁 Show";
+  };
+  const hide = () => { if (timer) clearTimeout(timer); timer = null; shown = null; draw(); };
+
+  showBtn.addEventListener("click", async () => {
+    if (shown) { hide(); out.replaceChildren(); return; }
+    showBtn.disabled = true;
+    showBtn.textContent = "Loading...";
+    const r = await api("POST", `/api/cameras/${encodeURIComponent(cam.name)}/credentials`, {});
+    showBtn.disabled = false;
+    if (r.error) { draw(); out.replaceChildren(errorBox(r.error)); return; }
+    shown = r;
+    out.replaceChildren(el("span", { class: "muted" }, "Shown for 60 seconds, then hidden again."));
+    draw();
+    timer = setTimeout(() => { hide(); out.replaceChildren(el("span", { class: "muted" }, "Hidden again after 60 seconds.")); }, REVEAL_MS);
+  });
+
+  draw();
+  box.append(el("div", { class: "row" }, el("b", {}, "Login"), showBtn), rows, out);
+  return box;
+}
+
 async function renderCameras() {
   const r = await api("GET", "/api/cameras");
   if (r.error) { app.replaceChildren(el("h1", {}, "Cameras"), errorBox(r.error)); return; }
@@ -303,6 +402,7 @@ async function renderCameras() {
       el("h3", {}, cam.name),
       s ? snapshotTile(s.stream) : el("div", { class: "tile" }, "No snapshot: this camera isn't running yet."),
       facts,
+      loginBox(cam),
       el("div", { class: "row" },
         el("button", { type: "button", class: "primary", onclick: () => { location.hash = `#/camera/${encodeURIComponent(cam.name)}`; } }, "Edit"),
         checkBtn),
@@ -529,7 +629,36 @@ async function renderForm(name) {
   checkWhy, checkOut, out);
   showMode();
   showMotion();
-  app.replaceChildren(el("h1", {}, isNew ? "Add camera" : `Edit ${cam.name}`), form);
+  app.replaceChildren(el("h1", {}, isNew ? "Add camera" : `Edit ${cam.name}`), form, ...(isNew ? [] : [removeSection(cam)]));
+}
+
+/* ---------- remove a camera (#8): a plain warning first, then one confirming click ---------- */
+function removeSection(cam) {
+  const out = el("div");
+  const box = el("div", { class: "msg amber", hidden: true });
+  const yes = el("button", { type: "button", class: "danger" }, `Yes, remove "${cam.name}"`);
+  const no = el("button", { type: "button", class: "secondary", onclick: () => { box.hidden = true; } }, "Keep it");
+  box.append(
+    el("p", {}, el("strong", {}, `Removing "${cam.name}" takes it out of Home.`)),
+    el("p", {}, "Home drops the camera, and with it its HomeKit Secure Video recordings, its room and any automations that use it. That can't be undone from here."),
+    el("p", {}, "The camera's settings are kept in the config folder (removed-cameras/), so it can be put back under the same name later; Home will treat it as the same camera, but the old recordings are gone."),
+    el("div", { class: "row" }, yes, no));
+  yes.addEventListener("click", async () => {
+    yes.disabled = true; no.disabled = true; yes.textContent = "Removing...";
+    const r = await api("DELETE", `/api/cameras/${encodeURIComponent(cam.name)}`, { confirm: cam.name });
+    yes.disabled = false; no.disabled = false; yes.textContent = `Yes, remove "${cam.name}"`;
+    const extras = [r.warning, r.keptAt ? `Its settings are kept at ${r.keptAt}.` : null, r.backupPath ? `Previous config.json kept at ${r.backupPath}.` : null];
+    if (r.error) {
+      out.replaceChildren(errorBox(r.error), ...(r.saved ? [msgBox("amber", ...extras)] : []));
+    } else {
+      box.hidden = true;
+      out.replaceChildren(msgBox(r.status === 200 ? "ok" : "amber", r.message, ...extras), el("p", {}, el("a", { href: "#/cameras" }, "Back to cameras")));
+      await refreshStatus();
+    }
+    out.scrollIntoView({ block: "nearest" });
+  });
+  const open = el("button", { type: "button", class: "danger", onclick: () => { box.hidden = false; box.scrollIntoView({ block: "nearest" }); } }, "Remove this camera\u2026");
+  return el("section", { class: "remove" }, el("h2", {}, "Remove"), el("p", { class: "hint" }, "Takes the camera out of the bridge and out of Home. You get a warning first."), open, box, out);
 }
 
 // ---------- pairing ----------

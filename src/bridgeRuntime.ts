@@ -172,6 +172,8 @@ export class BridgeRuntime {
       this.dash = new Supervisor({
         name: "dash", log: log.child("dash"), onState: () => this.pushStatus(),
         start: () => {
+          // #12: a listen error belongs to the attempt that hit it; a fresh start gets a clean slate (it reports again if it still fails).
+          this.dashListenError = null;
           // An allowlisted env, not ...process.env: the open dashboard process gets no secret paths.
           const pick = (k: string) => (process.env[k] !== undefined ? { [k]: process.env[k] as string } : {});
           const child = fork(dashEntry, [], { env: {
@@ -318,6 +320,8 @@ export class BridgeRuntime {
     try {
       if (m.type === "apply") {
         await this.applyCamera(m.reqId, m.name);
+      } else if (m.type === "remove") {
+        await this.removeCamera(m.reqId, m.name);
       } else if (m.type === "reload-go2rtc") {
         if (!this.go2rtc) {
           throw new UserError({ attempted: "Restart go2rtc", happened: `go2rtc isn't running in this instance: ${this.go2rtcOff}.`,
@@ -332,7 +336,7 @@ export class BridgeRuntime {
         setTimeout(() => this.o.requestRestart("restart requested from the admin pane"), 500);
       }
     } catch (err) {
-      const attempted = m.type === "apply" ? `Apply the saved change to "${m.name}"` : "Handle a request from the admin pane";
+      const attempted = m.type === "apply" ? `Apply the saved change to "${m.name}"` : m.type === "remove" ? `Remove "${m.name}" from the running bridge` : "Handle a request from the admin pane";
       if (!(err instanceof UserError)) this.o.log.error(`${attempted} failed: ${(err as Error).stack ?? err}`);
       const { body } = toErrorJson(err, attempted);
       this.send({ type: "applied", reqId: m.reqId, ok: false, error: body.error });
@@ -402,6 +406,55 @@ export class BridgeRuntime {
     this.send({ type: "applied", reqId, ok: true, mode, message });
     this.pushStatus();
     this.pushDash(true);   // a new or edited camera reaches the dashboard's allowlist and tiles
+  }
+
+  /**
+   * #8: the camera is already gone from config.json (the admin pane kept its entry). Stop its
+   * pipelines, take its accessory out of the published bridge (HAP-NodeJS bumps the configuration
+   * number, so Home drops it), and tell go2rtc and the dashboard.
+   */
+  private async removeCamera(reqId: string, name: string): Promise<void> {
+    const cam = this.cams.get(name);
+    const wasConfigured = this.config.cameras.some((c) => c.name === name);
+    if (!cam && !wasConfigured) {
+      throw new UserError({ attempted: `Remove "${name}" from the running bridge`, happened: "The running bridge has no such camera.",
+        changed: "config.json was already saved without it.", next: "Reload the page; it may have been removed already." }, 404);
+    }
+    let message: string;
+    if (cam) {
+      try { cam.shutdown(); } catch (err) { this.o.log.warn(`stopping "${name}" while removing it: ${(err as Error).message}`); }
+      this.cams.delete(name);
+      if (this.o.bridge) {
+        try {
+          this.o.bridge.removeBridgedAccessory(cam.accessory);
+          message = `Removed "${name}". Home drops it within a minute, along with its recordings, room and automations.`;
+        } catch (err) {
+          this.o.log.error(`removing "${name}" from the HomeKit bridge: ${(err as Error).stack ?? err}`);
+          this.pendingRestart.add(name);
+          message = `Removed "${name}" from config.json and stopped it, but the HomeKit bridge couldn't drop it live (${(err as Error).message}). Use "Restart bridge" to finish; Home shows it as No Response until then.`;
+        }
+      } else {
+        message = `Removed "${name}". HomeKit is off on this instance, so Home never had it.`;
+      }
+    } else {
+      message = `Removed "${name}" (it was in config.json but had never started, so there was nothing to stop).`;
+    }
+    this.pendingRestart.delete(name);
+    this.config = { ...this.config, cameras: this.config.cameras.filter((c) => c.name !== name) };
+    this.sources.setCameras(this.config.cameras);
+    this.o.log.info(`camera "${name}" removed from the running bridge`);
+    if (this.go2rtc) {
+      try {
+        const r = await this.go2rtc.reload(this.config);
+        if (r.restarted) message += " go2rtc restarted to drop its streams, so every other camera's recording buffer restarts (a few seconds of pre-roll are lost, and a clip being recorded right now is cut short).";
+      } catch (err) {
+        this.o.log.error(`go2rtc reload after removing "${name}" failed: ${(err as Error).message}`);
+        message += ` go2rtc still has its streams until it restarts: ${(err as Error).message}.`;
+      }
+    }
+    this.send({ type: "applied", reqId, ok: true, mode: "removed", message });
+    this.pushStatus();
+    this.pushDash(true);   // the dashboard's allowlist and tiles lose it
   }
 
   private addCamera(after: ResolvedCamera): { mode: ApplyMode; message: string } {

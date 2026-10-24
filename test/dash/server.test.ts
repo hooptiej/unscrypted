@@ -302,3 +302,80 @@ test("feed-check names are refused even if a camera's stream had that name; exte
     b.sock.destroy();
   } finally { s.close(); }
 });
+
+/** A refused upgrade: the status line plus the plain-text reason in the body (the server closes the socket). */
+function refusedUpgrade(port: number, pathAndQuery: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, "127.0.0.1", () => sock.write(
+      `GET ${pathAndQuery} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+      `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    let buf = "";
+    sock.on("data", (d) => { buf += d.toString("latin1"); });
+    sock.on("close", () => resolve(buf));
+    sock.on("error", reject);
+  });
+}
+
+test("#53: before the bridge's first camera list, a video connection is 'still starting', never 'not in config.json'", async () => {
+  let loaded = false;
+  const { s, port } = await proxyServer({ camerasLoaded: () => loaded });
+  try {
+    const early = await refusedUpgrade(port, "/go2rtc/api/ws?src=dogcamtest");
+    assert.match(early, /^HTTP\/1\.1 503/);
+    assert.match(early, /still starting/);
+    assert.doesNotMatch(early, /config\.json/);
+    loaded = true;
+    const later = await upgrade(port, "/go2rtc/api/ws?src=dogcamtest");
+    assert.match(later.head, /^HTTP\/1\.1 101/);
+    later.sock.destroy();
+    // Once the list is there, an unknown name really is a config.json matter.
+    const unknown = await upgrade(port, "/go2rtc/api/ws?src=nope");
+    assert.match(unknown.head, /^HTTP\/1\.1 403/);
+    unknown.sock.destroy();
+  } finally { s.close(); }
+});
+
+test("#12: one address can't hold every live-view slot; a closed view frees its share", async () => {
+  const { s, port } = await proxyServer({ maxStreams: 16, maxPerIp: 1 });
+  try {
+    const first = await upgrade(port, "/go2rtc/api/ws?src=dogcamtest");
+    assert.match(first.head, /^HTTP\/1\.1 101/);
+    const second = await refusedUpgrade(port, "/go2rtc/api/ws?src=dogcamtest_sub");
+    assert.match(second, /^HTTP\/1\.1 503/);
+    assert.match(second, /from this device at once \(1 of the 16 total\)/);
+    first.sock.destroy();
+    await sleep(100);
+    const third = await upgrade(port, "/go2rtc/api/ws?src=dogcamtest");
+    assert.match(third.head, /^HTTP\/1\.1 101/);
+    third.sock.destroy();
+  } finally { s.close(); }
+});
+
+test("#12: a font that's there but unreadable says so (with the error code), not 'isn't in the folder'", async () => {
+  const fdir = tempDir("unscr-dashfonts-");
+  fs.mkdirSync(path.join(fdir, "Dir.otf"));   // a directory under a font's name: the read fails with EISDIR on every OS
+  const s = createDashServer(deps({ fontsDir: fdir }));
+  const b = await listen(s);
+  try {
+    const r = await fetch(b + "/fonts/Dir.otf");
+    assert.equal(r.status, 500);
+    const e = (await r.json()).error;
+    assert.match(e.happened, /couldn't be read \(EISDIR\)/);
+    assert.doesNotMatch(e.happened, /isn't in/);
+    assert.match(e.next, /permissions/);
+    const gone = await fetch(b + "/fonts/Gone.otf");
+    assert.equal(gone.status, 404);
+    assert.match((await gone.json()).error.happened, /isn't in the dashboard's fonts folder/);
+  } finally { s.close(); }
+});
+
+test("the open dashboard has no camera-logins route (#18): GET is a 404, POST a 405, no secret either way", async () => {
+  const p = "/api/cameras/Garage/credentials";
+  const g = await fetch(base + p);
+  assert.equal(g.status, 404);
+  const post = await fetch(base + p, { method: "POST", body: "{}" });
+  assert.equal(post.status, 405);
+  const all = (await g.text()) + (await post.text())
+    + (await (await fetch(base + "/api/config")).text()) + (await (await fetch(base + "/api/state")).text());
+  assert.doesNotMatch(all, /"(password|rtsp|onvif|foscam|rtspPassword)"|rtsp:\/\//i, "no login fields or stream URLs");
+});

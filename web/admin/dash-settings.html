@@ -36,6 +36,11 @@
       <div class="row"><label for="idle">Fullscreen timeout (s)</label><input type="number" id="idle" min="5" max="600"></div>
       <div class="row"><label for="reload">Page refresh (min)</label><input type="number" id="reload" min="1" max="1440"></div>
       <div class="row"><label for="poll">Status checks every (s)</label><input type="number" id="poll" min="2" max="60"></div>
+      <div class="row"><label for="glowIntensity">Glow intensity</label>
+        <div class="knob"><input type="range" id="glowIntensity" min="-100" max="100" step="5" aria-describedby="glowhint"><output id="glowIntensityOut" for="glowIntensity">0%</output></div></div>
+      <div class="row"><label for="glowSize">Glow size</label>
+        <div class="knob"><input type="range" id="glowSize" min="-100" max="100" step="5" aria-describedby="glowhint"><output id="glowSizeOut" for="glowSize">0%</output></div></div>
+      <p class="hint" id="glowhint">The background glow that follows the sun. 0% is the standard look; -100% intensity turns it off, +100% doubles it. Size grows or shrinks the glow (it never shrinks to nothing).</p>
     </section>
   </div>
 

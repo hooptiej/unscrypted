@@ -63,6 +63,35 @@ export function redactCamera(cam: CameraConfig): PublicCamera {
   return out;
 }
 
+export type Login = { user: string; password: string };
+/** One camera's logins, for the signed-in admin's Show button only (#18). Never in the camera list. */
+export type CameraLogins = { name: string; rtsp: Login | null; foscam: Login | null; onvif: Login | null; webUi: string | null };
+
+const URL_LOGIN = /^rtsp:\/\/([^:/@]+):([^@]*)@/i;
+const decode = (s: string): string => { try { return decodeURIComponent(s); } catch { return s; } };
+
+/** The RTSP login: the rtspUser/rtspPassword parts, or else the user:pass in rtspMain (then rtspSub). URLs are percent-decoded, as the bridge encodes them. */
+function rtspLogin(cam: CameraConfig): Login | null {
+  if (cam.rtspUser !== undefined || cam.rtspPassword !== undefined) return { user: cam.rtspUser ?? "", password: cam.rtspPassword ?? "" };
+  for (const u of [cam.rtspMain, cam.rtspSub]) {
+    const m = u ? URL_LOGIN.exec(u) : null;
+    if (m) return { user: decode(m[1]), password: decode(m[2]) };
+  }
+  return null;
+}
+
+export function cameraLogins(cam: CameraConfig): CameraLogins {
+  const webUi = cam.foscam?.cgiBase || (cam.host ? `http://${cam.host}` : null)
+    || (cam.onvif?.host ? `http://${cam.onvif.host}:${cam.onvif.port ?? 80}` : null);
+  return {
+    name: cam.name,
+    rtsp: rtspLogin(cam),
+    foscam: cam.foscam ? { user: cam.foscam.username ?? "", password: cam.foscam.password ?? "" } : null,
+    onvif: cam.onvif ? { user: cam.onvif.username ?? "", password: cam.onvif.password ?? "" } : null,
+    webUi,
+  };
+}
+
 export function redactConfig(raw: Config): { cameras: PublicCamera[] } {
   return { cameras: raw.cameras.map(redactCamera) };
 }
@@ -184,6 +213,38 @@ export function applyCameraEdit(raw: Config, originalName: string | null, edit: 
     throw err;
   }
   return next;
+}
+
+/**
+ * #8: the config without `name`, plus the entry taken out. The caller keeps that entry with
+ * keepRemovedCamera() before writing, so the camera can be put back (same name = same HomeKit
+ * identity; Home will still have dropped its recordings, room and automations).
+ */
+export function removeCameraFromConfig(raw: Config, name: string): { next: Config; removed: CameraConfig } {
+  const next: Config = JSON.parse(JSON.stringify(raw));
+  if (!Array.isArray(next.cameras)) next.cameras = [];
+  const idx = next.cameras.findIndex((c) => c.name === name);
+  if (idx < 0) {
+    throw new UserError({ attempted: `Remove camera "${name}"`, happened: `No camera called "${name}" is in config.json.`, changed: "Nothing was changed.",
+      next: "Reload the page; the camera may already have been removed, or renamed by hand in config.json." }, 404);
+  }
+  const [removed] = next.cameras.splice(idx, 1);
+  return { next, removed };
+}
+
+/** Writes the removed camera's own entry to <config dir>/removed-cameras/<name>-<stamp>.json (0600), and returns that path. */
+export function keepRemovedCamera(configFile: string, cam: CameraConfig): string {
+  const dir = path.join(path.dirname(configFile), "removed-cameras");
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safe = cam.name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 60) || "camera";
+  const file = path.join(dir, `${safe}-${stamp}.json`);
+  const fd = fs.openSync(file, "wx", 0o600);
+  try {
+    fs.writeSync(fd, JSON.stringify({ removedAt: new Date().toISOString(), camera: cam }, null, 2) + "\n");
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+  return file;
 }
 
 export function writeConfigAtomic(file: string, next: Config, opts: { keepBackups?: number } = {}): { backupPath: string | null; warning?: string } {
