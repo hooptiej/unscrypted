@@ -89,7 +89,7 @@ For cameras that have no Foscam CGI, unscrypted subscribes to the camera's ONVIF
 | `host` / `port` | ONVIF device service host and port. Default port `80`. **Generic XM/Sofia cameras serve ONVIF on `8080`** (port 80 is the web UI); set it explicitly if the device service 404s. |
 | `username` / `password` | ONVIF account (WS-Security digest auth). Often the same as the RTSP login. |
 | `pollIntervalMs` | PullPoint long-poll window in ms (default `60000`). Ignored for push cameras. |
-| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `8000`). |
+| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `60000`, i.e. 60s — long enough that outdoor wind-gust gaps don't clear the sensor and flap HomeKit's event channel; see #65). |
 | `notifyPort` | For push cameras (see below): TCP port the local notification receiver listens on. Default `0` (ephemeral). Set a fixed port if a firewall sits between unscrypted and the cameras. One receiver is shared across all ONVIF cameras. |
 | `notifyHost` | Override the local IP advertised to the camera as the notification consumer address (default: auto-detected). Set this if auto-detection picks the wrong NIC, e.g. in Docker with a custom network. |
 
