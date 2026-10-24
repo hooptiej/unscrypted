@@ -1,12 +1,18 @@
 /**
  * Builds go2rtc's YAML from the bridge's resolved config. Pure functions: the manager in
- * go2rtc.ts writes the result to disk. go2rtc only ever serves the admin pane's previews;
- * HomeKit's own ffmpeg pipelines don't go through it.
+ * go2rtc.ts writes the result to disk. go2rtc is the camera's only RTSP client (#16): the admin
+ * pane's previews, the dashboard and HomeKit's own pipelines all read it, the latter through its
+ * loopback-only RTSP restream.
  */
 
 import { ResolvedCamera, ResolvedConfig } from "../config";
 
-export interface Go2rtcPorts { api: number; webrtc: number | null }
+export interface Go2rtcPorts { api: number; webrtc: number | null; rtsp: number | null }
+
+/** go2rtc's loopback restream address for one stream (what HomeKit's ffmpeg reads, #16). */
+export function restreamUrl(rtspPort: number, stream: string): string {
+  return `rtsp://127.0.0.1:${rtspPort}/${stream}`;
+}
 
 export function streamSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "camera";
@@ -41,7 +47,8 @@ export function buildGo2rtcYaml(cfg: Pick<ResolvedConfig, "cameras">, ports: Go2
     "api:",
     `  listen: ${q(`127.0.0.1:${ports.api}`)}`,
     "rtsp:",
-    '  listen: ""',
+    // Loopback only: HomeKit's ffmpeg pipelines re-stream from here (#16). Never on the LAN.
+    `  listen: ${q(ports.rtsp ? `127.0.0.1:${ports.rtsp}` : "")}`,
     "webrtc:",
     `  listen: ${q(ports.webrtc ? `:${ports.webrtc}` : "")}`,
     "log:",
