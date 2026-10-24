@@ -23,7 +23,9 @@ export interface FoscamConfig {
   pollIntervalMs?: number;
   /**
    * After a motion trigger, how long (ms) to hold the MotionSensor "on"
-   * before clearing if no further triggers arrive. Default 8000.
+   * before clearing if no further triggers arrive. Default 60000 (60s) — long enough that outdoor wind-gust gaps don't clear
+   * the sensor, so a windy stretch stays one sustained ON instead of flapping
+   * ON/OFF (which storms HomeKit's event channel and drops live view; see #65).
    */
   motionCooldownMs?: number;
 }
@@ -50,7 +52,9 @@ export interface OnvifConfig {
   pollIntervalMs?: number;
   /**
    * After a motion trigger, how long (ms) to hold the MotionSensor "on" before
-   * clearing if no further triggers arrive. Default 8000.
+   * clearing if no further triggers arrive. Default 60000 (60s) — long enough that outdoor wind-gust gaps don't clear
+   * the sensor, so a windy stretch stays one sustained ON instead of flapping
+   * ON/OFF (which storms HomeKit's event channel and drops live view; see #65).
    */
   motionCooldownMs?: number;
   /**
@@ -290,7 +294,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
         username: cam.foscam.username,
         password: cam.foscam.password,
         pollIntervalMs: cam.foscam.pollIntervalMs ?? 1000,
-        motionCooldownMs: cam.foscam.motionCooldownMs ?? 8000,
+        motionCooldownMs: cam.foscam.motionCooldownMs ?? 60000,
       };
     }
 
@@ -319,7 +323,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
         username: cam.onvif.username,
         password: cam.onvif.password,
         pollIntervalMs: cam.onvif.pollIntervalMs ?? 60000,
-        motionCooldownMs: cam.onvif.motionCooldownMs ?? 8000,
+        motionCooldownMs: cam.onvif.motionCooldownMs ?? 60000,
         notifyPort,
         notifyHost: cam.onvif.notifyHost,
       };
