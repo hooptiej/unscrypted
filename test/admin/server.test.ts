@@ -379,6 +379,7 @@ test("a bad sign-in key file refuses the pane with a clear 503 and isn't replace
 
 test("#8: DELETE needs the name confirmed; then it saves without the camera, keeps its entry, and tells the bridge", async () => {
   const s = await login();
+  const frontEntry = JSON.parse(readCfg()).cameras.find((c: any) => c.name === "Front");   // put back afterwards: later tests use Front
   const unconfirmed = await send("DELETE", "/api/cameras/Front", {}, s);
   assert.equal(unconfirmed.status, 400);
   assert.match((await unconfirmed.json()).error.happened, /didn't confirm the camera's name/);
@@ -400,6 +401,8 @@ test("#8: DELETE needs the name confirmed; then it saves without the camera, kee
     assert.equal(again.status, 404);
     assert.match((await again.json()).error.happened, /No camera called "Front"/);
   } finally {
+    const cfg = JSON.parse(readCfg());
+    if (!cfg.cameras.some((x: any) => x.name === "Front")) { cfg.cameras.push(frontEntry); fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(cfg, null, 2)); }
     bridgeReply = (m) => ({ type: "applied", reqId: "x", ok: true, mode: "live", message: `applied ${m.name}` });
   }
 });
