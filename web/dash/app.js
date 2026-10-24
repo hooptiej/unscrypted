@@ -106,9 +106,12 @@ function stopStream(t) {
 }
 const videoOf = (el) => (el ? el.querySelector("video") : null);
 
+const liveLabel = (cam) => `live · ${cam.which === "sub" ? "sub" : "main"}`;
+
 function render(t) {
   const st = t.camSt;
-  let why = null, badge = "live";
+  // "live · main" / "live · sub" (#22): on a small tile 1080p and 360p look alike, so say which.
+  let why = null, badge = liveLabel(t.cam);
   if (!st) {
     why = "Checking the camera…"; badge = "checking…";
   } else if (!st.up) {
@@ -237,11 +240,18 @@ const WARM = [214, 128, 52];
 /* [minute, rgb, alpha] */
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const lerp = (a, b, t) => a + (b - a) * t;
+/* Glow knobs (#25, admin dashboard settings): percents -100..+100, 0 = the look above.
+   KNOBS_AT_NIGHT: true = the knobs scale the night glow too; false = daytime only (they fade
+   out over dawn and dusk with the size easing, so night stays at 0.07 / 60%). Owner's call. */
+const KNOBS_AT_NIGHT = true;
+const SIZE_MIN = 10, SIZE_MAX = 200;    /* ellipse %, so -100% size never collapses the gradient */
+const knobPct = (v) => (Number.isFinite(v) ? Math.max(-100, Math.min(100, v)) : 0);
 
-function glowFor(min, rise, set) {
+function glowFor(min, rise, set, knobs) {
+  /* Daytime keys +50% (#24, owner: "+50% on both"): 0.20 -> 0.30, 0.16 -> 0.24; night 0.07 unchanged. */
   const k = [
-    [rise - 60, OLIVE, 0.07], [rise - 45, OLIVE, 0.0], [rise, WARM, 0.20], [rise + 90, OLIVE, 0.16],
-    [set - 90, OLIVE, 0.16], [set, WARM, 0.20], [set + 60, OLIVE, 0.07],
+    [rise - 60, OLIVE, 0.07], [rise - 45, OLIVE, 0.0], [rise, WARM, 0.30], [rise + 90, OLIVE, 0.24],
+    [set - 90, OLIVE, 0.24], [set, WARM, 0.30], [set + 60, OLIVE, 0.07],
   ];
   let rgb = OLIVE, alpha = 0.07;
   if (min > k[0][0] && min < k[k.length - 1][0]) {
@@ -257,17 +267,27 @@ function glowFor(min, rise, set) {
   }
   /* rest in the bottom-right corner at night; cross the bottom edge between sunrise and sunset */
   const x = min < rise - 45 ? 100 : clamp01((min - rise) / (set - rise)) * 100;
-  return { rgb, alpha, x };
+  /* size: 60% at night, 90% (+50%, #24) by day, easing in over dawn and out over dusk */
+  const day = min < rise ? clamp01((min - (rise - 45)) / 45) : min > set ? clamp01(1 - (min - set) / 60) : 1;
+  let size = Math.round(lerp(60, 90, day));
+  /* the knobs: multiplier 1 + pct/100 on the strength and on the ellipse */
+  const reach = KNOBS_AT_NIGHT ? 1 : day;
+  const kn = knobs || {};
+  const iMul = lerp(1, 1 + knobPct(kn.intensity) / 100, reach);
+  const sMul = lerp(1, 1 + knobPct(kn.size) / 100, reach);
+  alpha = clamp01(alpha * iMul);
+  if (sMul !== 1) size = Math.round(Math.max(SIZE_MIN, Math.min(SIZE_MAX, size * sMul)));
+  return { rgb, alpha, x, size };
 }
 
 function applyBackground() {
   const now = new Date();
   const min = overrideMin !== null ? overrideMin : now.getHours() * 60 + now.getMinutes();
-  const { rgb, alpha, x } = glowFor(min, sunTimes.rise, sunTimes.set);
+  const { rgb, alpha, x, size } = glowFor(min, sunTimes.rise, sunTimes.set, cfg.glow);
   const c = $("stage").style;
   c.backgroundColor = BASE;
   c.backgroundImage =
-    `radial-gradient(ellipse 60% 60% at ${x.toFixed(1)}% 100%, rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)}), transparent 100%)`;
+    `radial-gradient(ellipse ${size}% ${size}% at ${x.toFixed(1)}% 100%, rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)}), transparent 100%)`;
 }
 setInterval(applyBackground, 30 * 1000);
 
@@ -299,7 +319,9 @@ if (params.has("tune")) {
 applyBackground();
 
 /* state poll: camera reachability, go2rtc, settings changes; a lost server is said out loud */
-const pollMs = (cfg.pollSeconds || 4) * 1000;
+// Capped at 3 s (#20): /api/state is cheap and carries settingsVersion, so a saved setting shows up
+// within seconds; "Status checks every (s)" (pollSeconds) only paces the server-side checks.
+const pollMs = Math.min((cfg.pollSeconds || 3) * 1000, 3000);
 let seenSettingsVersion = null, reloadWhenClosed = false;
 async function pollState() {
   let st;
@@ -348,6 +370,7 @@ function closeFull() {
 function openFull(cam) {
   closeFull();
   $("fname").textContent = cam.label;
+  document.querySelector("#full .flive").textContent = liveLabel(cam);
   if (playerReady) {
     fullEl = makeStream(cam);
     $("fullv").prepend(fullEl);

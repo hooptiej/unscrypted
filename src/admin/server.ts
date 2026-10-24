@@ -5,8 +5,9 @@
  *
  * Security: signed session cookie (HttpOnly, SameSite=Strict, 30 days), a per-session CSRF token
  * plus an Origin check on every state-changing request, login lockout, CSP / no framing /
- * nosniff on every response. Secrets never leave this process: the camera list is redacted, and
- * the go2rtc proxy only passes the three read-only things the pane needs.
+ * nosniff on every response. The camera list is redacted; a camera's logins leave this process
+ * only through POST /api/cameras/<name>/credentials (signed in + CSRF, one camera, #18). The go2rtc
+ * proxy only passes the three read-only things the pane needs.
  */
 
 import * as http from "http";
@@ -17,7 +18,7 @@ import * as crypto from "crypto";
 import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin, ToBridge } from "./ipc";
 import { UserError, toErrorJson } from "./errors";
-import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit } from "./configStore";
+import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, cameraLogins } from "./configStore";
 import { Config, ResolvedCamera, resolveConfig } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
@@ -433,6 +434,21 @@ export function createAdminServer(d: AdminDeps): http.Server {
           status: d.bridge.status()?.cameras ?? [],
           notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS },
         });
+      }
+
+      // One camera's logins, for the signed-in admin's Show button (#18). POST only, so it carries the
+      // CSRF token and the Origin check like any write; the camera list above stays redacted.
+      const credMatch = /^\/api\/cameras\/([^/]+)\/credentials$/.exec(url.pathname);
+      if (credMatch && method === "POST") {
+        const name = decodeURIComponent(credMatch[1]);
+        attempted = `Show the logins for "${name}"`;
+        const cam = readRawConfig(d.configPath).cameras.find((c) => c.name === name);
+        if (!cam) {
+          throw new UserError({ attempted, happened: `No camera called "${name}" is in config.json.`, changed: "Nothing.",
+            next: "Reload the page; the camera may have been removed or renamed by hand in config.json." }, 404);
+        }
+        log.info(`credentials for "${name}" shown`);
+        return json(res, 200, cameraLogins(cam), { "cache-control": "no-store" });
       }
 
       const checkDel = /^\/api\/cameras\/check\/([^/]+)$/.exec(url.pathname);

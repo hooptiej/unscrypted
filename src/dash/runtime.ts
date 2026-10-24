@@ -50,6 +50,7 @@ export class DashRuntime {
     const s = loadSettings(this.settingsFile);
     this.settings = s.settings; this.settingsWarning = s.warning; this.settingsMtime = s.mtimeMs;
     if (s.warning) o.log.warn(s.warning);
+    for (const m of s.migrated) o.log.info(`dashboard settings: ${m}`);
   }
 
   /** Re-reads settings.json if its mtime changed. Returns true when it changed. */
@@ -58,15 +59,17 @@ export class DashRuntime {
     const s = loadSettings(this.settingsFile);
     this.settings = s.settings; this.settingsWarning = s.warning; this.settingsMtime = s.mtimeMs;
     if (s.warning) this.o.log.warn(s.warning); else this.o.log.info("dashboard settings changed; reloaded");
+    for (const m of s.migrated) this.o.log.info(`dashboard settings: ${m}`);
     return true;
   }
 
-  shown(): { cam: DashCamera; label: string; stream: string }[] {
+  shown(): { cam: DashCamera; label: string; stream: string; which: "main" | "sub" }[] {
     return effectiveCameras(this.settings, this.cameras.map((c) => c.name))
       .filter((p) => p.shown && !p.missing)
       .map((p) => {
         const cam = this.cameras.find((c) => c.name === p.camera)!;
-        return { cam, label: p.label, stream: p.stream === "sub" && cam.sub ? cam.sub : cam.main };
+        const sub = p.stream === "sub" && cam.sub !== null;
+        return { cam, label: p.label, stream: sub ? cam.sub! : cam.main, which: sub ? "sub" : "main" };
       });
   }
 
@@ -147,8 +150,9 @@ export class DashRuntime {
       // The kiosk's Settings button. null = the page works it out (this host, the admin port).
       settingsUrl: this.o.adminUrl ? `${this.o.adminUrl}/dash-settings?from=dash` : null,
       idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes,
-      cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream })),
+      cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream, which: x.which })),
       fonts: { ui: f.ui, clock: f.clock },
+      glow: { intensity: s.glow.intensity, size: s.glow.size },
     };
   }
 
