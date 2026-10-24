@@ -87,11 +87,14 @@ h2 { font-size: 17px; margin: 18px 0 8px; }
 .badtext { color: var(--bad); font-weight: 600; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
-button.primary, button.secondary {
+button.primary, button.secondary, button.danger {
   border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid var(--accent); font-weight: 600;
 }
 button.primary { background: var(--accent); color: var(--accent-ink); }
 button.secondary { background: transparent; color: var(--accent); }
+button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+button.danger:disabled { opacity: .6; }
+section.remove { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line, #3333); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.link { background: none; border: none; color: var(--accent); font-weight: 600; cursor: pointer; padding: 0; }
 .why { font-size: 13px; color: var(--muted); }

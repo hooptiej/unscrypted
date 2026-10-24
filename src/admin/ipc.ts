@@ -31,7 +31,7 @@ export interface BridgeStatus {
   homekitSource: SourceState & { text: string };
 }
 
-export type ApplyMode = "live" | "added" | "restart-needed";
+export type ApplyMode = "live" | "added" | "restart-needed" | "removed";
 
 export type ToAdmin =
   | { type: "status"; status: BridgeStatus }
@@ -40,6 +40,7 @@ export type ToAdmin =
 
 export type ToBridge =
   | { type: "apply"; reqId: string; name: string; isNew: boolean }
+  | { type: "remove"; reqId: string; name: string }
   | { type: "restart-bridge"; reqId: string }
   | { type: "reload-go2rtc"; reqId: string };
 
@@ -52,6 +53,9 @@ export function checkToBridge(m: unknown): ToBridge | string {
     case "apply":
       if (typeof o.name !== "string" || !o.name) return "apply message has no camera name";
       return { type: "apply", reqId: o.reqId, name: o.name, isNew: o.isNew === true };
+    case "remove":
+      if (typeof o.name !== "string" || !o.name) return "remove message has no camera name";
+      return { type: "remove", reqId: o.reqId, name: o.name };
     case "restart-bridge":
     case "reload-go2rtc":
       return { type: o.type, reqId: o.reqId };

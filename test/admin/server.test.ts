@@ -377,6 +377,46 @@ test("a bad sign-in key file refuses the pane with a clear 503 and isn't replace
   } finally { s2.close(); }
 });
 
+test("#8: DELETE needs the name confirmed; then it saves without the camera, keeps its entry, and tells the bridge", async () => {
+  const s = await login();
+  const frontEntry = JSON.parse(readCfg()).cameras.find((c: any) => c.name === "Front");   // put back afterwards: later tests use Front
+  const unconfirmed = await send("DELETE", "/api/cameras/Front", {}, s);
+  assert.equal(unconfirmed.status, 400);
+  assert.match((await unconfirmed.json()).error.happened, /didn't confirm the camera's name/);
+  assert.ok(JSON.parse(readCfg()).cameras.some((c: any) => c.name === "Front"), "nothing changed");
+
+  bridgeReply = (m) => ({ type: "applied", reqId: "x", ok: true, mode: "removed", message: `removed ${m.name}` });
+  try {
+    const r = await send("DELETE", "/api/cameras/Front", { confirm: "Front" }, s);
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.saved, true);
+    assert.equal(j.mode, "removed");
+    assert.ok(j.keptAt && fs.existsSync(j.keptAt), "the camera's entry is kept as a file");
+    const kept = JSON.parse(fs.readFileSync(j.keptAt, "utf8"));
+    assert.equal(kept.camera.onvif.password, "onvifpw", "the kept entry is the full entry, logins included");
+    assert.ok(!JSON.parse(readCfg()).cameras.some((c: any) => c.name === "Front"), "config.json no longer has it");
+    assert.deepEqual(applied.at(-1), { type: "remove", name: "Front" });
+    const again = await send("DELETE", "/api/cameras/Front", { confirm: "Front" }, s);
+    assert.equal(again.status, 404);
+    assert.match((await again.json()).error.happened, /No camera called "Front"/);
+  } finally {
+    const cfg = JSON.parse(readCfg());
+    if (!cfg.cameras.some((x: any) => x.name === "Front")) { cfg.cameras.push(frontEntry); fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(cfg, null, 2)); }
+    bridgeReply = (m) => ({ type: "applied", reqId: "x", ok: true, mode: "live", message: `applied ${m.name}` });
+  }
+});
+
+test("#8: DELETE without a session or without the token is refused, nothing written", async () => {
+  const before = readCfg();
+  const anon = await send("DELETE", "/api/cameras/Garage", { confirm: "Garage" });
+  assert.equal(anon.status, 401);
+  const s = await login();
+  const noTok = await fetch(base + "/api/cameras/Garage", { method: "DELETE", headers: { cookie: s.cookie, "content-type": "application/json" }, body: JSON.stringify({ confirm: "Garage" }) });
+  assert.equal(noTok.status, 403);
+  assert.equal(readCfg(), before);
+});
+
 const creds = (name: string) => `/api/cameras/${encodeURIComponent(name)}/credentials`;
 
 test("credentials: not signed in is a 401, no CSRF token is a 403, cross-site is a 403", async () => {

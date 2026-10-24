@@ -629,7 +629,36 @@ async function renderForm(name) {
   checkWhy, checkOut, out);
   showMode();
   showMotion();
-  app.replaceChildren(el("h1", {}, isNew ? "Add camera" : `Edit ${cam.name}`), form);
+  app.replaceChildren(el("h1", {}, isNew ? "Add camera" : `Edit ${cam.name}`), form, ...(isNew ? [] : [removeSection(cam)]));
+}
+
+/* ---------- remove a camera (#8): a plain warning first, then one confirming click ---------- */
+function removeSection(cam) {
+  const out = el("div");
+  const box = el("div", { class: "msg amber", hidden: true });
+  const yes = el("button", { type: "button", class: "danger" }, `Yes, remove "${cam.name}"`);
+  const no = el("button", { type: "button", class: "secondary", onclick: () => { box.hidden = true; } }, "Keep it");
+  box.append(
+    el("p", {}, el("strong", {}, `Removing "${cam.name}" takes it out of Home.`)),
+    el("p", {}, "Home drops the camera, and with it its HomeKit Secure Video recordings, its room and any automations that use it. That can't be undone from here."),
+    el("p", {}, "The camera's settings are kept in the config folder (removed-cameras/), so it can be put back under the same name later; Home will treat it as the same camera, but the old recordings are gone."),
+    el("div", { class: "row" }, yes, no));
+  yes.addEventListener("click", async () => {
+    yes.disabled = true; no.disabled = true; yes.textContent = "Removing...";
+    const r = await api("DELETE", `/api/cameras/${encodeURIComponent(cam.name)}`, { confirm: cam.name });
+    yes.disabled = false; no.disabled = false; yes.textContent = `Yes, remove "${cam.name}"`;
+    const extras = [r.warning, r.keptAt ? `Its settings are kept at ${r.keptAt}.` : null, r.backupPath ? `Previous config.json kept at ${r.backupPath}.` : null];
+    if (r.error) {
+      out.replaceChildren(errorBox(r.error), ...(r.saved ? [msgBox("amber", ...extras)] : []));
+    } else {
+      box.hidden = true;
+      out.replaceChildren(msgBox(r.status === 200 ? "ok" : "amber", r.message, ...extras), el("p", {}, el("a", { href: "#/cameras" }, "Back to cameras")));
+      await refreshStatus();
+    }
+    out.scrollIntoView({ block: "nearest" });
+  });
+  const open = el("button", { type: "button", class: "danger", onclick: () => { box.hidden = false; box.scrollIntoView({ block: "nearest" }); } }, "Remove this camera\u2026");
+  return el("section", { class: "remove" }, el("h2", {}, "Remove"), el("p", { class: "hint" }, "Takes the camera out of the bridge and out of Home. You get a warning first."), open, box, out);
 }
 
 // ---------- pairing ----------
