@@ -119,7 +119,13 @@ On start it prints the **HomeKit setup code and a QR code** to the log. In the i
 npm run selftest
 ```
 
-Runs ffmpeg against a generated test pattern through the real fragmented-MP4 → parser pipeline (the core of the prebuffer/recording path) and reports whether it produced a parseable init segment and keyframe fragments. Requires ffmpeg; it exits non-zero and says so if ffmpeg is missing (it never fakes success).
+Runs ffmpeg against a generated test pattern through the real fragmented-MP4 → parser pipeline (the core of the prebuffer/recording path) and checks what HomeKit Secure Video needs from every fragment: it starts on a keyframe, decode times start at zero and only increase, no B-frames, an `avcC` in the init segment, and it reports the longest fragment against HomeKit's 4 s. Requires ffmpeg; it exits non-zero and says so if ffmpeg is missing (it never fakes success).
+
+```bash
+npm run selftest -- --source rtsp://127.0.0.1:8554/<stream> [--seconds 12] [--audio]
+```
+
+The same checks against a real source, using exactly the recording buffer's ffmpeg arguments. Point it at go2rtc's loopback restream (inside the container: `node dist/index.js --selftest --source rtsp://127.0.0.1:8554/backyardcam`) to prove that recording through the restream produces what HomeKit needs.
 
 ### Docker (e.g. TrueNAS)
 
@@ -173,7 +179,7 @@ A small web page for the cameras, served by the same container: `http://<host>:8
 - **What it does:** list cameras (passwords are never sent to the browser; they show as set, and URLs show `rtsp://user:***@host/...`), check a feed (a test frame through the bundled go2rtc), a live preview (WebRTC, the way Homedash plays these cameras: they don't play over MSE), edit a camera, add a camera, and show the pairing code and bridge status.
 - **How changes take effect:** logins, stream addresses and motion timings apply live to that one camera. New cameras are added live. Changes that Home itself sees (HKSV on/off, prebuffer, motion source type, model) are saved and wait for **Restart bridge** (about 30 seconds of "No Response" in Home).
 - **Don't rename cameras.** A camera's name is its identity in Home: renaming it would make Home see a new camera and drop the old one's room, settings and recordings. The pane refuses renames and warns that a new camera's name is permanent. Don't rename them by hand in `config.json` either.
-- **go2rtc** (1.9.14, pinned by version and SHA-256 in the Dockerfile) runs inside the container for feed checks and previews only. Its API listens on `127.0.0.1` and is reached only through the signed-in pane. HomeKit streaming doesn't use it.
+- **go2rtc** (1.9.14, pinned by version and SHA-256 in the Dockerfile) runs inside the container and is each camera's **only RTSP client** (see "One connection per camera"). Its API listens on `127.0.0.1` and is reached only through the signed-in pane.
 - The admin pane and go2rtc run as supervised child processes: if either crashes it's restarted with backoff (1 s doubling to 60 s), and HomeKit is unaffected.
 
 ### Dashboard settings
@@ -184,6 +190,19 @@ The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open
 - **Different addresses:** when the dashboard and the pane don't share a host (for example the dashboard on its own IP at port 80), set `UNSCRYPTED_ADMIN_URL` (e.g. `http://10.0.1.78:8190`, where the Settings button goes) and `UNSCRYPTED_DASH_URL` (e.g. `http://10.0.1.248/`, where the settings page sends you back). Unset, both are worked out from the browser's address and the ports. A bad value is ignored, and the dashboard says so.
 - **Fonts** are files in `./data/dash/fonts` (`.otf`, `.ttf`, `.woff`, `.woff2`), with display names in `./data/dash/fonts/names.json` (`{ "<file>": "<name>" }`). **Photos** come from an iCloud shared-album link (cached in `./data/dash/cache/icloud`) or a folder.
 
+### One connection per camera
+
+These cameras handle one RTSP client well and several badly (stalls, dropped frames, the live view in Home spinning). So since 0.1.7 the bundled go2rtc holds the one session per camera stream, and everything else reads from go2rtc instead of the camera:
+
+- **HomeKit's recording buffer** (HKSV pre-roll) reads `rtsp://127.0.0.1:8554/<stream>` (go2rtc's RTSP restream, loopback only, never on the LAN).
+- **Snapshots** read whichever stream go2rtc is already holding (costs the camera nothing), else the sub stream, never main while a sub exists.
+- **The dashboard and the admin pane's preview** already played through go2rtc (WebRTC).
+- **The live view in Home** is a policy, `UNSCRYPTED_LIVE_SOURCE`: `camera` (default) opens its own camera session, which starts on a keyframe in about a second but is a second connection while someone is watching; `go2rtc` keeps one connection per camera, and a viewer joining a stream go2rtc already holds waits for the camera's next keyframe (up to one GOP: 4 s on the Boavisions, which ignore ONVIF's keyframe request).
+
+**Fallback, loudly.** The bridge checks go2rtc every 5 s (its process, its API, its RTSP port; never a camera). If go2rtc is down for 15 s, every HomeKit pipeline reads the cameras directly and the log says so at warn level, with the reason; it switches back once go2rtc has been healthy for 60 s and at least 2 min have passed, also logged. If go2rtc is healthy but one camera's reads through it fail 3 times in 2 minutes, that camera alone goes direct for 10 minutes. A camera that is itself unreachable (go2rtc can't get video either) never triggers the fallback: a direct read would fail too, and would be a second client the moment the camera is back. The Status page says where HomeKit reads from and since when; each camera card shows go2rtc's view of its streams and where HomeKit reads it.
+
+`UNSCRYPTED_GO2RTC_RTSP=off` turns the restream off (every pipeline reads the cameras directly, as before 0.1.7). `UNSCRYPTED_GO2RTC_RTSP_PORT` moves it (default 8554; the test instance uses 8564 because it shares the host's network).
+
 ### Ports
 
 | Port | What | Where it listens |
@@ -193,8 +212,9 @@ The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open
 | `8180/tcp` | Dashboard, open and watch-only (`UNSCRYPTED_DASH_PORT`; own IP: port `80` on `UNSCRYPTED_DASH_HOST`) | all interfaces, or `UNSCRYPTED_DASH_HOST` |
 | `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
 | `8557/tcp+udp` | go2rtc WebRTC video for the live preview (`UNSCRYPTED_GO2RTC_WEBRTC_PORT`; `UNSCRYPTED_GO2RTC_WEBRTC=off` turns the preview off) | all interfaces |
+| `8554/tcp` | go2rtc RTSP restream, what HomeKit's pipelines read (`UNSCRYPTED_GO2RTC_RTSP_PORT`; `UNSCRYPTED_GO2RTC_RTSP=off` turns it off) | `127.0.0.1` only |
 | `8099-8102/tcp` | ONVIF push notifications (`onvif.notifyPort`) | all interfaces |
-| Test instance | admin `8191`, dashboard `8181`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, no HomeKit | |
+| Test instance | admin `8191`, dashboard `8181`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, restream `127.0.0.1:8564`, no HomeKit | |
 
 ### Test instance
 
