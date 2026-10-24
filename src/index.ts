@@ -267,6 +267,7 @@ async function main(): Promise<void> {
 
   const admin = envPort("UNSCRYPTED_ADMIN_PORT", 8190, log);
   const go2rtcApi = envPort("UNSCRYPTED_GO2RTC_API_PORT", 1986, log);
+  const go2rtcWebrtc = envPort("UNSCRYPTED_GO2RTC_WEBRTC_PORT", 8557, log);
   const dashPort = envPort("UNSCRYPTED_DASH_PORT", 8180, log);
   const runtime = new BridgeRuntime({
     config,
@@ -284,7 +285,12 @@ async function main(): Promise<void> {
     go2rtc: {
       binary: process.env.UNSCRYPTED_GO2RTC_BIN ?? "/usr/local/bin/go2rtc",
       apiPort: go2rtcApi.port,
-      webrtcPort: null,
+      // go2rtc's WebRTC media port (tcp+udp, all interfaces): the admin pane's live preview and the
+      // dashboard's tiles play over WebRTC (these cameras don't play over MSE). It was parked on the
+      // bare bridge until the dashboard came back (#3/#68). UNSCRYPTED_GO2RTC_WEBRTC=off turns just
+      // the preview and tiles off; HomeKit streaming never uses it.
+      webrtcPort:
+        process.env.UNSCRYPTED_GO2RTC_WEBRTC === "off" || go2rtcWebrtc.error ? null : go2rtcWebrtc.port,
       runtimeDir: process.env.UNSCRYPTED_RUNTIME_DIR ?? path.join(os.tmpdir(), "unscrypted"),
       enabled: process.env.UNSCRYPTED_GO2RTC !== "off" && go2rtcApi.error === null,
       disabledReason: go2rtcApi.error ?? undefined,
