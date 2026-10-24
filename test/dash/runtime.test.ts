@@ -28,6 +28,22 @@ function runtime() {
   return new DashRuntime({ dir, title: "Homedash - TEST", env: "test", adminPort: 8191, log });
 }
 
+test("config says which stream each tile actually plays, for the 'live · main/sub' tag (#22)", () => {
+  const rt = runtime();
+  rt.cameras = [
+    { name: "DogCamTest", main: "dogcamtest", sub: "dogcamtest_sub", probe: null },
+    { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub", probe: null },
+  ];
+  const cams = (rt.publicConfig() as any).cameras;
+  assert.deepEqual(cams.map((c: any) => [c.label, c.which, c.stream]), [
+    ["DogCam", "main", "dogcamtest"],
+    ["Garagecam", "sub", "garagecamtest_sub"],
+  ]);
+  // Set to sub, but the camera has no sub stream: it plays main, and says so.
+  rt.cameras = [{ name: "GarageCamTest", main: "garagecamtest", sub: null, probe: null }];
+  assert.deepEqual((rt.publicConfig() as any).cameras.map((c: any) => [c.which, c.stream]), [["main", "garagecamtest"]]);
+});
+
 test("probes shown cameras: up, and down with a plain reason but no address", async () => {
   const live = net.createServer((s) => s.destroy());
   await new Promise<void>((r) => live.listen(0, "127.0.0.1", () => r()));
@@ -56,8 +72,8 @@ test("probes shown cameras: up, and down with a plain reason but no address", as
 
     const cfg = rt.publicConfig();
     assert.deepEqual(cfg.cameras, [
-      { id: "dogcamtest", label: "DogCam", stream: "dogcamtest" },
-      { id: "garagecamtest", label: "Garagecam", stream: "garagecamtest_sub" },
+      { id: "dogcamtest", label: "DogCam", stream: "dogcamtest", which: "main" },
+      { id: "garagecamtest", label: "Garagecam", stream: "garagecamtest_sub", which: "sub" },
     ]);
     const all = JSON.stringify(cfg) + JSON.stringify(rt.state());
     assert.doesNotMatch(all, /rtsp:/);
