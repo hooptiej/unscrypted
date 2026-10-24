@@ -47,6 +47,7 @@ export class DashRuntime {
     const s = loadSettings(this.settingsFile);
     this.settings = s.settings; this.settingsWarning = s.warning; this.settingsMtime = s.mtimeMs;
     if (s.warning) o.log.warn(s.warning);
+    for (const m of s.migrated) o.log.info(`dashboard settings: ${m}`);
   }
 
   /** Re-reads settings.json if its mtime changed. Returns true when it changed. */
@@ -55,6 +56,7 @@ export class DashRuntime {
     const s = loadSettings(this.settingsFile);
     this.settings = s.settings; this.settingsWarning = s.warning; this.settingsMtime = s.mtimeMs;
     if (s.warning) this.o.log.warn(s.warning); else this.o.log.info("dashboard settings changed; reloaded");
+    for (const m of s.migrated) this.o.log.info(`dashboard settings: ${m}`);
     return true;
   }
 

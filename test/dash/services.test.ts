@@ -81,13 +81,20 @@ test("bridge: green only when HomeKit is on and paired; otherwise says which", a
   assert.match((await runCheck({ kind: "bridge" }, noBridge))!, /the bridge hasn't reported yet/);
 });
 
-test("blocked: the ipvlan apps are red with the plain reason and the tracking issue", async () => {
-  assert.match((await runCheck({ kind: "blocked", reason: IPVLAN_REASON }, noBridge))!, /can't be checked from the NAS's own network yet/);
-  assert.match(IPVLAN_REASON, /unscrypted#11/);
-  const ids = new Set<string>();
-  const walk = (ns: ServiceNode[]) => ns.forEach((n) => { if (n.check.kind === "blocked") ids.add(n.id); walk(n.children ?? []); });
+test("blocked: still a red light with the plain reason, pointing at the shim", async () => {
+  assert.match((await runCheck({ kind: "blocked", reason: IPVLAN_REASON }, noBridge))!, /can't be checked from the NAS's own network/);
+  assert.match(IPVLAN_REASON, /ipvlan-shim\.sh/);
+});
+
+test("defaults: the ipvlan apps are real http checks again, reached through the NAS shim (#11)", () => {
+  const checks = new Map<string, ServiceNode["check"]>();
+  const walk = (ns: ServiceNode[]) => ns.forEach((n) => { checks.set(n.id, n.check); walk(n.children ?? []); });
   walk(DEFAULT_SERVICES);
-  assert.deepEqual([...ids].sort(), ["constructicon", "constructicon-dev", "questlog", "questlog-dev"]);
+  assert.equal([...checks.values()].filter((c) => c.kind === "blocked").length, 0, "no default light is blocked any more");
+  assert.deepEqual(checks.get("constructicon"), { kind: "http", url: "http://10.0.1.240/", ok: "any" });
+  assert.deepEqual(checks.get("constructicon-dev"), { kind: "http", url: "http://10.0.1.241/", ok: "any" });
+  assert.deepEqual(checks.get("questlog"), { kind: "http", url: "http://10.0.1.250/", ok: "200" });
+  assert.deepEqual(checks.get("questlog-dev"), { kind: "http", url: "http://10.0.1.246/", ok: "200" });
 });
 
 test("an unknown check kind (a hand-edited settings file) is a reason, not a crash or a green", async () => {
