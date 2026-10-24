@@ -348,8 +348,7 @@ async function init() {
   });
   const toadmin = $("toadmin");
   if (toadmin) {
-    if (fromDash) toadmin.hidden = true;  // kiosk never jumps to the camera admin
-    else toadmin.addEventListener("click", (e) => {
+    toadmin.addEventListener("click", (e) => {
       if (dirty && !window.confirm("Discard your unsaved changes and go to the camera admin?")) e.preventDefault();
     });
   }
