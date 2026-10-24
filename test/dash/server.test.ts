@@ -302,3 +302,14 @@ test("feed-check names are refused even if a camera's stream had that name; exte
     b.sock.destroy();
   } finally { s.close(); }
 });
+
+test("the open dashboard has no camera-logins route (#18): GET is a 404, POST a 405, no secret either way", async () => {
+  const p = "/api/cameras/Garage/credentials";
+  const g = await fetch(base + p);
+  assert.equal(g.status, 404);
+  const post = await fetch(base + p, { method: "POST", body: "{}" });
+  assert.equal(post.status, 405);
+  const all = (await g.text()) + (await post.text())
+    + (await (await fetch(base + "/api/config")).text()) + (await (await fetch(base + "/api/state")).text());
+  assert.doesNotMatch(all, /"(password|rtsp|onvif|foscam|rtspPassword)"|rtsp:\/\//i, "no login fields or stream URLs");
+});
