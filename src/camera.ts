@@ -203,7 +203,7 @@ export class UnscryptedCamera {
         client,
         {
           pollIntervalMs: camera.foscam.pollIntervalMs ?? 1000,
-          cooldownMs: camera.foscam.motionCooldownMs ?? 8000,
+          cooldownMs: camera.foscam.motionCooldownMs ?? 60000,
         },
         (active) => this.setMotion(active),
         log.child("motion"),
