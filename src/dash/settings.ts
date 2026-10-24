@@ -41,6 +41,13 @@ export const FONT_FILE = /^[A-Za-z0-9_-]{1,64}\.(otf|ttf|woff2?)$/;
  */
 export const IPVLAN_SHORT = "can't check yet";
 export const IPVLAN_REASON = "can't be checked from the NAS's own network (the app is on an ipvlan LAN; add the host shim, scripts/nas/ipvlan-shim.sh)";
+/**
+ * The placeholder the 0.3.0 move-in wrote into every saved settings file before the shim existed
+ * ("…tracked in hooptiej/unscrypted#11"). A saved light still carrying it is migrated back to the
+ * default http check on load (#11). A "blocked" light with any other reason was set on purpose
+ * (an install without a shim) and is left alone.
+ */
+export const IPVLAN_PLACEHOLDER = /can't be checked from the NAS's own network yet \(it sits on the ipvlan LAN; tracked in hooptiej\/unscrypted#11\)/;
 
 // Hosts as seen from the NAS's own network (unscrypted runs with host networking). The ipvlan
 // apps (Constructicon, Questlog) are reached through the host's ipvlan shim (scripts/nas/ipvlan-shim.sh,
@@ -76,43 +83,80 @@ function bad(field: string, msg: string): UserError {
   return new UserError({ attempted: "Save the dashboard settings", happened: `${field}: ${msg}`, changed: "Nothing was saved.", next: "Fix that field and save again." });
 }
 
+export interface LoadedSettings {
+  settings: DashSettings;
+  warning: string | null;
+  mtimeMs: number;
+  /** In-memory migrations applied to what the file said (logged once by the caller). Empty when none. */
+  migrated: string[];
+}
+
 /** Never throws, never writes. A broken file falls back to defaults and says so. */
-export function loadSettings(file: string): { settings: DashSettings; warning: string | null; mtimeMs: number } {
+export function loadSettings(file: string): LoadedSettings {
   let text: string;
   let mtimeMs = 0;
   try {
     text = fs.readFileSync(file, "utf8");
     mtimeMs = fs.statSync(file).mtimeMs;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { settings: clone(DEFAULTS), warning: null, mtimeMs: 0 };
-    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${(err as Error).message}); showing default dashboard settings.`, mtimeMs };
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { settings: clone(DEFAULTS), warning: null, mtimeMs: 0, migrated: [] };
+    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${(err as Error).message}); showing default dashboard settings.`, mtimeMs, migrated: [] };
   }
   try {
     const raw = JSON.parse(text);
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("it isn't a JSON object");
     const d = clone(DEFAULTS);
+    const migrated: string[] = [];
     const s: DashSettings = {
       ...d, ...raw,
       weather: { ...d.weather, ...(raw.weather ?? {}) },
       photos: { ...d.photos, ...(raw.photos ?? {}) },
       fonts: { ...d.fonts, ...(raw.fonts ?? {}) },
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
-      services: Array.isArray(raw.services) ? raw.services.map(renameOldServer) : d.services,
+      services: Array.isArray(raw.services) ? raw.services.map((n: ServiceNode) => unblockIpvlanPlaceholder(renameOldServer(n), migrated)) : d.services,
     };
-    return { settings: s, warning: null, mtimeMs };
+    return { settings: s, warning: null, mtimeMs, migrated };
   } catch (err) {
     // The parser's message quotes a piece of the file (hosts, the album link), and this warning is shown on
     // the open dashboard, so say where, never what.
     const msg = (err as Error).message;
     const pos = /position (\d+)/.exec(msg)?.[1];
     const why = err instanceof SyntaxError ? `it isn't valid JSON${pos ? ` (near character ${pos})` : ""}` : "it isn't a JSON object";
-    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${why}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs };
+    return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${why}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs, migrated: [] };
   }
 }
 
 /** The old default's rollup was called "Server"; it checks the NAS itself, so it's "NAS" now (owner eye-check). */
 function renameOldServer(n: ServiceNode): ServiceNode {
   return n && n.id === "server" && n.name === "Server" ? { ...n, name: "NAS" } : n;
+}
+
+/** The default check for a light id, wherever it sits in the default tree; null when the id isn't a default. */
+function defaultCheckFor(id: string, nodes: ServiceNode[] = DEFAULT_SERVICES): ServiceCheck | null {
+  for (const n of nodes) {
+    if (n.id === id) return n.check;
+    const below = n.children ? defaultCheckFor(id, n.children) : null;
+    if (below) return below;
+  }
+  return null;
+}
+
+/**
+ * #11: a saved light still "blocked" with the pre-shim placeholder becomes the default http check
+ * again, in memory; the next save on the settings page writes it. Any other "blocked" reason stays.
+ */
+function unblockIpvlanPlaceholder(n: ServiceNode, migrated: string[]): ServiceNode {
+  if (!n || typeof n !== "object") return n;
+  let out = n;
+  if (n.check?.kind === "blocked" && IPVLAN_PLACEHOLDER.test(n.check.reason ?? "")) {
+    const def = defaultCheckFor(n.id);
+    if (def && def.kind !== "blocked") {
+      out = { ...n, check: clone(def) };
+      migrated.push(`"${n.name}" light: the pre-shim "can't check yet" placeholder became the default ${def.kind} check again (hooptiej/unscrypted#11); save the settings page once to keep it`);
+    }
+  }
+  if (n.children) out = { ...out, children: n.children.map((c) => unblockIpvlanPlaceholder(c, migrated)) };
+  return out;
 }
 
 const int = (v: unknown, lo: number, hi: number, label: string): number => {
