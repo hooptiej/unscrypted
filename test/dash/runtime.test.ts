@@ -103,7 +103,7 @@ test("service lights reach /api/state with their reasons and a timestamp", async
   // Hermetic: the ipvlan lights are "blocked" here (an install without the shim), so the result
   // doesn't depend on whether this machine can reach the real Constructicon/Questlog.
   const noShim = (ns: ServiceNode[]): ServiceNode[] => ns.map((n) => ({ ...n,
-    check: /^(constructicon|questlog)/.test(n.id) ? { kind: "blocked", reason: IPVLAN_REASON } : n.check,
+    check: /^(constructicon|questlog|groundskeeper)/.test(n.id) ? { kind: "blocked", reason: IPVLAN_REASON } : n.check,
     children: n.children ? noShim(n.children) : undefined }));
   const rt = runtime(noShim(DEFAULTS.services));
   assert.deepEqual({ s: (rt.state() as any).services, at: (rt.state() as any).servicesAt }, { s: [], at: null });

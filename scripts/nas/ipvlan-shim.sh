@@ -18,7 +18,7 @@ PARENT=enp2s0
 SHIM=ipvlshim
 ADDR=10.0.1.249/32
 # ipvlan app addresses (questlog-lan). Only these get routed through the shim.
-APPS="10.0.1.240 10.0.1.241 10.0.1.242 10.0.1.243 10.0.1.244 10.0.1.245 10.0.1.246 10.0.1.250"
+APPS="10.0.1.240 10.0.1.241 10.0.1.242 10.0.1.243 10.0.1.244 10.0.1.245 10.0.1.246 10.0.1.250 10.0.1.251 10.0.1.252"
 COMMENT="ipvlan shim: host -> questlog-lan apps (hooptiej/unscrypted#11)"
 
 die() { echo "ipvlan-shim: $*" >&2; exit 1; }

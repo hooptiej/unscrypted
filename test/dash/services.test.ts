@@ -95,6 +95,8 @@ test("defaults: the ipvlan apps are real http checks again, reached through the 
   assert.deepEqual(checks.get("constructicon-dev"), { kind: "http", url: "http://10.0.1.241/", ok: "any" });
   assert.deepEqual(checks.get("questlog"), { kind: "http", url: "http://10.0.1.250/", ok: "200" });
   assert.deepEqual(checks.get("questlog-dev"), { kind: "http", url: "http://10.0.1.246/", ok: "200" });
+  assert.deepEqual(checks.get("groundskeeper"), { kind: "http", url: "http://10.0.1.251/healthz", ok: "200" });
+  assert.deepEqual(checks.get("groundskeeper-dev"), { kind: "http", url: "http://10.0.1.252/healthz", ok: "200" });
 });
 
 test("an unknown check kind (a hand-edited settings file) is a reason, not a crash or a green", async () => {

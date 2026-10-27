@@ -58,7 +58,7 @@ export const IPVLAN_REASON = "can't be checked from the NAS's own network (the a
 export const IPVLAN_PLACEHOLDER = /can't be checked from the NAS's own network yet \(it sits on the ipvlan LAN; tracked in hooptiej\/unscrypted#11\)/;
 
 // Hosts as seen from the NAS's own network (unscrypted runs with host networking). The ipvlan
-// apps (Constructicon, Questlog) are reached through the host's ipvlan shim (scripts/nas/ipvlan-shim.sh,
+// apps (Constructicon, Questlog, Groundskeeper) are reached through the host's ipvlan shim (scripts/nas/ipvlan-shim.sh,
 // hooptiej/unscrypted#11), with the same http checks Homedash used. The old Scrypted light is
 // replaced by the HomeKit bridge's own status (owner Q2 = a).
 export const DEFAULT_SERVICES: ServiceNode[] = [
@@ -70,6 +70,9 @@ export const DEFAULT_SERVICES: ServiceNode[] = [
     ] },
     { id: "questlog", name: "Questlog", link: "http://questlog.local", check: { kind: "http", url: "http://10.0.1.250/", ok: "200" }, children: [
       { id: "questlog-dev", name: "dev", link: "http://questlog-dev.local", check: { kind: "http", url: "http://10.0.1.246/", ok: "200" } },
+    ] },
+    { id: "groundskeeper", name: "Groundskeeper", link: "http://groundskeeper.local", check: { kind: "http", url: "http://10.0.1.251/healthz", ok: "200" }, children: [
+      { id: "groundskeeper-dev", name: "dev", link: "http://groundskeeper-test.local", check: { kind: "http", url: "http://10.0.1.252/healthz", ok: "200" } },
     ] },
   ] },
 ];
