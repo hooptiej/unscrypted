@@ -32,6 +32,7 @@ import { runSelfTest } from "./selftest";
 import { LivePolicy, SourceSelector } from "./source";
 import { probeOnvif } from "./onvif";
 import { hasPairingState } from "./util";
+import { installEventHold } from "./hapEventHold";
 import {
   captureSnapshotJpeg,
   renderPlaceholderJpeg,
@@ -178,6 +179,8 @@ async function main(): Promise<void> {
   }
   HAPStorage.setCustomStoragePath(config.persistDir);
   log.info(`HAP pairing state: ${config.persistDir}`);
+  // Before any controller connects: a motion event mid-snapshot must not drop a live view (#97).
+  installEventHold(log);
 
   // Build the bridge.
   const bridge = new Bridge(
