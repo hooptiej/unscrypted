@@ -213,5 +213,42 @@ export function installEventHold(log: Logger, proto?: object): boolean {
     }
   };
   log.info("HAP event hold installed: event notifications wait for a whole response (#97)");
+  watchConnectionCloses(target as unknown as ClosingInternals, log);
+  return true;
+}
+
+// ---- Why did a live view stop? (#99) --------------------------------------
+// hap-nodejs stops a connection's stream from inside the connection's "closed" event, through the
+// same delegate STOP a controller's own STOP write uses. Marking the close while it runs lets the
+// delegate tell the two apart: the controller hanging up vs the controller asking to stop.
+
+interface ClosingInternals {
+  remoteAddress: string;
+  onTCPSocketClose(): void;
+}
+
+let closing: string | undefined;
+
+/** The controller address whose connection is closing right now (synchronously), if any. */
+export function closingConnection(): string | undefined {
+  return closing;
+}
+
+/** Wrap onTCPSocketClose so closingConnection() names the controller while hap-nodejs tears its stream down. */
+export function watchConnectionCloses(proto: ClosingInternals, log: Logger): boolean {
+  const original = proto.onTCPSocketClose;
+  if (typeof original !== "function") {
+    log.warn("live-view stop causes (#99): hap-nodejs's HAPConnection has no onTCPSocketClose; a dropped connection will be logged as a STOP");
+    return false;
+  }
+  proto.onTCPSocketClose = function (this: ClosingInternals): void {
+    const outer = closing;
+    closing = this.remoteAddress;
+    try {
+      original.call(this);
+    } finally {
+      closing = outer;
+    }
+  };
   return true;
 }
