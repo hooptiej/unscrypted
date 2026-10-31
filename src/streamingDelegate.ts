@@ -31,8 +31,10 @@ import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU } fr
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
 import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
+import { Capture, ProbeMemory, ProbeMode, SnapshotServer } from "./snapshots";
+import { closingConnection } from "./hapEventHold";
 
-/** ffmpeg socket I/O timeout (�s): a wedged go2rtc or camera ends the read instead of hanging it. */
+/** ffmpeg socket I/O timeout (µs): a wedged go2rtc or camera ends the read instead of hanging it. */
 const RTSP_TIMEOUT_US = "10000000";
 /**
  * Input flags that start on the first decodable frame instead of probing for seconds (#33).
@@ -48,10 +50,10 @@ const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "t
  * Boavisions (~1.1 s to the first frame). A Foscam FI9803P sends audio first and its keyframe late,
  * so with "fast" ffmpeg gives up before it ever sees video ("Output file #0 does not contain any
  * stream", exit 1 in ~0.7 s) on every snapshot and live view. "full" is ffmpeg's default probing
- * (a frame in ~6 s on that camera). A camera starts "fast" and is switched to "full" the first time
- * it misses; nothing to configure.
+ * (a frame in ~6 s on that camera). A camera starts "fast" and moves to "full" for a while when a
+ * miss is followed by a working full-probe retry (ProbeMemory, #99); nothing to configure.
  */
-export type ProbeMode = "fast" | "full";
+export type { ProbeMode } from "./snapshots";
 const probeArgs = (probe: ProbeMode): string[] => (probe === "fast" ? LOW_LATENCY_INPUT : []);
 /** ffmpeg's one line for "I stopped probing before I saw a video stream". */
 export const PROBE_MISS = /does not contain any stream/i;
@@ -103,6 +105,17 @@ interface ActiveSession {
   video: LiveVideo;
   audio: LiveAudio;
   watchdog?: NodeJS.Timeout;
+  /** When the session's first ffmpeg started (kept across RECONFIGURE/probe re-spawns), for the stop log. */
+  startedAt: number;
+}
+
+/** How long a full-probing live retry must keep running before the camera is remembered as late-video (#99). */
+const LIVE_PROBE_PROOF_MS = 5_000;
+
+/** The last non-empty line of ffmpeg's stderr: its reason, short enough for one log line. */
+function lastLine(stderr: string): string {
+  const lines = (stderr || "").trim().split(/\r?\n/).filter(Boolean);
+  return lines.length ? lines[lines.length - 1].slice(0, 200) : "no reason given";
 }
 
 const SNAPSHOT_TIMEOUT_MS = 15_000;
@@ -131,7 +144,7 @@ export class FfmpegRunError extends Error {
 }
 
 /** Run ffmpeg and collect its stdout into a single Buffer. */
-function runFfmpegToBuffer(
+export function runFfmpegToBuffer(
   ffmpegPath: string,
   args: string[],
   log: Logger,
@@ -157,10 +170,14 @@ function runFfmpegToBuffer(
   });
 }
 
+/** What a fast-probe miss turned out to be: a camera that sends its video late, or an outage (#99). */
+export type ProbeOutcome = "late" | "outage";
+
 /**
  * Grab a single JPEG frame from an RTSP source, scaled to fit width x height. Starts with the
- * given probe mode; when the fast probe misses the video stream (#78) it says so, calls
- * `onProbeMiss` (so the camera remembers), and tries once more with full probing.
+ * given probe mode; when the fast probe misses the video stream (#78) it says so and tries once
+ * more with full probing, then tells `onProbe` whether that worked ("late": remember it) or not
+ * ("outage": the camera or go2rtc was unreachable, nothing to remember).
  */
 export async function captureSnapshotJpeg(
   ffmpegPath: string,
@@ -169,16 +186,23 @@ export async function captureSnapshotJpeg(
   height: number,
   log: Logger,
   probe: ProbeMode = "fast",
-  onProbeMiss?: () => void,
+  onProbe?: (outcome: ProbeOutcome) => void,
+  run: typeof runFfmpegToBuffer = runFfmpegToBuffer,
 ): Promise<Buffer> {
   const feed: FeedChoice = typeof source === "string" ? { url: source, via: "camera" } : source;
   try {
-    return await runFfmpegToBuffer(ffmpegPath, buildSnapshotArgs(feed, width, height, probe), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+    return await run(ffmpegPath, buildSnapshotArgs(feed, width, height, probe), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
   } catch (err) {
     if (probe !== "fast" || !(err instanceof FfmpegRunError) || !err.probeMiss) throw err;
-    log.info(`snapshot ${readsFrom(feed)}: the fast probe found no video stream (the camera sends its video late); retrying with full probing`);
-    onProbeMiss?.();
-    return runFfmpegToBuffer(ffmpegPath, buildSnapshotArgs(feed, width, height, "full"), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+    log.info(`snapshot ${readsFrom(feed)}: the fast probe found no video stream; retrying with full probing`);
+    try {
+      const jpeg = await run(ffmpegPath, buildSnapshotArgs(feed, width, height, "full"), log, "snapshot", SNAPSHOT_TIMEOUT_MS);
+      onProbe?.("late");
+      return jpeg;
+    } catch (err2) {
+      onProbe?.("outage");
+      throw err2;
+    }
   }
 }
 
@@ -262,24 +286,38 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     catch (err) { this.log.error(`couldn't report a failed read to the source selector: ${(err as Error).message}`); }
   }
 
-  /** How this camera's reads probe the input (#78): fast until the first miss, full from then on. */
-  probe: ProbeMode = "fast";
+  /** How this camera's reads probe the input (#78, #99): fast, or full for a while after a miss that full probing fixed. */
+  private readonly probeMemory = new ProbeMemory(this.camera.name, this.log);
+  get probe(): ProbeMode { return this.probeMemory.mode; }
 
-  /** Remember that this camera needs full probing, and say so once. */
-  private useFullProbe(where: string): void {
-    if (this.probe === "full") return;
-    this.probe = "full";
-    this.log.warn(`"${this.camera.name}": ffmpeg's fast probe found no video stream on a ${where} (this camera sends its video late, like the Foscam FI9803P). ` +
-      "Live view and snapshots for it use full probing from now on: a few seconds slower to the first frame, but they work. Other cameras are unaffected. (#78)");
+  private probeOutcome(where: string): (o: ProbeOutcome) => void {
+    return (o) => (o === "late" ? this.probeMemory.learnedLate(where) : this.probeMemory.missedDuringOutage(where));
   }
 
   // ---- Snapshots -----------------------------------------------------------
+
+  // The size the latest request asked for (requests that share one capture all get this size).
+  private snapshotSize = { width: 640, height: 360 };
+
+  // Snapshots never make the Home app wait (#99): answered at once with the latest image while a
+  // fresh one is captured in the background; only a camera's first snapshot waits (up to ~4 s).
+  private readonly snapshots = new SnapshotServer({
+    name: this.camera.name,
+    log: this.log,
+    capture: () => this.captureSnapshot(this.snapshotSize.width, this.snapshotSize.height),
+    placeholder: async (reason) => {
+      const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
+      if (!ff) throw new Error("ffmpeg unavailable; cannot produce snapshot");
+      return renderPlaceholderJpeg(ff, this.snapshotSize.width, this.snapshotSize.height, this.camera.name, reason, this.log);
+    },
+  });
 
   handleSnapshotRequest(
     request: SnapshotRequest,
     callback: SnapshotRequestCallback,
   ): void {
-    void this.snapshotWithFallback(request)
+    this.snapshotSize = { width: request.width, height: request.height };
+    void this.snapshots.get()
       .then((buf) => callback(undefined, buf))
       .catch((err: Error) => {
         this.log.warn(`snapshot failed: ${err.message}`);
@@ -287,12 +325,11 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       });
   }
 
-  // Real snapshot first; if the source can't be reached or decoded, return a
-  // captioned "camera unavailable" placeholder so the Home tile says WHAT and WHY
-  // instead of a mute spinner or a stale frame (#64). Only if the placeholder
-  // itself can't be rendered do we surface the original error — never worse than
-  // the pre-#64 behaviour.
-  private async snapshotWithFallback(request: SnapshotRequest): Promise<Buffer> {
+  // Real snapshot first; if the source can't be reached or decoded, a captioned
+  // "camera unavailable" placeholder so the Home tile says WHAT and WHY instead of a
+  // mute spinner (#64). Only if the placeholder itself can't be rendered do we
+  // surface the original error — never worse than the pre-#64 behaviour.
+  private async captureSnapshot(width: number, height: number): Promise<Capture> {
     const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
     if (!ff) {
       throw new Error("ffmpeg unavailable; cannot produce snapshot");
@@ -301,24 +338,18 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     // sub exists, #55), or the camera itself while go2rtc is down.
     const feed = this.pick("snapshot");
     if (!feed) throw new Error("no stream URL configured for this camera");
+    const from = readsFrom(feed) + (this.probe === "full" ? " (full probing)" : "");
     try {
-      return await captureSnapshotJpeg(ff, feed, request.width, request.height, this.log, this.probe, () => this.useFullProbe("snapshot"));
+      const jpeg = await captureSnapshotJpeg(ff, feed, width, height, this.log, this.probe, this.probeOutcome("snapshot"));
+      return { jpeg, real: true, from };
     } catch (err) {
       const reason = snapshotFailureReason((err as Error).message);
-      this.log.warn(
-        `snapshot ${readsFrom(feed)} failed (${reason}): ${(err as Error).message}; serving placeholder`,
-      );
+      this.log.warn(`snapshot ${readsFrom(feed)} failed (${reason}): ${(err as Error).message}`);
       // A probe miss is ffmpeg giving up early, not the feed failing: it never counts toward sending the camera direct (#78).
       if (!(err instanceof FfmpegRunError && err.probeMiss)) this.reportFailure(feed, `snapshot: ${(err as Error).message}`);
       try {
-        return await renderPlaceholderJpeg(
-          ff,
-          request.width,
-          request.height,
-          this.camera.name,
-          reason,
-          this.log,
-        );
+        const jpeg = await renderPlaceholderJpeg(ff, width, height, this.camera.name, reason, this.log);
+        return { jpeg, real: false, from, reason };
       } catch (e2) {
         this.log.warn(`placeholder render failed: ${(e2 as Error).message}`);
         throw err; // never worse than the pre-#64 behaviour
@@ -388,10 +419,15 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       case StreamRequestTypes.RECONFIGURE:
         void this.reconfigureStream(request, callback);
         break;
-      case StreamRequestTypes.STOP:
-        this.stopStream(request.sessionID);
+      case StreamRequestTypes.STOP: {
+        // hap-nodejs sends the same STOP when the controller's connection closes (#99): say which.
+        const closing = closingConnection();
+        this.stopStream(request.sessionID, closing
+          ? `the controller's connection (${closing}) closed`
+          : "the controller asked to stop (the viewer closed it, or HomeKit ended it)");
         callback();
         break;
+      }
     }
   }
 
@@ -602,8 +638,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       active.audio,
     );
     if (!proc) {
-      this.log.warn(`reconfigure re-spawn failed for ${this.camera.name}; stopping`);
-      this.stopStream(request.sessionID);
+      this.stopStream(request.sessionID, "its ffmpeg couldn't be re-spawned for a RECONFIGURE");
       callback(new Error("reconfigure re-spawn failed"));
       return;
     }
@@ -621,6 +656,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     session: SessionInfo,
     video: LiveVideo,
     audio: LiveAudio,
+    probeOverride?: ProbeMode,
   ): Promise<SpawnedFfmpeg | undefined> {
     const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
     if (!ff) {
@@ -631,7 +667,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       this.log.error("live view can't start: this camera has no main stream URL");
       return undefined;
     }
-    const probe = this.probe;
+    const probe = probeOverride ?? this.probe;
     const args = this.buildLiveArgs(feed, session, video, audio, probe);
     this.log.info(`live view reading ${readsFrom(feed)}${probe === "full" ? " (full probing)" : ""}`);
     const proc = spawnFfmpeg(ff, args, this.log, {
@@ -644,24 +680,38 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       video,
       audio,
       watchdog: prev?.watchdog,
+      startedAt: prev?.startedAt ?? Date.now(),
     });
 
     // ffmpeg exiting unexpectedly (non-zero) tears the session down, loudly. One exception (#78): the
     // fast probe missing the video stream is retried once with full probing, same session, same endpoint.
+    // The camera only moves to full probing if that retry keeps running (#99): a retry that dies too
+    // was an outage, not a late camera.
     void proc.done.then(async (code) => {
       const cur = this.activeSessions.get(sessionID);
       if (!(cur && cur.procs.includes(proc) && code !== null && code !== 0)) return;
       if (probe === "fast" && isProbeMiss(code, proc.stderrTail())) {
-        this.useFullProbe("live view");
-        const again = await this.spawnLive(sessionID, session, cur.video, cur.audio);
-        if (again) return;
-        this.log.warn(`live stream couldn't be restarted with full probing for ${this.camera.name}; stopping session`);
-        this.stopStream(sessionID);
+        this.log.info(`live view ${readsFrom(feed)}: the fast probe found no video stream; retrying with full probing`);
+        const again = await this.spawnLive(sessionID, session, cur.video, cur.audio, "full");
+        if (again) {
+          let decided = false;
+          const proof = setTimeout(() => {
+            decided = true;
+            if (again.proc.exitCode === null) this.probeMemory.learnedLate("live view");
+          }, LIVE_PROBE_PROOF_MS);
+          proof.unref();
+          void again.done.then((c) => {
+            clearTimeout(proof);
+            if (!decided && c !== null && c !== 0) this.probeMemory.missedDuringOutage("live view");
+            decided = true;
+          });
+          return;
+        }
+        this.stopStream(sessionID, "its ffmpeg couldn't be restarted with full probing");
         return;
       }
-      this.log.warn(`live stream ffmpeg exited (code ${code}) while reading ${readsFrom(feed)}; stopping session`);
       this.reportFailure(feed, `live view ffmpeg exited with code ${code}`);
-      this.stopStream(sessionID);
+      this.stopStream(sessionID, `its ffmpeg exited (code ${code}) while reading ${readsFrom(feed)}: ${lastLine(proc.stderrTail())}`);
     });
     return proc;
   }
@@ -676,14 +726,12 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       clearTimeout(active.watchdog);
     }
     active.watchdog = setTimeout(() => {
-      this.log.info(
-        `live view: no RTCP for ${Math.round(timeoutMs / 1000)}s on ${this.camera.name}; releasing session`,
-      );
-      this.stopStream(sessionID);
+      this.stopStream(sessionID, `no RTCP from the controller for ${Math.round(timeoutMs / 1000)} s (the bridge's watchdog released it)`);
     }, timeoutMs);
   }
 
-  private stopStream(sessionID: string): void {
+  /** Stop a session; `why` is logged with how long it ran (#99), so every end has a cause. */
+  private stopStream(sessionID: string, why: string): void {
     const active = this.activeSessions.get(sessionID);
     if (active) {
       if (active.watchdog) {
@@ -700,7 +748,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         /* ignore */
       }
       this.activeSessions.delete(sessionID);
-      this.log.info(`live stream stopped for ${this.camera.name}`);
+      this.log.info(`live stream stopped for ${this.camera.name} after ${Math.round((Date.now() - active.startedAt) / 100) / 10} s: ${why}`);
     }
     const pending = this.pendingSessions.get(sessionID);
     if (pending) {
@@ -722,10 +770,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
   /** Tear everything down (process shutdown). */
   shutdown(): void {
     for (const id of [...this.activeSessions.keys()]) {
-      this.stopStream(id);
+      this.stopStream(id, "the bridge is shutting down");
     }
     for (const id of [...this.pendingSessions.keys()]) {
-      this.stopStream(id);
+      this.stopStream(id, "the bridge is shutting down");
     }
   }
 }
