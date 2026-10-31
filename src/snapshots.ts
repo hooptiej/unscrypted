@@ -1,14 +1,15 @@
 /**
- * HomeKit snapshots on a deadline, and the per-camera probe memory (#99, #96).
+ * HomeKit snapshots that never make the Home app wait, and the per-camera probe memory (#99, #96).
  *
- * Measured on prod 0.1.11: the iPhone gives a /resource snapshot about 5 s, then drops the whole
- * HAP connection (and any live view on it). Snapshots took 0.4-6.2 s, and over 5 s on a camera
- * stuck in full probing, so whole stretches of trying never reached a live stream.
+ * Measured on prod: the iPhone gives a /resource snapshot about 5 s, then drops the whole HAP
+ * connection (0.1.11). And it queues snapshots ahead of a live view's START on the same
+ * connection, which hap-nodejs serves one request at a time: on 0.1.12 the wait from SetupEndpoints
+ * to START was 98-99% snapshot time (11.9-57.2 s; 0.0-0.1 s when no snapshot was queued).
  */
 
 import { Logger } from "./logger";
 
-/** How long a fresh capture gets before HomeKit is answered from the last good image (the phone gives up at ~5 s). */
+/** How long the very first snapshot of a camera waits for a capture before the "camera slow" card (the phone gives up at ~5 s). */
 export const SNAPSHOT_DEADLINE_MS = 4_000;
 
 /** What a fresh capture came back as: a real frame, or a placeholder card explaining why there isn't one. */
@@ -26,20 +27,23 @@ export interface SnapshotServerOptions {
   log: Logger;
   /** Take a fresh snapshot. Must always resolve (a real frame or a placeholder) or reject when even that fails. */
   capture: () => Promise<Capture>;
-  /** Render the "camera slow" card when there's no earlier image to fall back on. */
+  /** Render the "camera slow" card when there's no image yet. */
   placeholder: (reason: string) => Promise<Buffer>;
   deadlineMs?: number;
   now?: () => number;
 }
 
 /**
- * Answers every snapshot within the deadline: the fresh capture if it's in time, else the last
- * good image (any age, the owner's call), else a "camera slow" card. A late capture keeps running
- * and refreshes the last good image for next time. Concurrent requests share one capture, so a
- * slow camera never piles up ffmpeg runs. Every answer is logged with its timing.
+ * Answers snapshots without making the Home app wait (#99). Once a camera has any image, every
+ * snapshot is answered at once with the latest one and a fresh capture runs in the background
+ * (concurrent requests share it, so a slow camera never piles up ffmpeg runs). "Latest" is the
+ * newest finished capture: a real frame, or the #64 card saying why the camera is down. A capture
+ * that's merely slow changes nothing until it finishes. The very first snapshot waits for a fresh
+ * capture up to the deadline, then gets a "camera slow" card. Every answer is logged.
  */
 export class SnapshotServer {
-  private lastGood?: { jpeg: Buffer; at: number };
+  private lastAnswer?: { jpeg: Buffer; at: number; real: boolean };
+  private lastGoodAt?: number;
   private inflight?: { started: number; done: Promise<Capture> };
   private readonly deadlineMs: number;
   private readonly now: () => number;
@@ -49,12 +53,25 @@ export class SnapshotServer {
     this.now = o.now ?? Date.now;
   }
 
-  /** Age of the last good image in ms, or null if there's none yet (admin/status use). */
+  /** Age of the last real picture in ms, or null if there's none yet (admin/status use). */
   lastGoodAgeMs(): number | null {
-    return this.lastGood ? this.now() - this.lastGood.at : null;
+    return this.lastGoodAt === undefined ? null : this.now() - this.lastGoodAt;
   }
 
   async get(): Promise<Buffer> {
+    // Instant answer once there's anything to show (owner's call): every millisecond here is a
+    // millisecond before a queued live view's START. The refresh runs in the background.
+    if (this.lastAnswer) {
+      const served = this.lastAnswer;
+      this.fresh().done.catch((err: Error) => this.o.log.warn(`snapshot refresh failed (${err.message}); the Home app keeps the previous image`));
+      this.o.log.info(`snapshot: answered at once with the ${served.real ? "last picture" : "'why' card"} from ${this.agoOf(served.at)} ago; refreshing in the background`);
+      return served.jpeg;
+    }
+    return this.firstAnswer();
+  }
+
+  /** No image yet: wait for a fresh capture up to the deadline, then the "camera slow" card. */
+  private async firstAnswer(): Promise<Buffer> {
     const asked = this.now();
     const run = this.fresh();
     let timer: NodeJS.Timeout | undefined;
@@ -62,42 +79,30 @@ export class SnapshotServer {
     try {
       const first = await Promise.race([run.done, late]);
       if (first !== "late") {
-        const ms = this.now() - asked;
-        if (first.real) this.o.log.info(`snapshot ${first.from}: fresh in ${ms} ms`);
-        else this.o.log.warn(`snapshot ${first.from}: no picture (${first.reason}) after ${ms} ms; served the placeholder card`);
+        this.o.log.info(`snapshot: first answer after ${this.now() - asked} ms`);
         return first.jpeg;
       }
-    } catch (err) {
-      // The capture couldn't even produce a placeholder: an earlier picture beats an error.
-      if (this.lastGood) {
-        this.o.log.warn(`snapshot failed (${(err as Error).message}); served the last good image from ${this.ago()} ago`);
-        return this.lastGood.jpeg;
-      }
-      throw err;
     } finally {
       clearTimeout(timer);
     }
-
-    const waited = this.now() - run.started;
-    if (this.lastGood) {
-      this.o.log.warn(`snapshot: no fresh picture within ${this.deadlineMs} ms (the capture has been running ${waited} ms); ` +
-        `served the last good image from ${this.ago()} ago so the Home app doesn't give up. The capture carries on and refreshes it.`);
-      return this.lastGood.jpeg;
-    }
-    this.o.log.warn(`snapshot: no fresh picture within ${this.deadlineMs} ms and no earlier picture yet; served the "camera slow" card. The capture carries on.`);
+    run.done.catch((err: Error) => this.o.log.warn(`snapshot capture failed after the deadline (${err.message})`));
+    this.o.log.warn(`snapshot: no picture within ${this.deadlineMs} ms and none earlier; served the "camera slow" card. The capture carries on, and the next snapshot uses it.`);
     return this.o.placeholder("camera slow to answer");
   }
 
-  /** The capture in flight, or a new one. Successful real frames become the last good image. */
+  /** The capture in flight, or a new one. Whatever it finishes with is what the next snapshot serves. */
   private fresh(): { started: number; done: Promise<Capture> } {
     if (this.inflight) return this.inflight;
     const started = this.now();
     const done = this.o.capture().then((c) => {
+      const ms = this.now() - started;
       if (c.real) {
-        const ms = this.now() - started;
-        if (ms > this.deadlineMs) this.o.log.info(`snapshot ${c.from}: the late capture finished after ${ms} ms; the next snapshot uses it`);
-        this.lastGood = { jpeg: c.jpeg, at: this.now() };
+        this.o.log.info(`snapshot ${c.from}: captured in ${ms} ms`);
+        this.lastGoodAt = this.now();
+      } else {
+        this.o.log.warn(`snapshot ${c.from}: no picture (${c.reason}) after ${ms} ms; snapshots show the card saying so until the camera answers`);
       }
+      this.lastAnswer = { jpeg: c.jpeg, at: this.now(), real: c.real };
       return c;
     });
     const entry = { started, done };
@@ -107,8 +112,8 @@ export class SnapshotServer {
     return entry;
   }
 
-  private ago(): string {
-    const s = Math.round((this.now() - (this.lastGood?.at ?? this.now())) / 1000);
+  private agoOf(at: number): string {
+    const s = Math.round((this.now() - at) / 1000);
     return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`;
   }
 }

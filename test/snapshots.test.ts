@@ -24,58 +24,68 @@ function server(capture: () => Promise<Capture>, deadlineMs = 60) {
   return { s, ...r, placeholders };
 }
 
-test("#99: a fresh snapshot inside the deadline is served, and its time is logged", async () => {
+test("#99: the first snapshot waits for a fresh capture inside the deadline, and its time is logged", async () => {
   const { s, lines } = server(async () => real("A"));
   assert.equal((await s.get()).toString(), "A");
-  assert.match(lines.join("\n"), /info snapshot through go2rtc: fresh in \d+ ms/);
+  assert.match(lines.join("\n"), /info snapshot through go2rtc: captured in \d+ ms/);
+  assert.match(lines.join("\n"), /info snapshot: first answer after \d+ ms/);
 });
 
-test("#99: a late snapshot is answered with the last good image (any age), says so, and the late one refreshes it", async () => {
+test("#99: once there's a picture, every snapshot is answered at once, even while the camera is slow; the refresh is served next", async () => {
   let n = 0;
-  const { s, lines } = server(async () => { n++; if (n === 1) return real("old"); await sleep(150); return real("new"); });
-  assert.equal((await s.get()).toString(), "old");
+  const { s, lines } = server(async () => { n++; if (n === 1) return real("one"); await sleep(150); return real(`v${n}`); });
+  assert.equal((await s.get()).toString(), "one");
   const t0 = Date.now();
-  assert.equal((await s.get()).toString(), "old", "late capture: the last good image");
-  assert.ok(Date.now() - t0 < 140, "answered at the deadline, not when the capture finished");
-  assert.match(lines.join("\n"), /warn snapshot: no fresh picture within 60 ms .*served the last good image from \d+ s ago/);
-  await sleep(150);
-  assert.match(lines.join("\n"), /the late capture finished after \d+ ms; the next snapshot uses it/);
-  assert.equal((await s.get()).toString(), "new", "still slow: now the refreshed image is the one served");
+  assert.equal((await s.get()).toString(), "one", "answered with the last picture");
+  assert.ok(Date.now() - t0 < 30, "at once, not at the capture's pace or the deadline");
+  assert.match(lines.join("\n"), /snapshot: answered at once with the last picture from \d+ s ago; refreshing in the background/);
+  await sleep(200);
+  assert.equal((await s.get()).toString(), "v2", "the background refresh is what the next snapshot gets");
 });
 
-test("#99: late with no earlier picture serves the 'camera slow' card, never silence", async () => {
+test("#99: the very first snapshot, late, serves the 'camera slow' card, never silence; the late capture is used next", async () => {
   const { s, lines, placeholders } = server(async () => { await sleep(150); return real("late"); });
   assert.equal((await s.get()).toString(), "card:camera slow to answer");
   assert.deepEqual(placeholders, ["camera slow to answer"]);
-  assert.match(lines.join("\n"), /no earlier picture yet; served the "camera slow" card/);
+  assert.match(lines.join("\n"), /none earlier; served the "camera slow" card/);
   await sleep(150);
-  assert.equal(s.lastGoodAgeMs() !== null, true, "the late capture became the last good image");
+  assert.ok(s.lastGoodAgeMs() !== null);
+  assert.equal((await s.get()).toString(), "late");
 });
 
 test("#99: requests during a slow capture share it instead of piling up ffmpeg runs", async () => {
   let runs = 0;
-  const { s } = server(async () => { runs++; await sleep(100); return real("x"); }, 500);
-  const out = await Promise.all([s.get(), s.get(), s.get()]);
-  assert.equal(runs, 1);
-  assert.deepEqual(out.map(String), ["x", "x", "x"]);
+  const { s } = server(async () => { runs++; await sleep(100); return real(`x${runs}`); }, 500);
+  assert.deepEqual((await Promise.all([s.get(), s.get(), s.get()])).map(String), ["x1", "x1", "x1"]);
+  await Promise.all([s.get(), s.get(), s.get()]); // instant answers, one background refresh between them
+  assert.equal(runs, 2);
 });
 
-test("#99: a capture that comes back as a placeholder (camera down) is served and logged, and doesn't replace the last good image", async () => {
+test("#99: a camera that goes down shows the #64 card saying why (one refresh later), and its picture again when it's back", async () => {
   let down = false;
   const { s, lines } = server(async () => (down ? { jpeg: jpeg("card:unreachable"), real: false, from: "the camera directly", reason: "camera unreachable" } : real("good")));
   await s.get();
   down = true;
+  assert.equal((await s.get()).toString(), "good", "the refresh that finds it down is still running");
+  await sleep(5);
   assert.equal((await s.get()).toString(), "card:unreachable");
   assert.match(lines.join("\n"), /warn snapshot the camera directly: no picture \(camera unreachable\)/);
+  await sleep(5); // let the refresh the last request started finish (a new request would join it)
   down = false;
+  assert.equal((await s.get()).toString(), "card:unreachable", "this request starts the refresh that finds it back");
+  await sleep(5);
+  assert.equal((await s.get()).toString(), "good");
 });
 
-test("#99: if even the placeholder fails, an earlier picture beats an error; with none, the error surfaces", async () => {
+test("#99: a refresh that fails outright keeps the previous image and says so; a first capture that fails surfaces the error", async () => {
   let fail = false;
-  const { s } = server(async () => { if (fail) throw new Error("ffmpeg unavailable"); return real("good"); });
+  const { s, lines } = server(async () => { if (fail) throw new Error("ffmpeg unavailable"); return real("good"); });
   await s.get();
   fail = true;
   assert.equal((await s.get()).toString(), "good");
+  await sleep(5);
+  assert.equal((await s.get()).toString(), "good");
+  assert.match(lines.join("\n"), /snapshot refresh failed \(ffmpeg unavailable\); the Home app keeps the previous image/);
   const bare = server(async () => { throw new Error("ffmpeg unavailable"); });
   await assert.rejects(bare.s.get(), /ffmpeg unavailable/);
 });

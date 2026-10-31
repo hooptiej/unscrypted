@@ -299,8 +299,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
   // The size the latest request asked for (requests that share one capture all get this size).
   private snapshotSize = { width: 640, height: 360 };
 
-  // Every snapshot answers within ~4 s (the iPhone drops the connection at ~5 s, #99): fresh if in
-  // time, else the last good image, else a "camera slow" card.
+  // Snapshots never make the Home app wait (#99): answered at once with the latest image while a
+  // fresh one is captured in the background; only a camera's first snapshot waits (up to ~4 s).
   private readonly snapshots = new SnapshotServer({
     name: this.camera.name,
     log: this.log,
