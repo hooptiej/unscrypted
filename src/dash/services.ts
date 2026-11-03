@@ -15,7 +15,13 @@ export type Light = "ok" | "warn" | "down";
  * `short` is the one-line label under a non-green light on the wall; `reason` is the full reason
  * (tap/hover there, and on the settings page). Both are null exactly when the light is green.
  */
-export interface LightNode { id: string; name: string; state: Light; short: string | null; reason: string | null; link?: string; children: LightNode[] }
+export interface LightNode {
+  id: string; name: string; state: Light; short: string | null; reason: string | null; link?: string; children: LightNode[];
+  /** The new-build pulse, when one is on (#103); a red light keeps it but doesn't show it. */
+  pulse?: { build: string | null; reason: string; since: number; by: string } | null;
+  /** Why this light's build page couldn't be read or saved, for the settings page; null when fine or not watched. */
+  buildError?: string | null;
+}
 export interface Reason { short: string; full: string }
 
 export { IPVLAN_REASON, IPVLAN_SHORT };

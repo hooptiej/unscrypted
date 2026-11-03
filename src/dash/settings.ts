@@ -17,7 +17,11 @@ export type ServiceCheck =
   | { kind: "bridge" }
   /** A light that can't be checked from here yet; it shows red with this reason (owner Q1 = c). */
   | { kind: "blocked"; reason: string; short?: string };
-export interface ServiceNode { id: string; name: string; link?: string; rollup?: boolean; check: ServiceCheck; children?: ServiceNode[] }
+export interface ServiceNode {
+  id: string; name: string; link?: string; rollup?: boolean; check: ServiceCheck; children?: ServiceNode[];
+  /** The build page this light watches (#103): its JSON `build` field. A new value starts the light's pulse. */
+  build?: { url: string };
+}
 export interface DashCameraPref { camera: string; label: string; shown: boolean; stream: "main" | "sub" }
 export interface DashSettings {
   idleSeconds: number;
@@ -35,11 +39,17 @@ export interface DashSettings {
    * intensity scales the glow's strength (-100 = no glow, +100 = double), size scales its ellipse.
    */
   glow: { intensity: number; size: number };
+  /**
+   * The new-build pulse's knobs (#103), whole percents from -100 to +100, 0 = the standard breath.
+   * speed: -100% slower, +100% faster. strength: -100% no halo (the "new build" label still shows), +100% doubles it.
+   */
+  pulse: { speed: number; strength: number };
   services: ServiceNode[];
 }
 
 export const GRID_MAX = 4;
 export const GLOW_MIN = -100, GLOW_MAX = 100;
+export const PULSE_MIN = -100, PULSE_MAX = 100;
 export const FONT_FILE = /^[A-Za-z0-9_-]{1,64}\.(otf|ttf|woff2?)$/;
 
 /**
@@ -84,10 +94,23 @@ export const DEFAULTS: DashSettings = {
   fonts: { ui: { kind: "system", family: "sans" }, clock: { kind: "system", family: "inherit" } },
   constructicon: { url: "" },
   glow: { intensity: 0, size: 0 },
+  pulse: { speed: 0, strength: 0 },
   services: DEFAULT_SERVICES,
 };
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+
+/** Every light in the tree, parents before their children. */
+export function flatLamps(nodes: ServiceNode[] = []): ServiceNode[] {
+  return nodes.flatMap((n) => [n, ...flatLamps(n.children ?? [])]);
+}
+
+/** null when a build-page address is usable (http or https with a host); otherwise the plain reason. */
+export function checkBuildUrl(u: string): string | null {
+  let ok = false;
+  try { const p = new URL(u); ok = (p.protocol === "http:" || p.protocol === "https:") && Boolean(p.host); } catch { ok = false; }
+  return ok ? null : "isn't a web address (http:// or https:// with a host, and a path to the page that has the build)";
+}
 
 function bad(field: string, msg: string): UserError {
   return new UserError({ attempted: "Save the dashboard settings", happened: `${field}: ${msg}`, changed: "Nothing was saved.", next: "Fix that field and save again." });
@@ -118,6 +141,7 @@ export function loadSettings(file: string): LoadedSettings {
     const d = clone(DEFAULTS);
     const migrated: string[] = [];
     const glow = loadGlow(raw.glow);
+    const pulse = loadPulse(raw.pulse);
     const s: DashSettings = {
       ...d, ...raw,
       weather: { ...d.weather, ...(raw.weather ?? {}) },
@@ -125,10 +149,12 @@ export function loadSettings(file: string): LoadedSettings {
       fonts: { ...d.fonts, ...(raw.fonts ?? {}) },
       constructicon: { url: typeof raw.constructicon?.url === "string" ? raw.constructicon.url : "" },
       glow: glow.glow,
+      pulse: pulse.pulse,
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
       services: Array.isArray(raw.services) ? raw.services.map((n: ServiceNode) => unblockIpvlanPlaceholder(renameOldServer(n), migrated)) : d.services,
     };
-    return { settings: s, warning: glow.fixed.length ? `${file}: ${glow.fixed.join("; ")}. Save the dashboard settings page to fix the file.` : null, mtimeMs, migrated };
+    const fixed = [...glow.fixed, ...pulse.fixed];
+    return { settings: s, warning: fixed.length ? `${file}: ${fixed.join("; ")}. Save the dashboard settings page to fix the file.` : null, mtimeMs, migrated };
   } catch (err) {
     // The parser's message quotes a piece of the file (hosts, the album link), and this warning is shown on
     // the open dashboard, so say where, never what.
@@ -156,6 +182,22 @@ function loadGlow(v: unknown): { glow: DashSettings["glow"]; fixed: string[] } {
     return c;
   };
   return { glow: { intensity: one("intensity"), size: one("size") }, fixed };
+}
+
+/** The pulse knobs from a hand-edited file, read the same way as the glow knobs (missing = 0%, clamped, each said). */
+function loadPulse(v: unknown): { pulse: DashSettings["pulse"]; fixed: string[] } {
+  const p = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const fixed: string[] = [];
+  if (v !== undefined && p !== v) fixed.push("pulse isn't an object, so the new-build pulse uses 0% for both sliders");
+  const one = (key: "speed" | "strength"): number => {
+    if (!(key in p)) return 0;
+    const n = typeof p[key] === "number" ? (p[key] as number) : NaN;
+    if (!Number.isFinite(n)) { fixed.push(`pulse.${key} isn't a number, so it's 0%`); return 0; }
+    const c = Math.round(Math.max(PULSE_MIN, Math.min(PULSE_MAX, n)));
+    if (c !== n) fixed.push(`pulse.${key} is ${n}, so it's ${c}% (whole numbers from ${PULSE_MIN} to ${PULSE_MAX})`);
+    return c;
+  };
+  return { pulse: { speed: one("speed"), strength: one("strength") }, fixed };
 }
 
 /** The old default's rollup was called "Server"; it checks the NAS itself, so it's "NAS" now (owner eye-check). */
@@ -307,6 +349,32 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
     };
     if ("intensity" in g) s.glow.intensity = pct(g.intensity, "Glow intensity (%)");
     if ("size" in g) s.glow.size = pct(g.size, "Glow size (%)");
+  }
+  if ("pulse" in edit) {
+    const p = edit.pulse;
+    if (!p || typeof p !== "object" || Array.isArray(p)) throw bad("New-build pulse", "must be a pair of percents (speed and strength)");
+    for (const k of Object.keys(p)) if (k !== "speed" && k !== "strength") throw bad("New-build pulse", `unknown setting "${k}" (only speed and strength)`);
+    const pct = (v: unknown, label: string): number => {
+      if (v === null || v === undefined || String(v).trim() === "") throw bad(label, `is empty; it must be a whole percent from ${PULSE_MIN} to ${PULSE_MAX} (0 = the standard breath)`);
+      return int(v, PULSE_MIN, PULSE_MAX, label);
+    };
+    if ("speed" in p) s.pulse.speed = pct(p.speed, "Pulse speed (%)");
+    if ("strength" in p) s.pulse.strength = pct(p.strength, "Pulse strength (%)");
+  }
+  if ("lampBuilds" in edit) {
+    // Each light's build page (#103): "" takes it off; a name that isn't a light is refused, nothing saved.
+    const b = edit.lampBuilds;
+    if (!b || typeof b !== "object" || Array.isArray(b)) throw bad("Light build pages", "must be a list of light names and addresses");
+    const lamps = flatLamps(s.services);
+    for (const id of Object.keys(b)) {
+      const lamp = lamps.find((n) => n.id === id);
+      if (!lamp) throw bad("Light build pages", `there's no status light called "${id}"`);
+      const u = text(b[id], 300, `Build page for ${lamp.name}`);
+      if (!u) { delete lamp.build; continue; }
+      const why = checkBuildUrl(u);
+      if (why) throw bad(`Build page for ${lamp.name}`, `"${u}" ${why}`);
+      lamp.build = { url: u };
+    }
   }
   return s;
 }

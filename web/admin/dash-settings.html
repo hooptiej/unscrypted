@@ -41,6 +41,11 @@
       <div class="row"><label for="glowSize">Glow size</label>
         <div class="knob"><input type="range" id="glowSize" min="-100" max="100" step="5" aria-describedby="glowhint"><output id="glowSizeOut" for="glowSize">0%</output></div></div>
       <p class="hint" id="glowhint">The background glow that follows the sun. 0% is the standard look; -100% intensity turns it off, +100% doubles it. Size grows or shrinks the glow (it never shrinks to nothing).</p>
+      <div class="row"><label for="pulseSpeed">New-build pulse speed</label>
+        <div class="knob"><input type="range" id="pulseSpeed" min="-100" max="100" step="5" aria-describedby="pulsehint"><output id="pulseSpeedOut" for="pulseSpeed">0%</output></div></div>
+      <div class="row"><label for="pulseStrength">New-build pulse strength</label>
+        <div class="knob"><input type="range" id="pulseStrength" min="-100" max="100" step="5" aria-describedby="pulsehint"><output id="pulseStrengthOut" for="pulseStrength">0%</output></div></div>
+      <p class="hint" id="pulsehint">A light with a new build waiting on test breathes in its own colour. 0% is the standard breath (about 4 seconds). Speed: -100% is slower, +100% faster. Strength: -100% turns the halo off (its "new build" label still shows), +100% doubles it. Reduced-motion settings show a steady halo.</p>
     </section>
   </div>
 
@@ -55,7 +60,7 @@
     <section>
       <h2>Status lights</h2>
       <div id="lights" class="lights"><p class="hint">Loading the dashboard's status lights...</p></div>
-      <p class="hint">The dashboard shows a short label under each light that isn't green; the full reason is here (and on a tap there).</p>
+      <p class="hint">The dashboard shows a short label under each light that isn't green; the full reason is here (and on a tap there). A light with a build page (a JSON address with a <code>build</code> field, for example a <code>/healthz</code> page) starts its pulse when the build changes; leave the box empty for no build watch. Save to apply.</p>
     </section>
   </div>
 

@@ -138,8 +138,8 @@ function tickPreview() {
   $("previewTime").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-/* ---------- status lights: each one's full reason (the wall shows a short label) ---------- */
-function renderLights(l) {
+/* ---------- status lights: each one's full reason (the wall shows a short label), and its build page (#103) ---------- */
+function renderLights(l, savedServices) {
   const box = $("lights");
   if (!l || l.error || !Array.isArray(l.services)) {
     const p = document.createElement("p");
@@ -148,6 +148,10 @@ function renderLights(l) {
     box.replaceChildren(p);
     return;
   }
+  // The build-page addresses come from the saved settings: the open dashboard never sends them.
+  const addresses = new Map();
+  const saved = (ns) => ns.forEach((n) => { if (n.build && n.build.url) addresses.set(n.id, n.build.url); saved(n.children || []); });
+  saved(savedServices || []);
   const rows = [];
   const walk = (ns, depth) => ns.forEach((n) => {
     const row = document.createElement("div");
@@ -158,7 +162,29 @@ function renderLights(l) {
     const full = document.createElement("span");
     full.className = "full";
     full.textContent = n.state === "ok" ? "" : (n.reason || n.short || "no reason given (a bug: please report it)");
-    row.append(dot, n.name, full);
+    const build = document.createElement("input");
+    build.type = "text";
+    build.className = "build";
+    build.maxLength = 300;
+    build.spellcheck = false;
+    build.autocomplete = "off";
+    build.placeholder = "build page address (optional)";
+    build.value = addresses.get(n.id) || "";
+    build.dataset.lamp = n.id;
+    build.setAttribute("aria-label", `Build page address for ${n.name}`);
+    row.append(dot, n.name, full, build);
+    if (n.pulse) {
+      const pulse = document.createElement("span");
+      pulse.className = "full acc";
+      pulse.textContent = n.pulse.build ? `new build ${n.pulse.build} is waiting on test` : "something is waiting on test";
+      row.append(pulse);
+    }
+    if (n.buildError) {
+      const err = document.createElement("span");
+      err.className = "full warn";
+      err.textContent = `build page: ${n.buildError}`;
+      row.append(err);
+    }
     rows.push(row);
     walk(n.children || [], depth + 1);
   });
@@ -239,6 +265,8 @@ function camRow(cam) {
 
 /* ---------- background glow knobs (#25): -100..+100 %, 0 = the standard look ---------- */
 const GLOW_KNOBS = [["glowIntensity", "intensity"], ["glowSize", "size"]];
+/* the new-build pulse knobs (#103): the same -100..+100 % shape, 0 = the standard breath */
+const PULSE_KNOBS = [["pulseSpeed", "speed"], ["pulseStrength", "strength"]];
 const pctText = (v) => `${v > 0 ? "+" : ""}${v}%`;
 function showKnob(id) {
   const input = $(id);
@@ -258,7 +286,7 @@ function render(data) {
   fontSelect($("fontClock"), "clock", s.fonts.clock);
   void updatePreview();
   $("cams").replaceChildren(...data.cameras.map(camRow));
-  renderLights(data.lights);
+  renderLights(data.lights, s.services);
   updateGrid();
   $("phSource").value = s.photos.source;
   $("phUrl").value = s.photos.icloudUrl;
@@ -274,6 +302,8 @@ function render(data) {
   $("poll").value = s.pollSeconds;
   const glow = s.glow || { intensity: 0, size: 0 };
   for (const [id, key] of GLOW_KNOBS) { $(id).value = glow[key] ?? 0; showKnob(id); }
+  const pulse = s.pulse || { speed: 0, strength: 0 };
+  for (const [id, key] of PULSE_KNOBS) { $(id).value = pulse[key] ?? 0; showKnob(id); }
   if (data.warning) say("err", data.warning);
   $("save").disabled = false;
 }
@@ -297,6 +327,9 @@ function payload() {
     weather: wx,
     idleSeconds: $("idle").value, reloadMinutes: $("reload").value, pollSeconds: $("poll").value,
     glow: { intensity: $("glowIntensity").value, size: $("glowSize").value },
+    pulse: { speed: $("pulseSpeed").value, strength: $("pulseStrength").value },
+    // every light's build-page box as shown; an empty one takes its build page off
+    lampBuilds: Object.fromEntries([...document.querySelectorAll("#lights input[data-lamp]")].map((i) => [i.dataset.lamp, i.value.trim()])),
   };
 }
 
@@ -340,6 +373,7 @@ async function init() {
     sel.addEventListener("change", async () => { await pickConstructicon(sel, role); void updatePreview(); });
   }
   for (const [id] of GLOW_KNOBS) { $(id).addEventListener("input", () => showKnob(id)); showKnob(id); }
+  for (const [id] of PULSE_KNOBS) { $(id).addEventListener("input", () => showKnob(id)); showKnob(id); }
   $("save").addEventListener("click", () => void save());
   $("back").addEventListener("click", (e) => {
     e.preventDefault();

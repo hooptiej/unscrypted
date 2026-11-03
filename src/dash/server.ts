@@ -1,7 +1,8 @@
 /**
- * The open, watch-only dashboard server (runs in the forked dash child). GET only. No cookies are
- * set or read. Every failure is the four-part plain-words error. See the plan's Global
- * Constraints for the guardrails; the admin pane is the only place anything can be changed.
+ * The open, watch-only dashboard server (runs in the forked dash child). GET only, with two writes
+ * for the new-build pulse (#103): the open clear (POST .../clear, can only clear) and the token switch
+ * (POST .../<light>, the bearer token). No cookies are set or read. Every failure is the four-part
+ * plain-words error. The admin pane is the only place the dashboard's settings can be changed.
  */
 
 import * as http from "http";
@@ -15,6 +16,7 @@ import { ClientFrameFilter } from "./wsFilter";
 import { PHOTO_EXT } from "./photos";
 import { FONT_MIME } from "./fonts";
 import { FONT_FILE } from "./settings";
+import { PulseApi } from "./pulse";
 
 export interface PublicConfig {
   title: string; env: "prod" | "test"; adminPort: number; settingsUrl: string | null;
@@ -24,6 +26,8 @@ export interface PublicConfig {
   fonts: { ui: unknown; clock: unknown };
   /** Background glow knobs (#25), percents from -100 to +100; 0 = the default look. */
   glow: { intensity: number; size: number };
+  /** New-build pulse knobs (#103), percents from -100 to +100; 0 = the standard breath. */
+  pulse: { speed: number; strength: number };
 }
 
 export interface DashDeps {
@@ -47,6 +51,8 @@ export interface DashDeps {
   maxPerIp?: number;
   /** False until the bridge has sent its first camera list (#53); a video connection before that is "still starting", not "not in config.json". */
   camerasLoaded?: () => boolean;
+  /** The new-build pulse (#103): the open clear and the token switch. Absent = those routes say so. */
+  pulse?: PulseApi;
   log?: Logger;
 }
 
@@ -55,6 +61,51 @@ const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js
 /** The only go2rtc files the open page gets: its player. Its API (streams, frames, config) never passes. */
 const GO2RTC_FILES = new Set(["/video-stream.js", "/video-rtc.js"]);
 const STREAM_NAME = /^[a-z0-9_]{1,64}$/;
+/** /api/pulse (the list), /api/pulse/<light> (the token switch), /api/pulse/<light>/clear (the open clear). */
+const PULSE_PATH = /^\/api\/pulse(?:\/([^/]+)(\/clear)?)?$/;
+const PULSE_BODY_MAX = 4096;
+
+/** A small JSON body (the token switch's): at most 4 KB, and a bad one is refused in plain words. */
+function readJsonBody(req: http.IncomingMessage, attempted: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0, tooBig = false;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > PULSE_BODY_MAX) {
+        if (!tooBig) reject(new UserError({ attempted, happened: `The request body is bigger than ${PULSE_BODY_MAX / 1024} KB.`, changed: "Nothing.",
+          next: 'Send just {"on": true} or {"on": false}, with optional "build" and "note".' }, 413));
+        tooBig = true;
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (tooBig) return;
+      const text = Buffer.concat(chunks).toString("utf8").trim();
+      if (!text) return resolve({});
+      let j: unknown;
+      try { j = JSON.parse(text); } catch {
+        return reject(new UserError({ attempted, happened: "The request body isn't valid JSON.", changed: "Nothing.", next: 'Send {"on": true} or {"on": false} as JSON.' }, 400));
+      }
+      if (!j || typeof j !== "object" || Array.isArray(j)) {
+        return reject(new UserError({ attempted, happened: "The request body isn't a JSON object.", changed: "Nothing.", next: 'Send {"on": true} or {"on": false} as JSON.' }, 400));
+      }
+      resolve(j as Record<string, unknown>);
+    });
+    req.on("error", (err) => reject(new UserError({ attempted, happened: `The request broke off (${err.message}).`, changed: "Nothing.", next: "Send it again." }, 400)));
+  });
+}
+
+/** An optional short text field of the token switch's body: absent is undefined, too long or not text is refused by name. */
+function optionalText(body: Record<string, unknown>, key: string, max: number, attempted: string): string | undefined {
+  const v = body[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string" || v.trim().length > max) {
+    throw new UserError({ attempted, happened: `"${key}" must be text of at most ${max} characters.`, changed: "Nothing.", next: `Shorten "${key}" and send it again.` }, 400);
+  }
+  return v.trim() || undefined;
+}
 
 export function createDashServer(d: DashDeps): http.Server {
   const log = d.log ?? new Logger("dash");
@@ -101,12 +152,51 @@ export function createDashServer(d: DashDeps): http.Server {
     const method = req.method ?? "GET";
     let attempted = `${method} ${url.pathname}`;
     try {
-      if (method !== "GET" && method !== "HEAD") {
+      const pulsePath = PULSE_PATH.exec(url.pathname);
+      // The only writes here are the two pulse calls (a POST to a light, or to a light's clear).
+      const pulseWrite = Boolean(pulsePath?.[1]) && method === "POST";
+      if (method !== "GET" && method !== "HEAD" && !pulseWrite) {
         throw new UserError({ attempted, happened: "The dashboard is watch-only: it never changes anything.", changed: "Nothing.",
           next: "Change dashboard settings in the admin pane (needs the admin password)." }, 405);
       }
       if (url.pathname === "/healthz") return json(res, 200, { ok: true });
       if (url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
+      if (pulsePath) {
+        if (!d.pulse) throw new UserError({ attempted, happened: "The new-build switch isn't running in this dashboard.", changed: "Nothing.",
+          next: "Update the dashboard container to a build that has it." }, 503);
+        const api = d.pulse;
+        if (pulsePath[1] === undefined) {
+          attempted = "List the new-build lights";
+          if (method !== "GET") throw new UserError({ attempted, happened: "The list is a GET.", changed: "Nothing.", next: "Send GET /api/pulse with the token." }, 405);
+          api.checkToken(req.headers.authorization, attempted);
+          return json(res, 200, { lights: api.list() });
+        }
+        let lamp: string;
+        try { lamp = decodeURIComponent(pulsePath[1]); } catch {
+          throw new UserError({ attempted, happened: "That light name isn't valid (it has a broken % escape).", changed: "Nothing.", next: "Use a light id from GET /api/pulse." }, 400);
+        }
+        if (pulsePath[2]) {
+          // The open clear: it can only clear, and only from the dashboard's own page (the header a cross-site form can't send).
+          attempted = `Clear the new-build pulse for "${lamp}"`;
+          if (method !== "POST") throw new UserError({ attempted, happened: "Clearing a pulse is a POST.", changed: "Nothing.", next: "Tap the light on the dashboard." }, 405);
+          if (req.headers["x-dash-action"] !== "clear") {
+            throw new UserError({ attempted, happened: "This address only clears a pulse, and it's sent by the dashboard's own page (the x-dash-action: clear header is missing).",
+              changed: "Nothing.", next: "Tap the light on the dashboard. A Claude switches a pulse on with the token (see the README)." }, 400);
+          }
+          return json(res, 200, { ok: true, lamp, ...api.clear(lamp) });
+        }
+        // The token switch: POST /api/pulse/<light> with {"on": true|false}, and the token as a bearer header.
+        attempted = `Switch the new-build pulse for "${lamp}"`;
+        if (method !== "POST") throw new UserError({ attempted, happened: "The switch is a POST with a JSON body.", changed: "Nothing.", next: "See the README for the curl." }, 405);
+        api.checkToken(req.headers.authorization, attempted);
+        const body = await readJsonBody(req, attempted);
+        if (typeof body.on !== "boolean") {
+          throw new UserError({ attempted, happened: 'The body needs "on": true or "on": false.', changed: "Nothing.", next: 'Send {"on": true} to turn the pulse on, or {"on": false} to turn it off.' }, 400);
+        }
+        const build = optionalText(body, "build", 80, attempted);
+        const note = optionalText(body, "note", 200, attempted);
+        return json(res, 200, { ok: true, lamp, ...api.set(lamp, body.on, { build, note }) });
+      }
       if (STATIC[url.pathname]) {
         attempted = "Load the dashboard";
         const file = path.join(d.webRoot, STATIC[url.pathname]);

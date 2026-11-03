@@ -54,6 +54,10 @@ input:disabled,select:disabled{opacity:.45;cursor:not-allowed}
 .lights .l .dot.down{background:var(--bad)}
 .lights .l .dot.warn{background:var(--warn)}
 .lights .l .full{color:#a08560;margin-left:calc(12*var(--u))}
+.lights .l .full.acc{color:var(--acc,#a3b83f)}
+.lights .l .full.warn{color:var(--warn)}
+.lights .l input.build{font:inherit;font-size:calc(21*var(--u));width:calc(600*var(--u));max-width:100%;margin-left:calc(12*var(--u));
+  color:var(--text);background:#0b0d08;border:1px solid #3a4226;border-radius:calc(4*var(--u));padding:calc(2*var(--u)) calc(6*var(--u))}
 .hint{color:var(--mute);font-size:calc(24*var(--u));margin:calc(10*var(--u)) 0 0}
 .hint.warn{color:var(--warn)}
 .bar{grid-column:1/-1;display:flex;gap:calc(20*var(--u));align-items:center;padding:calc(6*var(--u)) calc(8*var(--u)) 0}
