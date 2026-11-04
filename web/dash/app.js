@@ -143,12 +143,80 @@ setInterval(renderAll, 2000);   // the no-picture watchdog
 
 /* which lights' full reasons are open, so a re-render (a changed poll) keeps them open */
 const openReasons = {};
+/* a short label that opens its full reason underneath on a tap (and keeps that open across re-renders) */
+function tapReason(key, text, full, cls) {
+  const why = document.createElement("button");
+  why.type = "button";
+  why.className = cls;
+  why.textContent = text;
+  why.title = full;
+  const more = document.createElement("div");
+  more.className = "whyfull";
+  more.textContent = full;
+  const setOpen = (open) => { more.hidden = !open; why.setAttribute("aria-expanded", String(open)); openReasons[key] = open; };
+  setOpen(Boolean(openReasons[key]));
+  why.addEventListener("click", () => setOpen(more.hidden));
+  return { why, more };
+}
+
+/* The new-build pulse (#103): a light breathes in its own colour while a build waits on test. Red never does:
+   a red light keeps its pulse on the server and shows it again once it's green. */
+function showsPulse(node) {
+  return Boolean(node && node.pulse && node.state !== "down");
+}
+
+/* The pulse knobs from the admin settings (#103): -100..+100 %, 0 = the standard breath (2 s, a full-strength halo).
+   Speed: -100% is 3.3 s a breath, +100% is 0.7 s. Strength: -100% no halo, +100% doubles it. The page sets these as CSS values. */
+function pulseVars(knobs) {
+  const sp = Math.max(-100, Math.min(100, Number(knobs && knobs.speed) || 0));
+  const st = Math.max(-100, Math.min(100, Number(knobs && knobs.strength) || 0));
+  const mult = 1 + st / 100;
+  return {
+    period: `${(2 * (1 - sp / 150)).toFixed(2)}s`,
+    alpha: `${Math.round(Math.max(0, Math.min(1, mult)) * 100)}%`,
+    blur: String(Math.round(8 * mult)),
+    spread: String(Math.round(2 * mult)),
+  };
+}
+{
+  const pv = pulseVars(cfg.pulse);
+  const root = document.documentElement.style;
+  root.setProperty("--pulse-period", pv.period);
+  root.setProperty("--pulse-alpha", pv.alpha);
+  root.setProperty("--pulse-blur", pv.blur);
+  root.setProperty("--pulse-spread", pv.spread);
+}
+
+/* A tap on a pulsing light (or on its link) says "seen it": the open dashboard can only clear a pulse, never set one (#103). */
+async function clearPulse(node) {
+  const key = `pulse-${node.id}`;
+  try {
+    const r = await fetch(`/api/pulse/${encodeURIComponent(node.id)}/clear`, { method: "POST", headers: { "x-dash-action": "clear" }, cache: "no-store" });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(body && body.error ? `${body.error.happened} ${body.error.next}` : `the dashboard answered ${r.status}`);
+    setNotice(key, null);
+  } catch (err) {
+    setNotice(key, `Couldn't clear the new-build pulse on ${node.name} (${err.message}). It stays on until you try again.`);
+    return;
+  }
+  void pollState();
+}
+
 function svcNode(node) {
   const wrap = document.createElement("div");
   const line = document.createElement("div");
   line.className = "sline";
   const dot = document.createElement("span");
-  dot.className = `dot ${node.state}`;
+  dot.className = `dot ${node.state}${showsPulse(node) ? " pulse" : ""}`;
+  if (node.pulse) {
+    // a tap on the dot says "seen it"; it's a button for keyboards and screen readers too
+    dot.setAttribute("role", "button");
+    dot.tabIndex = 0;
+    dot.title = "Tap when you've seen this build";
+    dot.setAttribute("aria-label", `${node.name}: a new build is waiting. Tap to clear.`);
+    dot.addEventListener("click", () => void clearPulse(node));
+    dot.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void clearPulse(node); } });
+  }
   if (node.link) {
     // a new tab, so the dashboard keeps running and its self-refresh never strands the page
     const a = document.createElement("a");
@@ -156,6 +224,8 @@ function svcNode(node) {
     a.target = "_blank";
     a.rel = "noopener";
     a.textContent = node.name;
+    // opening the test install is seeing its build too (#103)
+    if (node.pulse) a.addEventListener("click", () => void clearPulse(node));
     line.append(dot, a);
   } else {
     line.append(dot, node.name);
@@ -166,20 +236,15 @@ function svcNode(node) {
   const full = node.reason || "";
   const short = node.short || full;
   if (node.state !== "ok" || short) {
-    const text = short || "no reason given (a bug: please report it)";
-    const why = document.createElement("button");
-    why.type = "button";
-    why.className = "why";
-    why.textContent = text;
-    why.title = full || text;
-    const more = document.createElement("div");
-    more.className = "whyfull";
-    more.textContent = full || text;
-    const setOpen = (open) => { more.hidden = !open; why.setAttribute("aria-expanded", String(open)); openReasons[node.id] = open; };
-    setOpen(Boolean(openReasons[node.id]));
-    why.addEventListener("click", () => setOpen(more.hidden));
-    line.append(why);
-    wrap.append(more);
+    const tap = tapReason(node.id, short || "no reason given (a bug: please report it)", full || short || "no reason given (a bug: please report it)", "why");
+    line.append(tap.why);
+    wrap.append(tap.more);
+  }
+  if (node.pulse) {
+    // the "new build" label; its full reason opens on a tap, the same as the reasons do
+    const tap = tapReason(`${node.id}:pulse`, "new build", node.pulse.reason, "why pulse-tag");
+    line.append(tap.why);
+    wrap.append(tap.more);
   }
   if (node.children && node.children.length) {
     const kids = document.createElement("div");

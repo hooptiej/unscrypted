@@ -22,7 +22,7 @@ const title = process.env.UNSCRYPTED_DASH_TITLE || (hapOff ? "Homedash - TEST" :
 const adminUrl = parseBaseUrl("UNSCRYPTED_ADMIN_URL", process.env.UNSCRYPTED_ADMIN_URL);
 if (adminUrl.error) log.warn(adminUrl.error);
 const rt = new DashRuntime({ dir, title, env: hapOff ? "test" : "prod", adminPort: Number(process.env.UNSCRYPTED_ADMIN_PORT ?? 8190), log,
-  adminUrl: adminUrl.url, adminUrlError: adminUrl.error });
+  adminUrl: adminUrl.url, adminUrlError: adminUrl.error, pulseTokenFile: process.env.UNSCRYPTED_DASH_PULSE_TOKEN_FILE || undefined });
 
 process.on("message", (raw: unknown) => {
   const m = checkToDash(raw);
@@ -109,7 +109,7 @@ const server = createDashServer({
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
   publicConfig: () => rt.publicConfig(), state: () => rt.state(), allowedStreams: () => rt.allowedStreams(), camerasLoaded: () => rt.camerasLoaded,
   go2rtcInfo: () => rt.bridge?.go2rtc ?? { state: "unknown", lastError: "the bridge hasn't reported yet", nextRetryAt: null },
-  photos: () => rt.photoList(), photoFile: (id) => rt.photos.file(id), fontsDir: path.join(dir, "fonts"), log,
+  photos: () => rt.photoList(), photoFile: (id) => rt.photos.file(id), fontsDir: path.join(dir, "fonts"), pulse: rt.pulseApi(), log,
 });
 listenDash(server, host, port).then(
   () => {

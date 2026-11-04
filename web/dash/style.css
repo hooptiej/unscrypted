@@ -51,11 +51,26 @@ video-stream .info,video-stream .controls,video-stream .mode,video-stream .statu
 .svc{align-self:start;padding:calc(14*var(--u)) calc(16*var(--u));color:#8b9275;font-size:calc(24*var(--u));line-height:1.45;
   background:#151a0e;border:calc(2*var(--u)) solid #232818;border-radius:calc(10*var(--u))}
 .svc .dot{display:inline-block;width:calc(12*var(--u));height:calc(12*var(--u));border-radius:50%;
-  margin-right:calc(10*var(--u));background:#7fb23a}
+  margin-right:calc(10*var(--u));--dot:#7fb23a;background:var(--dot)}
 .svc a{color:inherit;text-decoration:none;border-bottom:calc(2*var(--u)) dotted #3f4a28}
 .svc a:hover,.svc a:focus-visible{color:#a3b83f;border-bottom-color:#a3b83f}
-.svc .dot.down{background:#d9453a}
-.svc .dot.warn{background:#e0832a}
+.svc .dot.down{--dot:#d9453a}
+.svc .dot.warn{--dot:#e0832a}
+/* #103: a new build waiting on test. The halo breathes in the lamp's own colour (--dot); red never pulses (app.js).
+   The --pulse-* values come from the admin pulse knobs; the defaults here are the standard breath. */
+:root{--pulse-period:2s;--pulse-alpha:100%;--pulse-blur:8;--pulse-spread:2}
+.svc .dot{--halo:transparent}
+.svc .dot.pulse{--halo:color-mix(in srgb,var(--dot) var(--pulse-alpha),transparent);
+  animation:svc-breathe var(--pulse-period) ease-in-out infinite}
+.svc .dot[role=button]{cursor:pointer}
+@keyframes svc-breathe{
+  0%,100%{box-shadow:0 0 0 0 transparent}
+  50%{box-shadow:0 0 calc(var(--pulse-blur)*var(--u)) calc(var(--pulse-spread)*var(--u)) var(--halo)}
+}
+@media (prefers-reduced-motion:reduce){
+  .svc .dot.pulse{animation:none;box-shadow:0 0 calc(var(--pulse-blur)*var(--u)) calc(var(--pulse-spread)*var(--u)) var(--halo)}
+}
+.svc .pulse-tag{color:#a3b83f}
 .svc .kids{margin-left:calc(5*var(--u));padding-left:calc(14*var(--u));border-left:calc(2*var(--u)) solid #2a2f1c}
 .svc .kids .kids{margin-left:calc(4*var(--u))}
 .svc .kids .kids .sline{font-size:calc(21*var(--u));color:#6f765c}
@@ -89,7 +104,8 @@ video-stream .info,video-stream .controls,video-stream .mode,video-stream .statu
   padding:calc(6*var(--u)) calc(16*var(--u));font-size:calc(22*var(--u))}
 .cam .off{text-align:center;padding:0 calc(30*var(--u))}
 /* a non-green light: one short line on the wall; tap (or hover) for the full reason underneath */
-.svc .sline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* the line clips its overflow (for the ellipsis); the padding gives the halo room on the left, the margin keeps the text where it was */
+.svc .sline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-left:calc(8*var(--u));margin-left:calc(-8*var(--u))}
 .svc .why{margin-left:calc(10*var(--u));font:inherit;font-size:calc(18*var(--u));color:#8b6f4a;background:none;border:0;padding:0;
   cursor:pointer;border-bottom:calc(2*var(--u)) dotted #4a3d28}
 .svc .why:hover,.svc .why:focus-visible{color:#c49a5c}

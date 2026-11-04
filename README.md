@@ -155,12 +155,37 @@ The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir
 
 The living-room camera dashboard (formerly the separate Homedash app) runs inside the same container, as its own supervised child process: `http://<host>:8180` (test instance: `http://10.0.1.78:8181`, tab title `Homedash - TEST`). It shows up to four live camera tiles (WebRTC, video only, straight from the bundled go2rtc), service status lights, the weather and a photo slideshow.
 
-- **Open and watch-only, by design.** There's no sign-in: anyone on the LAN can watch the cameras, the same as Homedash. Every non-GET request gets a 405. It never sends passwords, RTSP URLs, camera IPs, the setup code or tokens, and it only opens live video for the cameras in `config.json` (at most 16 viewers at once).
+- **Open and watch-only, by design.** There's no sign-in: anyone on the LAN can watch the cameras, the same as Homedash. Every request that would change something gets a 405, except the two new-build calls under [New-build pulse](#new-build-pulse-103): the open one can only clear a pulse, and the switch needs the token. It never sends passwords, RTSP URLs, camera IPs, the setup code or tokens, and it only opens live video for the cameras in `config.json` (at most 16 viewers at once).
 - **Settings** live in `./data/dash/` (`settings.json`, `fonts/`, the photo cache) and are changed on the admin pane's settings page, behind the admin password (see [Dashboard settings](#dashboard-settings)).
 - **Off switch:** `UNSCRYPTED_DASH=off`. A dashboard crash restarts only the dashboard (backoff 1 s doubling to 60 s); the HomeKit bridge and the admin pane carry on.
 - **Rebuilding the image restarts HomeKit too** (a few seconds of "No Response" in Home, and any recording in progress stops). Batch dashboard changes into as few prod deploys as possible. On the test instance, `web/dash` is bind-mounted read-only, so page-only changes need no rebuild.
 - **Background glow:** a soft olive wash that follows the sun along the bottom edge, warming at dawn and dusk. Two sliders under Display on the settings page tune it, each -100% to +100% (0% is the standard look). **Glow intensity** scales its strength: -100% turns it off, +100% doubles it. **Glow size** scales the ellipse, never smaller than 10% or larger than 200%. Both apply day and night for now. (hooptiej/unscrypted#25)
 - **The Mac kiosk** that shows it full screen lives in [`scripts/mac-kiosk/`](scripts/mac-kiosk/).
+
+### New-build pulse (#103)
+
+A status light can breathe in its own colour while a build is waiting on test for you to try. It turns on when the light's **build page** shows a new build, or when a Claude flips the token switch below. It turns off when you tap the light's dot (or open its link) on the wall, or when a Claude switches it off. Red lights never pulse; a red light keeps its pulse and shows it again once it's green. The label **new build** opens the full reason on a tap.
+
+- **Build page:** on the settings page, under *Status lights*, type a light's build page address (a JSON page with a `build` field, for example `http://<host>/healthz`). Each minute the dashboard reads it. The first build it sees is only recorded; a later, different build starts the pulse. A page that can't be read changes nothing and says why on the settings page.
+- **Look:** two sliders under *Display*, *New-build pulse speed* and *strength* (-100% to +100%, 0% is the standard breath). Reduced-motion settings show a steady halo.
+- **The switch** is token-protected. Put one line in `./secrets/dash_pulse_token` on the NAS (for example `openssl rand -base64 24 > secrets/dash_pulse_token`; `UNSCRYPTED_DASH_PULSE_TOKEN_FILE` moves it). The file is read on every call, so changing it takes effect at once. The token never reaches the browser or the logs.
+- **Its calls**, with placeholders (use your dashboard's address and your token):
+
+  ```bash
+  # list the lights, their ids and their pulses
+  curl -s -H "Authorization: Bearer <your-token>" http://<host>:8180/api/pulse
+
+  # switch a light's pulse on (build and note are optional)
+  curl -s -X POST -H "Authorization: Bearer <your-token>" -H "Content-Type: application/json" \
+    -d '{"on": true, "build": "<build>", "note": "<what to try>"}' \
+    http://<host>:8180/api/pulse/<light-id>
+
+  # switch it off
+  curl -s -X POST -H "Authorization: Bearer <your-token>" -H "Content-Type: application/json" \
+    -d '{"on": false}' http://<host>:8180/api/pulse/<light-id>
+  ```
+
+- A missing token, a wrong token, or an unknown light id is refused with the reason in words (401, 403 or 404). The open dashboard's own clear (a tap) is a POST that needs the `x-dash-action: clear` header a cross-site form can't send, and it can't switch a pulse on.
 
 ### Its own IP address (so `http://homedash.local` works with no port)
 

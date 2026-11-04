@@ -12,13 +12,19 @@ import { tcpProbe, ServiceWatcher, LightNode } from "./services";
 import { PhotoLibrary } from "./photos";
 import { listFonts, fontOut } from "./fonts";
 import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
+import { PulseStore, BuildWatch, PulseApi, makePulseApi, viewOf } from "./pulse";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
+
+/** Where the token for the token switch lives (a secrets file, read on every call), unless the environment moves it. */
+export const PULSE_TOKEN_FILE_DEFAULT = "/run/secrets/dash_pulse_token";
 
 export interface DashRuntimeOptions {
   dir: string; title: string; env: "prod" | "test"; adminPort: number; log: Logger;
   /** The admin pane's base URL when it isn't this host (UNSCRYPTED_ADMIN_URL), else null; plus why a bad one was ignored. */
   adminUrl?: string | null; adminUrlError?: string | null;
+  /** The new-build switch's token file (UNSCRYPTED_DASH_PULSE_TOKEN_FILE). Default /run/secrets/dash_pulse_token. */
+  pulseTokenFile?: string;
 }
 
 export class DashRuntime {
@@ -36,6 +42,10 @@ export class DashRuntime {
   services: LightNode[] = [];
   servicesAt: number | null = null;
   private watcher = new ServiceWatcher();
+  /** The new-build pulses (#103): pulse.json, the build pages' reads, and the token switch's calls. */
+  readonly pulse: PulseStore;
+  private buildWatch: BuildWatch;
+  private pulseCalls: PulseApi;
   /** The last good forecast stays up through a failure; the error line says how old it is. */
   weather: Weather | null = null;
   weatherError: string | null = null;
@@ -51,6 +61,24 @@ export class DashRuntime {
     this.settings = s.settings; this.settingsWarning = s.warning; this.settingsMtime = s.mtimeMs;
     if (s.warning) o.log.warn(s.warning);
     for (const m of s.migrated) o.log.info(`dashboard settings: ${m}`);
+    this.pulse = new PulseStore(path.join(o.dir, "pulse.json"));
+    if (this.pulse.warning) o.log.warn(this.pulse.warning);
+    this.buildWatch = new BuildWatch(this.pulse, o.log);
+    this.pulseCalls = makePulseApi({ store: this.pulse, tree: () => this.settings.services, tokenFile: o.pulseTokenFile ?? PULSE_TOKEN_FILE_DEFAULT,
+      log: o.log, changed: () => { this.services = this.withPulse(this.services); } });
+  }
+
+  /** The token switch and the open clear, for the dash server. */
+  pulseApi(): PulseApi { return this.pulseCalls; }
+
+  /** Each light with its pulse and its build-page error, read fresh from pulse.json (the light checks don't touch these). */
+  private withPulse(nodes: LightNode[]): LightNode[] {
+    return nodes.map((n) => ({
+      ...n,
+      pulse: viewOf(this.pulse.get(n.id)),
+      buildError: this.buildWatch.errorFor(n.id),
+      children: this.withPulse(n.children),
+    }));
   }
 
   /** Re-reads settings.json if its mtime changed. Returns true when it changed. */
@@ -89,7 +117,11 @@ export class DashRuntime {
 
   /** One round of service checks. Never throws (every check turns its failure into a reason). */
   async pollServices(): Promise<void> {
-    this.services = await this.watcher.poll(this.settings.services, () => this.bridge);
+    const [tree] = await Promise.all([
+      this.watcher.poll(this.settings.services, () => this.bridge),
+      this.buildWatch.round(this.settings.services, Date.now()),   // never throws; its reasons go on the node
+    ]);
+    this.services = this.withPulse(tree);
     this.servicesAt = Date.now();
   }
 
@@ -153,6 +185,7 @@ export class DashRuntime {
       cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream, which: x.which })),
       fonts: { ui: f.ui, clock: f.clock },
       glow: { intensity: s.glow.intensity, size: s.glow.size },
+      pulse: { speed: s.pulse.speed, strength: s.pulse.strength },
     };
   }
 
@@ -161,6 +194,6 @@ export class DashRuntime {
       bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
       services: this.services, servicesAt: this.servicesAt,
       weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince,
-      notices: [...(this.o.adminUrlError ? [this.o.adminUrlError] : []), ...this.fonts().notices] };
+      notices: [...(this.o.adminUrlError ? [this.o.adminUrlError] : []), ...(this.pulse.warning ? [this.pulse.warning] : []), ...this.fonts().notices] };
   }
 }
