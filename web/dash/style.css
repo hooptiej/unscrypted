@@ -58,7 +58,7 @@ video-stream .info,video-stream .controls,video-stream .mode,video-stream .statu
 .svc .dot.warn{--dot:#e0832a}
 /* #103: a new build waiting on test. The halo breathes in the lamp's own colour (--dot); red never pulses (app.js).
    The --pulse-* values come from the admin pulse knobs; the defaults here are the standard breath. */
-:root{--pulse-period:4s;--pulse-alpha:70%;--pulse-blur:4;--pulse-spread:1}
+:root{--pulse-period:2s;--pulse-alpha:100%;--pulse-blur:8;--pulse-spread:2}
 .svc .dot{--halo:transparent}
 .svc .dot.pulse{--halo:color-mix(in srgb,var(--dot) var(--pulse-alpha),transparent);
   animation:svc-breathe var(--pulse-period) ease-in-out infinite}

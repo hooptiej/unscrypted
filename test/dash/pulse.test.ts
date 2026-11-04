@@ -384,11 +384,11 @@ test("red never pulses; a green or amber light with a pulse does", () => {
 });
 
 test("the pulse knobs: 0% is the standard breath, and each slider moves it the way its help text says", () => {
-  assert.deepEqual(pulseVars({}), { period: "4.00s", alpha: "70%", blur: "4", spread: "1" });
-  assert.equal(pulseVars({ speed: -100 }).period, "6.67s", "slower");
-  assert.equal(pulseVars({ speed: 100 }).period, "1.33s", "faster");
-  assert.deepEqual(pulseVars({ strength: -100 }), { period: "4.00s", alpha: "0%", blur: "0", spread: "0" }, "no halo");
-  assert.deepEqual(pulseVars({ strength: 100 }), { period: "4.00s", alpha: "100%", blur: "8", spread: "2" }, "doubled");
+  assert.deepEqual(pulseVars({}), { period: "2.00s", alpha: "100%", blur: "8", spread: "2" });
+  assert.equal(pulseVars({ speed: -100 }).period, "3.33s", "slower");
+  assert.equal(pulseVars({ speed: 100 }).period, "0.67s", "faster");
+  assert.deepEqual(pulseVars({ strength: -100 }), { period: "2.00s", alpha: "0%", blur: "0", spread: "0" }, "no halo");
+  assert.deepEqual(pulseVars({ strength: 100 }), { period: "2.00s", alpha: "100%", blur: "16", spread: "4" }, "doubled");
 });
 
 test("reduced motion: the halo is steady, with no animation", () => {

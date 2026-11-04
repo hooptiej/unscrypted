@@ -165,17 +165,17 @@ function showsPulse(node) {
   return Boolean(node && node.pulse && node.state !== "down");
 }
 
-/* The pulse knobs from the admin settings (#103): -100..+100 %, 0 = the standard breath (4 s, a 70% halo).
-   Speed: -100% is 6.7 s a breath, +100% is 1.3 s. Strength: -100% no halo, +100% doubles it. The page sets these as CSS values. */
+/* The pulse knobs from the admin settings (#103): -100..+100 %, 0 = the standard breath (2 s, a full-strength halo).
+   Speed: -100% is 3.3 s a breath, +100% is 0.7 s. Strength: -100% no halo, +100% doubles it. The page sets these as CSS values. */
 function pulseVars(knobs) {
   const sp = Math.max(-100, Math.min(100, Number(knobs && knobs.speed) || 0));
   const st = Math.max(-100, Math.min(100, Number(knobs && knobs.strength) || 0));
   const mult = 1 + st / 100;
   return {
-    period: `${(4 * (1 - sp / 150)).toFixed(2)}s`,
-    alpha: `${Math.round(Math.max(0, Math.min(1, 0.7 * mult)) * 100)}%`,
-    blur: String(Math.round(4 * mult)),
-    spread: String(Math.round(mult)),
+    period: `${(2 * (1 - sp / 150)).toFixed(2)}s`,
+    alpha: `${Math.round(Math.max(0, Math.min(1, mult)) * 100)}%`,
+    blur: String(Math.round(8 * mult)),
+    spread: String(Math.round(2 * mult)),
   };
 }
 {
