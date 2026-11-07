@@ -151,6 +151,39 @@ The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir
 
 **Upgrading from 0.1.0** (config mounted as a single file, keys possibly in an anonymous volume at `/config/persist`): back up the keys from the running container first, then move `config.json` into `./config/` and copy the keys into `./data/persist/` before the first start of the new version. Check `docker inspect unscrypted` for a volume mounted at `/config`.
 
+### One-command deploy (`scripts/deploy.sh`)
+
+Once a host is set up (deploy key below), `scripts/deploy.sh` is the whole deploy, the same way across every install — at parity with Constructicon and Groundskeeper:
+
+- fetch + reset to `origin/main`
+- **(prod)** back up HAP pairing (`data/persist` → `data/persist.predeploy-<ts>`, newest 10 kept)
+- build `unscrypted:<package.json version>` and `docker compose up -d --build`
+- **refuses if that image tag already exists** — bump `"version"` in `package.json` for a new release (rollback = `--rollback <prior version>`)
+
+```bash
+./scripts/deploy.sh                 # prod or test, read from COMPOSE_FILE in .env
+./scripts/deploy.sh --rollback 0.1.14
+./scripts/deploy.sh --rebuild       # build even if the tag exists
+./scripts/deploy.sh --no-snapshot   # skip the pre-deploy pairing backup
+./scripts/deploy.sh --backup-plan   # say what the backup would do; change nothing
+```
+
+Prod vs test is read from `.env`'s `COMPOSE_FILE` (the test image is `…-test`). **A prod deploy restarts HomeKit** (the heads-up under [Dashboard](#dashboard)); the test instance has HomeKit off, so a test deploy is safe. Optional: set `UNSCRYPTED_PULSE_URL`, `UNSCRYPTED_PULSE_TOKEN_FILE` and `UNSCRYPTED_PULSE_LIGHT` (`…_TEST` for the test install) in `.env` to pulse the dashboard's status light on a successful deploy (never fatal).
+
+**Deploy-key setup (one-time, per host).** The box pulls this private repo over a **read-only SSH deploy key**, so `deploy.sh` can `git fetch` without a password or a writable credential on the box:
+
+1. `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_unscrypted_deploy -N "" -C "unscrypted-deploy@<host>"`
+2. Add the **public** key as a **read-only** deploy key on the repo (Settings → Deploy keys, or `gh repo deploy-key add ~/.ssh/id_ed25519_unscrypted_deploy.pub -R hooptiej/unscrypted`).
+3. Add an ssh alias to `~/.ssh/config`:
+   ```
+   Host github.com-unscrypted-deploy
+     HostName github.com
+     User git
+     IdentityFile ~/.ssh/id_ed25519_unscrypted_deploy
+     IdentitiesOnly yes
+   ```
+4. `git remote add origin git@github.com-unscrypted-deploy:hooptiej/unscrypted.git` in the checkout (or `set-url`).
+
 ## Dashboard
 
 The living-room camera dashboard (formerly the separate Homedash app) runs inside the same container, as its own supervised child process: `http://<host>:8180` (test instance: `http://10.0.1.78:8181`, tab title `Homedash - TEST`). It shows up to four live camera tiles (WebRTC, video only, straight from the bundled go2rtc), service status lights, the weather and a photo slideshow.
