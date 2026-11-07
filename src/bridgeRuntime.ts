@@ -15,11 +15,12 @@ import { Logger } from "./logger";
 import { UnscryptedCamera } from "./camera";
 import { Supervisor, ChildStatus } from "./admin/supervisor";
 import { Go2rtcClient, Go2rtcManager, maskSecretsInLine } from "./admin/go2rtc";
-import { streamNames } from "./admin/go2rtcConfig";
+import { streamNames } from "./shared/streams";
 import { Go2rtcWatcher } from "./admin/go2rtcWatch";
 import { cameraDirectText, SourceSelector, sourceText } from "./source";
 import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
-import { UserError, toErrorJson } from "./admin/errors";
+import { UserError, toErrorJson } from "./shared/errors";
+import { resolveChildEntry } from "./shared/childEntry";
 import { dashCameras, ToDash } from "./dash/ipc";
 
 export interface RuntimeOptions {
@@ -40,24 +41,6 @@ export interface RuntimeOptions {
   dash: { host: string; port: number; enabled: boolean; dir: string; title?: string; disabledReason?: string };
   /** Graceful shutdown; Docker's restart policy brings the bridge back. */
   requestRestart: (reason: string) => void;
-}
-
-/** The admin child's entry: compiled main.js, or main.ts when running under tsx (npm run dev). */
-function resolveAdminEntry(): string | null {
-  const js = path.join(__dirname, "admin", "main.js");
-  if (fs.existsSync(js)) return js;
-  const ts = path.join(__dirname, "admin", "main.ts");
-  if (__filename.endsWith(".ts") && fs.existsSync(ts)) return ts;
-  return null;
-}
-
-/** The dashboard child's entry, resolved the same way as the admin pane's. */
-function resolveDashEntry(): string | null {
-  const js = path.join(__dirname, "dash", "main.js");
-  if (fs.existsSync(js)) return js;
-  const ts = path.join(__dirname, "dash", "main.ts");
-  if (__filename.endsWith(".ts") && fs.existsSync(ts)) return ts;
-  return null;
 }
 
 export class BridgeRuntime {
@@ -126,7 +109,7 @@ export class BridgeRuntime {
     }
 
     const a = this.o.admin;
-    const entry = a.enabled ? resolveAdminEntry() : null;
+    const entry = a.enabled ? resolveChildEntry("admin") : null;
     if (!a.enabled) {
       log.info(`admin pane not started: ${a.disabledReason ?? "disabled (UNSCRYPTED_ADMIN=off)"}.`);
     } else if (!entry) {
@@ -161,7 +144,7 @@ export class BridgeRuntime {
     }
 
     const dz = this.o.dash;
-    const dashEntry = dz.enabled ? resolveDashEntry() : null;
+    const dashEntry = dz.enabled ? resolveChildEntry("dash") : null;
     if (!dz.enabled) {
       this.dashOff = dz.disabledReason ?? "disabled (UNSCRYPTED_DASH=off)";
       log.info(`dashboard not started: ${this.dashOff}.`);

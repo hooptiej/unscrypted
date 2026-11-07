@@ -6,7 +6,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { UserError } from "../admin/errors";
+import { UserError } from "../shared/errors";
 
 export type SystemFamily = "sans" | "serif" | "mono" | "inherit";
 export type FontSpec = { kind: "system"; family: SystemFamily } | { kind: "file"; file: string };

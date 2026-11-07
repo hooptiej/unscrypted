@@ -5,36 +5,14 @@
  * loopback-only RTSP restream.
  */
 
-import { ResolvedCamera, ResolvedConfig } from "../config";
+import { ResolvedConfig } from "../config";
+import { streamNames } from "../shared/streams";
 
 export interface Go2rtcPorts { api: number; webrtc: number | null; rtsp: number | null }
 
 /** go2rtc's loopback restream address for one stream (what HomeKit's ffmpeg reads, #16). */
 export function restreamUrl(rtspPort: number, stream: string): string {
   return `rtsp://127.0.0.1:${rtspPort}/${stream}`;
-}
-
-export function streamSlug(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "camera";
-}
-
-/**
- * Camera name -> go2rtc stream names. Collision-safe in config order: a camera's main slug is
- * bumped (`_2`, `_3`...) until neither it nor its `_sub` twin is taken by an earlier camera.
- */
-export function streamNames(cams: Pick<ResolvedCamera, "name" | "rtspSub">[]): Map<string, { main: string; sub?: string }> {
-  const used = new Set<string>();
-  const out = new Map<string, { main: string; sub?: string }>();
-  for (const c of cams) {
-    const base = streamSlug(c.name);
-    let slug = base;
-    for (let i = 2; used.has(slug) || used.has(`${slug}_sub`); i++) slug = `${base}_${i}`;
-    used.add(slug);
-    const sub = c.rtspSub ? `${slug}_sub` : undefined;
-    if (sub) used.add(sub);
-    out.set(c.name, { main: slug, sub });
-  }
-  return out;
 }
 
 /** JSON strings are valid YAML scalars, so JSON.stringify quotes safely. */
@@ -51,6 +29,12 @@ export function buildGo2rtcYaml(cfg: Pick<ResolvedConfig, "cameras">, ports: Go2
     `  listen: ${q(ports.rtsp ? `127.0.0.1:${ports.rtsp}` : "")}`,
     "webrtc:",
     `  listen: ${q(ports.webrtc ? `:${ports.webrtc}` : "")}`,
+    // go2rtc's SRTP (:8443) and RTMP (:1935) servers have defaults of their own. Neither is used
+    // here, so they are switched off in writing (an empty listen) and can never quietly open (#45).
+    "srtp:",
+    '  listen: ""',
+    "rtmp:",
+    '  listen: ""',
     "log:",
     "  level: info",
     "streams:",

@@ -31,6 +31,7 @@
 
 import * as http from "http";
 import * as net from "net";
+import * as dns from "dns";
 import * as crypto from "crypto";
 import { URL } from "url";
 import { Logger } from "./logger";
@@ -308,15 +309,49 @@ function escapeXml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** The biggest notification body the receiver reads (#42). Real ones are a few KB; anything bigger is refused. */
+export const NOTIFY_MAX_BODY_BYTES = 256 * 1024;
+/** A refused sender is logged at most this often per address (#42), so a flood can't fill the log. */
+const REFUSAL_LOG_EVERY_MS = 60_000;
+const REFUSAL_MEMORY = 256;
+
+/** "::ffff:10.0.0.5" -> "10.0.0.5": the form a camera's configured address is compared in. */
+const plainAddress = (a: string | undefined): string => (a ?? "").replace(/^::ffff:/i, "").toLowerCase();
+
+/**
+ * The addresses a camera's push notifications can come from: its configured ONVIF host. An IP
+ * is used as is; a name is looked up (all its addresses). A lookup that fails is logged at WARN and
+ * gives none, so the camera's pushes are refused (loudly, naming the sender) rather than let in.
+ */
+export async function resolveSenderAddresses(host: string, log: Logger): Promise<string[]> {
+  if (net.isIP(host)) return [plainAddress(host)];
+  try {
+    return (await dns.promises.lookup(host, { all: true })).map((a) => plainAddress(a.address));
+  } catch (err) {
+    log.warn(
+      `couldn't look up the camera address "${host}" (${(err as Error).message}), so its push notifications can't be ` +
+        `matched to it and will be refused until it resolves. Use the camera's IP address as its ONVIF host, or fix DNS.`,
+    );
+    return [];
+  }
+}
+
 /**
  * Shared HTTP receiver for ONVIF push notifications. One listener, path-routed
  * so multiple cameras can share a single port. Lazily started on first use.
+ *
+ * It listens on every address, so it only answers cameras it knows (#42): a request from an
+ * address that isn't one of the registered cameras is refused with a 403 and a WARN naming the
+ * sender (rate-limited per address), and a body over NOTIFY_MAX_BODY_BYTES is refused with a 413
+ * and the connection dropped. Neither reaches a camera's handler, so neither can fake motion or
+ * grow the bridge's memory.
  */
 export class NotificationServer {
   private static instance: NotificationServer | null = null;
   private server: http.Server | null = null;
   private port = 0;
-  private readonly handlers = new Map<string, (body: string) => void>();
+  private readonly handlers = new Map<string, { handler: (body: string) => void; senders: Set<string> }>();
+  private readonly refusals = new Map<string, { at: number; skipped: number }>();
   private starting: Promise<number> | null = null;
 
   private constructor(private readonly log: Logger) {}
@@ -363,18 +398,69 @@ export class NotificationServer {
     return this.starting;
   }
 
+  /** True when `from` is the address of a camera that has registered a handler. */
+  private isKnownSender(from: string): boolean {
+    for (const h of this.handlers.values()) if (h.senders.has(from)) return true;
+    return false;
+  }
+
+  /** WARN about a refused request, once a minute per address; the next one says how many it skipped. */
+  private warnRefused(from: string, what: string, why: string): void {
+    const now = Date.now();
+    const seen = this.refusals.get(from);
+    if (seen && now - seen.at < REFUSAL_LOG_EVERY_MS) {
+      seen.skipped += 1;
+      return;
+    }
+    if (this.refusals.size >= REFUSAL_MEMORY) this.refusals.clear();
+    this.refusals.set(from, { at: now, skipped: 0 });
+    const more = seen && seen.skipped > 0 ? ` (${seen.skipped} more from it in the last minute)` : "";
+    this.log.warn(`refused ${what} from ${from || "an unknown address"}: ${why}${more}`);
+  }
+
+  /** Answer a refusal without reading the rest of the request, then drop the connection. */
+  private refuse(req: http.IncomingMessage, res: http.ServerResponse, status: number, reason: string): void {
+    res.writeHead(status, { "Content-Type": "text/plain", Connection: "close" });
+    res.end(`${reason}\n`, () => req.socket.destroy());
+  }
+
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const path = (req.url ?? "").split("?")[0];
+    const from = plainAddress(req.socket.remoteAddress);
+    const what = `an ONVIF notification (${req.method} ${path.slice(0, 80)})`;
+    if (!this.isKnownSender(from)) {
+      this.warnRefused(from, what, "that address isn't one of the ONVIF cameras in config.json, so it was ignored and no motion was raised. " +
+        "If it is a camera, set its ONVIF host to the address it sends from.");
+      return this.refuse(req, res, 403, "not a known camera");
+    }
+    const tooBig = (why: string) => {
+      this.warnRefused(from, what, `${why} (the limit is ${NOTIFY_MAX_BODY_BYTES / 1024} KB; real notifications are a few KB), so it was dropped and the connection closed.`);
+      this.refuse(req, res, 413, "notification too large");
+    };
+    if (Number(req.headers["content-length"]) > NOTIFY_MAX_BODY_BYTES) return tooBig("its body is declared bigger than the limit");
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    let size = 0;
+    let over = false;
+    req.on("data", (c: Buffer) => {
+      if (over) return;
+      size += c.length;
+      if (size > NOTIFY_MAX_BODY_BYTES) {
+        over = true;
+        chunks.length = 0;
+        tooBig("its body grew past the limit");
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => {
-      const path = (req.url ?? "").split("?")[0];
-      const handler = this.handlers.get(path);
-      // Always ACK so the camera doesn't tear the subscription down.
+      if (over) return;
+      const entry = this.handlers.get(path);
+      // Always ACK a known camera so it doesn't tear the subscription down.
       res.writeHead(200, { "Content-Type": "application/soap+xml" });
       res.end(`<?xml version="1.0"?><s:Envelope xmlns:s="${SOAP_ENV}"><s:Body/></s:Envelope>`);
-      if (handler) {
+      if (entry) {
         try {
-          handler(Buffer.concat(chunks).toString("utf8"));
+          entry.handler(Buffer.concat(chunks).toString("utf8"));
         } catch (err) {
           this.log.error(`handler for ${path} threw: ${(err as Error).message}`);
         }
@@ -384,14 +470,16 @@ export class NotificationServer {
     });
   }
 
-  register(path: string, handler: (body: string) => void): void {
-    this.handlers.set(path, handler);
+  /** `senders`: the addresses this camera's notifications come from (see resolveSenderAddresses). */
+  register(path: string, handler: (body: string) => void, senders: string[]): void {
+    this.handlers.set(path, { handler, senders: new Set(senders.map(plainAddress)) });
   }
 
   unregister(path: string): void {
     this.handlers.delete(path);
     if (this.handlers.size === 0 && this.server) {
       this.log.info("no cameras left; stopping notification receiver");
+      this.refusals.clear();
       this.server.close();
       this.server = null;
       this.port = 0;
@@ -619,7 +707,8 @@ export class OnvifMotionSource {
     this.notifyServer = NotificationServer.shared(this.log);
     const port = await this.notifyServer.ensureStarted(this.options.notifyPort);
     this.notifyPath = `/onvif-notify/${encodeURIComponent(this.cameraName)}`;
-    this.notifyServer.register(this.notifyPath, (body) => this.onNotify(body));
+    const senders = await resolveSenderAddresses(this.clientHost, this.log);
+    this.notifyServer.register(this.notifyPath, (body) => this.onNotify(body), senders);
     const consumer = `http://${localIp}:${port}${this.notifyPath}`;
 
     const res = await this.client.post(

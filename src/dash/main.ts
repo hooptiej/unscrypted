@@ -7,7 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createDashServer, listenDash } from "./server";
-import { UserError } from "../admin/errors";
+import { UserError } from "../shared/errors";
 import { DashRuntime } from "./runtime";
 import { checkToDash } from "./ipc";
 import { Logger } from "../logger";

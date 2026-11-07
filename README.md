@@ -92,6 +92,7 @@ For cameras that have no Foscam CGI, unscrypted subscribes to the camera's ONVIF
 | `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `60000`, i.e. 60s — long enough that outdoor wind-gust gaps don't clear the sensor and flap HomeKit's event channel; see #65). |
 | `notifyPort` | For push cameras (see below): TCP port the local notification receiver listens on. Default `0` (ephemeral). Set a fixed port if a firewall sits between unscrypted and the cameras. One receiver is shared across all ONVIF cameras. |
 | `notifyHost` | Override the local IP advertised to the camera as the notification consumer address (default: auto-detected). Set this if auto-detection picks the wrong NIC, e.g. in Docker with a custom network. |
+| (push security) | The push receiver only accepts notifications **from the `host` address of a configured ONVIF camera** (a host name is looked up; an IP is safest), and refuses a body over 256 KB. Anything else gets a 403/413 and a `refused an ONVIF notification from <address>` WARN in the log (at most once a minute per address). If a real camera sends from a different address than its ONVIF `host`, set `host` to the address it sends from. |
 
 unscrypted tries **PullPoint** first (it long-polls the camera, no inbound server needed). If the camera doesn't implement PullPoint — many XM cameras return `ActionNotSupported` — it automatically falls back to **WS-BaseNotification push**: the camera POSTs notifications to a small HTTP receiver unscrypted hosts. The active mode is logged at startup. It accepts the `tns1:RuleEngine/CellMotionDetector/Motion` (`IsMotion`) and `tns1:VideoSource/MotionAlarm` (`State`) topics.
 
@@ -145,11 +146,27 @@ Two folders sit next to the compose file:
 |---|---|---|
 | `./config` | `/config` | `config.json` (camera passwords: gitignored, never commit it). |
 | `./data` | `/data` | `persist/`: the HAP pairing keys. **Never delete it**: losing it makes Home see a new, unpaired bridge, and every camera has to be re-added (losing rooms and recording settings). Back it up. Also `admin-session.key`, the admin pane's sign-in key (made on first start, mode 600; deleting it only signs everyone out), and `dash/`, the dashboard's settings, fonts and photo cache. |
-| `./secrets` | `/run/secrets` (read-only) | `admin_password`: one line, the admin pane's password (gitignored, mode 600). |
+| `./secrets` | `/run/secrets` | `admin_password`: one line, the admin pane's password (gitignored, mode 600). |
 
 The container's `UNSCRYPTED_PERSIST_DIR=/data/persist` overrides any `persistDir` in `config.json`. If the keys are found in the ignored `persistDir` while `/data/persist` is empty, the bridge refuses to start and says which files to copy where, rather than starting as a new bridge (#4).
 
 **Upgrading from 0.1.0** (config mounted as a single file, keys possibly in an anonymous volume at `/config/persist`): back up the keys from the running container first, then move `config.json` into `./config/` and copy the keys into `./data/persist/` before the first start of the new version. Check `docker inspect unscrypted` for a volume mounted at `/config`.
+
+### Runs as a normal user, not root (#45)
+
+Everything in the container (the bridge, the admin pane, the dashboard, go2rtc, every ffmpeg) runs as the image's unprivileged `node` user (uid 1000). The container's entrypoint starts as root for a moment, only to hand `./config` and `./data` to that user, then drops privileges. On the first start of this version on an install from an earlier release (where those folders are root-owned) it:
+
+1. **backs up the HAP pairing first**: `data/persist` is copied to `data/persist.pre-nonroot-<timestamp>` (once; if the copy fails the container refuses to start and nothing has been changed);
+2. changes the owner of the files that need it (nothing is rewritten, only ownership);
+3. checks, as the unprivileged user, that `./config` and `./data` are writable, that every pairing file is readable and that none went missing. If anything fails, the container **stops with a message saying what and how to fix it** rather than starting without the pairing (which Home would treat as a new bridge).
+
+Later starts find nothing to change. Things that follow from it:
+
+- Files under `./config` and `./data` now belong to uid 1000, so editing them by hand on the host needs `sudo`. (`scripts/deploy.sh` does this for you.) `./secrets` keeps its owner; the container only gives the app read access through its group, so `./secrets` is no longer mounted read-only.
+- The dashboard can still listen on port 80 (its own address): the entrypoint hands the app that one permission. It needs Docker's default capabilities (CHOWN, SETUID, SETGID, NET_BIND_SERVICE), so don't `cap_drop: ALL` without adding them back. If it can't, the log says so and the dashboard reports the failed port.
+- **Rolling back** to an earlier (root) image is safe: root can read files owned by uid 1000.
+- The pre-change backups (`data/persist.pre-nonroot-*`) can be deleted once you've confirmed the bridge is still paired.
+- To do the ownership change yourself instead: `sudo chown -R 1000:1000 config data` on the host, then set `user: "1000:1000"` on the compose service; the entrypoint then only checks.
 
 ### One-command deploy (`scripts/deploy.sh`)
 
@@ -286,6 +303,8 @@ These cameras handle one RTSP client well and several badly (stalls, dropped fra
 | `8554/tcp` | go2rtc RTSP restream, what HomeKit's pipelines read (`UNSCRYPTED_GO2RTC_RTSP_PORT`; `UNSCRYPTED_GO2RTC_RTSP=off` turns it off) | `127.0.0.1` only |
 | `8099-8102/tcp` | ONVIF push notifications (`onvif.notifyPort`) | all interfaces |
 | Test instance | admin `8191`, dashboard `8181`, go2rtc API `127.0.0.1:1987`, WebRTC `8558`, restream `127.0.0.1:8564`, no HomeKit | |
+
+go2rtc's own SRTP (`8443`) and RTMP (`1935`) servers are switched off in the generated go2rtc config, so they can never open. go2rtc's mDNS listener (UDP `5353`) can't be switched off: go2rtc 1.9.14 has no setting for it (it is the WebRTC library's default, which resolves the `.local` addresses browsers hide their WebRTC candidates behind), so it stays.
 
 ### Test instance
 

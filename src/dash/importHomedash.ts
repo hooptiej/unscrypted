@@ -14,8 +14,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { DashSettings, DEFAULTS, FontSpec, applySettingsEdit, saveSettings } from "./settings";
 import { listFonts } from "./fonts";
-import { readRawConfig } from "../admin/configStore";
-import { UserError } from "../admin/errors";
+import { readRawConfig } from "../shared/rawConfig";
+import { UserError } from "../shared/errors";
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 

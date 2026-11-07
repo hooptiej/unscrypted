@@ -33,6 +33,13 @@ services:
     restart: unless-stopped
     # REQUIRED for HomeKit mDNS discovery. Linux host only.
     network_mode: host
+    # Not root (#45): the image's entrypoint starts as root only to hand ./config and ./data to the
+    # `node` user (uid 1000; it backs up data/persist first), then runs the app as `node` with
+    # permission to listen below port 1024 (the dashboard on port 80). That needs the default
+    # container capabilities (CHOWN, SETUID, SETGID, NET_BIND_SERVICE): don't `cap_drop: ALL`
+    # without adding those back. To skip the root step, `chown -R 1000:1000 config data` on the
+    # host once and set `user: "1000:1000"` here; a dashboard on port 80 then needs the host's
+    # net.ipv4.ip_unprivileged_port_start lowered instead.
     volumes:
       # ./config/config.json holds camera passwords (gitignored, never committed). A folder, not a
       # single file, so it can be saved atomically later (admin pane, #2).
@@ -42,7 +49,10 @@ services:
       - ./data:/data
       # Admin pane password: one line in ./secrets/admin_password (gitignored, mode 600). The folder
       # is mounted, not the file, so a missing file is a clear "no password" message in the pane.
-      - ./secrets:/run/secrets:ro
+      # NOT read-only any more (#45): the container runs as the unprivileged `node` user, and on start
+      # its entrypoint gives that user read access to the files here (group read; the owner stays
+      # whoever made them). The app itself only ever reads them.
+      - ./secrets:/run/secrets
     environment:
       # --- structural: the same on every install --------------------------------------------------
       - UNSCRYPTED_CONFIG=/config/config.json

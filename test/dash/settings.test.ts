@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { tempDir } from "../helpers/tmp";
 import { DEFAULTS, loadSettings, applySettingsEdit, saveSettings, effectiveCameras, GRID_MAX, IPVLAN_REASON } from "../../src/dash/settings";
-import { UserError } from "../../src/admin/errors";
+import { UserError } from "../../src/shared/errors";
 
 const ctx = { cameras: ["DogCamTest", "BackyardCamTest", "GarageCamTest", "OnvifCamTest", "Couch Cam"], fontFiles: ["rMrRHh34w5nN.otf"] };
 

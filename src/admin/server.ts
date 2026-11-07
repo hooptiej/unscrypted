@@ -11,13 +11,13 @@
  */
 
 import * as http from "http";
-import * as net from "net";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin } from "./ipc";
-import { UserError, toErrorJson } from "./errors";
+import { UserError, toErrorJson } from "../shared/errors";
+import { securityHeaders, sendJson, readFontFile, proxyGo2rtcFile, proxyGo2rtcSocket, STREAM_NAME } from "../shared/http";
 import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
 import { Config, ResolvedCamera, resolveConfig, DEFAULT_MOTION_COOLDOWN_MS } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
@@ -26,7 +26,7 @@ import {
 } from "./auth";
 import { Logger } from "../logger";
 import { BUILD_STRING, healthFields } from "../version";
-import { streamNames } from "./go2rtcConfig";
+import { streamNames } from "../shared/streams";
 import { loadSettings, saveSettings, applySettingsEdit, effectiveCameras, GRID_MAX, FONT_FILE } from "../dash/settings";
 import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
 import { ConstructiconFonts, cachedFontFile } from "./constructicon";
@@ -73,24 +73,9 @@ const STATIC: Record<string, string> = { "/": "index.html", "/index.html": "inde
 /** Homedash's one-screen settings page (owner Q8 = b), its own page behind the admin sign-in. */
 export const DASH_SETTINGS_PATH = "/dash-settings";
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
-const STREAM_NAME = /^[a-z0-9_]{1,64}$/;
 /** The only go2rtc paths the proxy passes (all read-only). Its stream-editing API stays loopback-only. */
 const GO2RTC_FILES = new Set(["/video-rtc.js", "/video-stream.js"]);
 const FEEDCHECK_NAME = "__feedcheck__";
-
-export function securityHeaders(req: http.IncomingMessage): Record<string, string> {
-  const host = /^[A-Za-z0-9.\-:[\]]+$/.test(req.headers.host ?? "") ? req.headers.host! : "";
-  const ws = host ? ` ws://${host} wss://${host}` : "";
-  return {
-    "content-security-policy":
-      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; " +
-      `connect-src 'self'${ws}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
-    "x-frame-options": "DENY",
-    "x-content-type-options": "nosniff",
-    "referrer-policy": "no-referrer",
-    "cache-control": "no-store",
-  };
-}
 
 /** A cross-site request (another site's page making the browser call us) is never allowed to change anything. */
 function crossSite(req: http.IncomingMessage): string | null {
@@ -231,10 +216,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
     const c = cookieOf(req);
     return c && !keyError && verifySession(c, secret) && !revoked.has(sessionHash(c)) ? c : null;
   };
-  const json = (res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
-    res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
-    res.end(JSON.stringify(body));
-  };
+  const json = sendJson;
   const readJson = (req: http.IncomingMessage, attempted: string) => new Promise<any>((resolve, reject) => {
     let s = "";
     let tooBig = false;
@@ -311,13 +293,8 @@ export function createAdminServer(d: AdminDeps): http.Server {
         const name = url.pathname.slice("/dash-fonts/".length);
         const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the NAS, then reload." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
-        let body: Buffer;
-        try { body = fs.readFileSync(path.join(dash.dir, "fonts", name)); } catch (err) {
-          const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
-          if (code === "ENOENT") throw gone();
-          log.warn(`dashboard font "${name}" is in the fonts folder but couldn't be read (${code})`);
-          throw new UserError({ attempted, happened: `The font file "${name}" is in the dashboard's fonts folder but couldn't be read (${code}).`, changed: "Nothing.", next: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), then reload." }, 500);
-        }
+        const body = readFontFile(path.join(dash.dir, "fonts"), name, { attempted, log, notThere: gone, changed: "Nothing.",
+          unreadableNext: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), then reload." });
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length) });
         return res.end(body);
       }
@@ -678,25 +655,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
           throw new UserError({ attempted, happened: "That go2rtc address isn't passed through by the admin pane.", changed: "Nothing.", next: "Go back to the admin home page." }, 404);
         }
         if (!d.go2rtcApi) throw go2rtcDown(attempted);
-        await new Promise<void>((resolve) => {
-          const upstream = http.request(d.go2rtcApi + target, { method: "GET", timeout: 20_000 }, (up) => {
-            res.writeHead(up.statusCode ?? 502, { "content-type": up.headers["content-type"] ?? "application/octet-stream" });
-            up.pipe(res);
-            up.on("end", resolve);
-            up.on("error", (err) => { log.warn(`go2rtc preview stream broke off: ${err.message}`); res.destroy(); resolve(); });
-          });
-          upstream.on("timeout", () => upstream.destroy(new Error("go2rtc didn't answer within 20s")));
-          upstream.on("error", (err) => {
-            if (!res.headersSent) {
-              const down = go2rtcDown(attempted);
-              json(res, 503, { error: { ...down.body, happened: `${down.body.happened} (${err.message})` } });
-            } else {
-              res.destroy();
-            }
-            resolve();
-          });
-          upstream.end();
-        });
+        await proxyGo2rtcFile({ go2rtcApi: d.go2rtcApi, target, res, attempted, log, label: "preview stream", down: go2rtcDown });
         return;
       }
 
@@ -726,27 +685,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
     if (why) return refuse("403 Forbidden", `cross-site: ${why}`);
     if (!STREAM_NAME.test(src)) return refuse("400 Bad Request", `"${src}" isn't a stream name`);
     if (!d.go2rtcApi) return refuse("503 Service Unavailable", "go2rtc is disabled in this instance");
-    const target = new URL(d.go2rtcApi);
-    const up = net.connect(Number(target.port), target.hostname, () => {
-      const lines = [`GET /api/ws?src=${encodeURIComponent(src)} HTTP/1.1`];
-      for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        const k = req.rawHeaders[i];
-        if (/^(host|cookie|origin)$/i.test(k)) continue;
-        lines.push(`${k}: ${req.rawHeaders[i + 1]}`);
-      }
-      lines.push(`Host: ${target.host}`, "", "");
-      up.write(lines.join("\r\n"));
-      if (head.length) up.write(head);
-      up.pipe(socket);
-      socket.pipe(up);
-    });
-    up.on("error", (err) => {
-      log.warn(`live preview: couldn't reach go2rtc at ${target.host}: ${err.message}`);
-      if (socket.writable && !up.readable) socket.end("HTTP/1.1 503 Service Unavailable\r\nconnection: close\r\n\r\ngo2rtc isn't reachable\n");
-      socket.destroy();
-    });
-    socket.on("error", () => up.destroy());   // browser went away: just drop the upstream side
-    socket.on("close", () => up.destroy());
+    proxyGo2rtcSocket({ req, socket, head, go2rtcApi: d.go2rtcApi, src, log, label: "live preview" });
   });
 
   server.on("close", () => {

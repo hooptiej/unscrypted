@@ -12,7 +12,7 @@ import { PulseStore, BuildWatch, BuildRead, readBuild, parseBuild, makePulseApi,
 import { createDashServer, DashDeps } from "../../src/dash/server";
 import { DashRuntime } from "../../src/dash/runtime";
 import { DEFAULTS, ServiceNode, applySettingsEdit, loadSettings, saveSettings } from "../../src/dash/settings";
-import { UserError } from "../../src/admin/errors";
+import { UserError } from "../../src/shared/errors";
 import { LightNode } from "../../src/dash/services";
 import { Logger, setLogLevel } from "../../src/logger";
 

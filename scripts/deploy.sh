@@ -107,29 +107,42 @@ set_env_build() {
   echo "Build stamp: sha ${sha:-<none>}, date $date (baked into the image)."
 }
 
+# --- files the container owns (#45) --------------------------------------------------------------
+# The container runs as its own unprivileged user (uid 1000), so data/ and secrets/ belong to it, not
+# to whoever runs this script. Copying or removing them tries the plain command first and then `sudo`;
+# if neither works the step stops with the reason instead of carrying on without it.
+as_owner() {
+  "$@" 2>/dev/null && return 0
+  if command -v sudo >/dev/null 2>&1 && sudo -n "$@"; then return 0; fi
+  echo "deploy.sh: '$*' failed, with and without sudo. data/ and secrets/ belong to the container's user (uid 1000); run this as a user with sudo, or fix with: sudo chown -R 1000:1000 data" >&2
+  return 1
+}
+
 # --- pre-deploy pairing backup (prod only; test's data is disposable) ---------------------------
 do_backup() {
   [ -n "$SNAPSHOT" ] || { echo "Pre-deploy backup: skipped (--no-snapshot)."; return 0; }
   if is_test_mode; then echo "Pre-deploy backup: skipped (test instance; its data is disposable)."; return 0; fi
   if [ ! -d data/persist ]; then echo "Pre-deploy backup: no data/persist yet (first deploy?), nothing to back up."; return 0; fi
   local name="persist.predeploy-$(date +%Y%m%d-%H%M%S)"
-  cp -a data/persist "data/$name"
+  as_owner cp -a data/persist "data/$name" || exit 1
   echo "Pre-deploy backup: HAP pairing copied to data/$name (restore: stop, replace data/persist with it, start)."
   ls -1dt data/persist.predeploy-* 2>/dev/null | tail -n "+$((BACKUP_KEEP + 1))" \
-    | while IFS= read -r old; do rm -rf "$old" && echo "  pruned $old"; done
+    | while IFS= read -r old; do as_owner rm -rf "$old" && echo "  pruned $old"; done
 }
 
 pulse_dashboard() {
-  local url token_file light build note
+  local url token_file light build note token
   url="$(envget UNSCRYPTED_PULSE_URL)"; token_file="$(envget UNSCRYPTED_PULSE_TOKEN_FILE)"
   if is_test_mode; then light="$(envget UNSCRYPTED_PULSE_LIGHT_TEST)"; else light="$(envget UNSCRYPTED_PULSE_LIGHT)"; fi
   if [ -z "$url" ] || [ -z "$token_file" ] || [ -z "$light" ]; then
     echo "Dashboard pulse: skipped (set UNSCRYPTED_PULSE_URL, UNSCRYPTED_PULSE_TOKEN_FILE and UNSCRYPTED_PULSE_LIGHT[_TEST] in .env to enable)."
     return 0
   fi
-  if [ ! -r "$token_file" ]; then echo "Dashboard pulse: skipped (token file $token_file not readable)." >&2; return 0; fi
+  # The token file is mounted into the container, so it may belong to the container's user: try sudo.
+  token="$(cat "$token_file" 2>/dev/null || sudo -n cat "$token_file" 2>/dev/null || true)"
+  if [ -z "$token" ]; then echo "Dashboard pulse: skipped (token file $token_file not readable, with or without sudo)." >&2; return 0; fi
   build="$1"; note="${2:-unscrypted deploy}"
-  if curl -fsS -X POST -H "Authorization: Bearer $(cat "$token_file")" -H "Content-Type: application/json" \
+  if curl -fsS -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
        -d "{\"on\": true, \"build\": \"$build\", \"note\": \"$note\"}" "$url/api/pulse/$light" >/dev/null 2>&1; then
     echo "Dashboard pulse: lit '$light' (build $build)."
   else
