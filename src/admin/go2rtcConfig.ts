@@ -29,6 +29,12 @@ export function buildGo2rtcYaml(cfg: Pick<ResolvedConfig, "cameras">, ports: Go2
     `  listen: ${q(ports.rtsp ? `127.0.0.1:${ports.rtsp}` : "")}`,
     "webrtc:",
     `  listen: ${q(ports.webrtc ? `:${ports.webrtc}` : "")}`,
+    // go2rtc's SRTP (:8443) and RTMP (:1935) servers have defaults of their own. Neither is used
+    // here, so they are switched off in writing (an empty listen) and can never quietly open (#45).
+    "srtp:",
+    '  listen: ""',
+    "rtmp:",
+    '  listen: ""',
     "log:",
     "  level: info",
     "streams:",

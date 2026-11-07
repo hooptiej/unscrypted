@@ -24,3 +24,11 @@ test("webrtc port is used when given", () => {
   const y = buildGo2rtcYaml({ cameras: [cam("X")] } as any, { api: 1987, webrtc: 8557 });
   assert.match(y, /webrtc:\n  listen: ":8557"/);
 });
+
+test("#45: go2rtc's SRTP and RTMP servers are switched off in writing, whatever the other ports are", () => {
+  for (const ports of [{ api: 1986, webrtc: 8557, rtsp: 8554 }, { api: 1986, webrtc: null, rtsp: null }]) {
+    const y = buildGo2rtcYaml({ cameras: [cam("X")] } as any, ports);
+    assert.match(y, /\nsrtp:\n  listen: ""\n/);
+    assert.match(y, /\nrtmp:\n  listen: ""\n/);
+  }
+});

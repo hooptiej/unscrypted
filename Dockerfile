@@ -103,4 +103,16 @@ EXPOSE 8180/tcp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.UNSCRYPTED_ADMIN_PORT||8190)+'/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
+# Non-root (#45). The entrypoint starts as root only to hand ./config and ./data (bind mounts,
+# root-owned on installs from the earlier releases) to the base image's unprivileged `node` user
+# (uid 1000), after backing up the HAP pairing; it then drops to that user, with permission to
+# listen below port 1024 (the dashboard on :80), and runs the CMD. The admin pane, the dashboard,
+# go2rtc and every ffmpeg all run as `node`. setpriv ships in util-linux, which the base image
+# already has; the RUN line fails the build if it ever doesn't.
+COPY scripts/docker-entrypoint.sh /usr/local/bin/unscrypted-entrypoint
+RUN chmod 0755 /usr/local/bin/unscrypted-entrypoint \
+    && setpriv --version \
+    && id node | grep -F "uid=1000(node) gid=1000(node)"
+
+ENTRYPOINT ["/usr/local/bin/unscrypted-entrypoint"]
 CMD ["node", "dist/index.js"]
