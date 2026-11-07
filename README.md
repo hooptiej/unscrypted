@@ -187,7 +187,7 @@ Once a host is set up (deploy key below), `scripts/deploy.sh` is the whole deplo
 ./scripts/deploy.sh --backup-plan   # say what the backup would do; change nothing
 ```
 
-Prod vs test is read from `.env`'s `COMPOSE_FILE` (the test image is `…-test`). **A prod deploy restarts HomeKit** (the heads-up under [Dashboard](#dashboard)); the test instance has HomeKit off, so a test deploy is safe. Optional: set `UNSCRYPTED_PULSE_URL`, `UNSCRYPTED_PULSE_TOKEN_FILE` and `UNSCRYPTED_PULSE_LIGHT` (`…_TEST` for the test install) in `.env` to pulse the dashboard's status light on a successful deploy (never fatal).
+Prod vs test is read from `.env`'s `COMPOSE_FILE` (the test image is `…-test`). **A prod deploy restarts HomeKit** (the heads-up under [Dashboard](#dashboard)); the test instance has HomeKit off, so a test deploy is safe. Optional: set `UNSCRYPTED_PULSE_URL`, `UNSCRYPTED_PULSE_TOKEN_FILE` and `UNSCRYPTED_PULSE_LIGHT` (`…_TEST` for the test install) in `.env` to pulse the dashboard's status light on a successful deploy (never fatal). On prod the dashboard is the container that was just recreated, so the script first waits for the dashboard's `/healthz` to answer (up to 90 s; `UNSCRYPTED_PULSE_WAIT` in `.env` changes it, `0` skips the wait). If it still hasn't answered, the script says so, tries the pulse once anyway, and tells you plainly if the light stayed unlit.
 
 **Deploy-key setup (one-time, per host).** The box pulls this private repo over a **read-only SSH deploy key**, so `deploy.sh` can `git fetch` without a password or a writable credential on the box:
 
