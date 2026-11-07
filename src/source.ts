@@ -18,18 +18,21 @@
  * would fail too, and would be a second client the moment the camera is back.
  */
 import { Logger } from "./logger";
-import { ResolvedCamera } from "./config";
+import { DEFAULT_STREAMS, ResolvedCamera, ResolvedStreams, StreamChoice } from "./config";
 import { restreamUrl } from "./admin/go2rtcConfig";
 import { streamNames } from "./shared/streams";
 
 export type FeedVia = "go2rtc" | "camera";
 export type SourceMode = "go2rtc" | "direct" | "off";
-export interface FeedChoice { url: string; via: FeedVia }
+/** `stream` = which of the camera's two streams this is, so logs and the status can name it (#87). */
+export interface FeedChoice { url: string; via: FeedVia; stream?: StreamChoice }
 /**
- * What a pipeline wants: the main or sub stream; "snapshot" = the cheapest still (a stream go2rtc
- * already holds, else sub, else main); "live" = main, by the live-view policy (see LivePolicy).
+ * What a pipeline wants: "main" or "sub" outright, or a consumer, which reads the stream the camera is set
+ * to use for it (#87): "snapshot" (default: the cheapest still, a stream go2rtc already holds, else sub, else
+ * main), "live" (default main; the live-view policy decides go2rtc or the camera, see LivePolicy) and
+ * "recording" (the HKSV buffer; default main).
  */
-export type FeedWant = "main" | "sub" | "snapshot" | "live";
+export type FeedWant = "main" | "sub" | "snapshot" | "live" | "recording";
 export type FeedPicker = (which: FeedWant) => FeedChoice | null;
 /** A pipeline tells the selector its read failed (ffmpeg exited, no picture). Only go2rtc reads count. */
 export type FeedFailure = (feed: FeedChoice, why: string) => void;
@@ -112,12 +115,49 @@ export function cameraDirectText(name: string, d: CameraDirect, clock: (ms: numb
     `The camera may see two connections (go2rtc's and HomeKit's) until then. HomeKit tries go2rtc again for it at ${clock(d.until)}.`;
 }
 
+/** What a picker needs of a camera: its URLs and (#87) which stream each consumer reads. The object is mutated by reconfigure(), so read it at each call. */
+export type PickCamera = Pick<ResolvedCamera, "name" | "rtspMain" | "rtspSub"> & { streams?: ResolvedStreams };
+const streamsOf = (cam: PickCamera): ResolvedStreams => cam.streams ?? DEFAULT_STREAMS;
+
+/** The plain-words name of a choice, for logs and the status. */
+export const streamWord = (s: StreamChoice | undefined): string => (s === "sub" ? "the sub stream" : "the main stream");
+/** Where a feed reads from, in words: "through go2rtc" / "the camera directly", with "(the sub stream)" added only for the sub stream so the usual lines stay as they were. */
+export const feedWords = (f: { via: FeedVia; stream?: StreamChoice }): string =>
+  `${f.via === "go2rtc" ? "through go2rtc" : "the camera directly"}${f.stream === "sub" ? " (the sub stream)" : ""}`;
+
 /** Always the camera itself (tests, or an instance without go2rtc). */
-export function directPicker(cam: Pick<ResolvedCamera, "rtspMain" | "rtspSub">): FeedPicker {
-  return (which) => {
-    const url = which === "sub" ? cam.rtspSub : which === "snapshot" ? cam.rtspSub ?? cam.rtspMain : cam.rtspMain;
-    return url ? { url, via: "camera" } : null;
+export function directPicker(cam: PickCamera): FeedPicker {
+  const of = (stream: StreamChoice): FeedChoice | null => {
+    const url = stream === "sub" ? cam.rtspSub : cam.rtspMain;
+    return url ? { url, via: "camera", stream } : null;
   };
+  return (which) => {
+    const s = streamsOf(cam);
+    switch (which) {
+      case "main": return of("main");
+      case "sub": return of("sub");
+      case "live": return of(s.live);
+      case "recording": return of(s.recording);
+      default: return of(s.snapshot === "auto" ? (cam.rtspSub ? "sub" : "main") : s.snapshot);   // "snapshot"
+    }
+  };
+}
+
+/**
+ * What a saved change to a camera's stream choices does, one sentence per consumer that changed (#87), for
+ * the admin pane's "saved" message. Nothing here is silent: a restart of anything is said.
+ */
+export function streamChangeNotes(before: ResolvedStreams, after: ResolvedStreams): string[] {
+  const word = (s: "auto" | StreamChoice) => (s === "auto" ? "the automatic choice (a stream go2rtc already holds, else the sub stream)" : streamWord(s));
+  const out: string[] = [];
+  if (before.snapshot !== after.snapshot) out.push(`Snapshots now use ${word(after.snapshot)}; the next snapshot picks it up.`);
+  if (before.live !== after.live) {
+    out.push(`Live view now uses ${word(after.live)}; a live view that's already open keeps its current stream until it's closed, and the next one uses the new choice.`);
+  }
+  if (before.recording !== after.recording) {
+    out.push(`The recording buffer now reads ${word(after.recording)}: it switches over now (the next few seconds of pre-roll are lost); a clip being recorded right now finishes first, and a camera that isn't recording yet starts on it.`);
+  }
+  return out;
 }
 
 export const dur = (ms: number) => { const s = Math.round(ms / 1000); return s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s`; };
@@ -298,22 +338,26 @@ export class SourceSelector {
    * The picker one camera's pipelines call at each spawn. Closes over the camera object (which
    * reconfigure() mutates), so URL edits apply on the next spawn.
    */
-  picker(cam: Pick<ResolvedCamera, "name" | "rtspMain" | "rtspSub">): FeedPicker {
+  picker(cam: PickCamera): FeedPicker {
     const direct = directPicker(cam);
     return (which) => {
       if (!this.viaGo2rtc(cam.name)) return direct(which);
-      if (which === "live" && this.live === "camera") return direct("main");
+      if (which === "live" && this.live === "camera") return direct("live");
+      const s = streamsOf(cam);
       const n = this.names.get(cam.name)!;
       const port = this.o.rtspPort!;
-      const g = (stream: string): FeedChoice => ({ url: restreamUrl(port, stream), via: "go2rtc" });
-      if (which === "sub") return n.sub ? g(n.sub) : null;
-      if (which === "snapshot") {
-        // The cheapest still: a stream go2rtc already holds costs the camera nothing (no new
-        // session, #55). Otherwise the sub stream, like before; main only when there's no sub.
-        const held = [n.sub, n.main].find((s) => s && this.streamView(s)?.state === "streaming");
-        return g(held ?? n.sub ?? n.main);
-      }
-      return g(n.main);
+      const g = (stream: StreamChoice): FeedChoice | null => {
+        const name = stream === "sub" ? n.sub : n.main;
+        return name ? { url: restreamUrl(port, name), via: "go2rtc", stream } : null;
+      };
+      if (which === "main" || which === "sub") return g(which);
+      if (which === "live") return g(s.live);
+      if (which === "recording") return g(s.recording);
+      // "snapshot": by default the cheapest still: a stream go2rtc already holds costs the camera nothing
+      // (no new session, #55). Otherwise the sub stream, like before; main only when there's no sub.
+      if (s.snapshot !== "auto") return g(s.snapshot);
+      const held = (["sub", "main"] as const).find((k) => { const name = k === "sub" ? n.sub : n.main; return name && this.streamView(name)?.state === "streaming"; });
+      return g(held ?? (n.sub ? "sub" : "main"));
     };
   }
 

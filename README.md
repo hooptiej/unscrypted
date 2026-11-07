@@ -52,6 +52,7 @@ Key fields (`config.example.json` has the full shape):
 | `cameras[].host` + `rtspUser`/`rtspPassword` | unscrypted assembles `rtsp://user:pass@host:554/videoMain` and `/videoSub`. Or set `rtspMain`/`rtspSub` directly. |
 | `cameras[].foscam` | Foscam CGI motion source: CGI base (`http://<ip>:88`), username, password → drives the motion poller. |
 | `cameras[].onvif` | ONVIF motion source (for generic/XM cameras with no Foscam CGI): `host`, `port` (default `80`; **XM cameras usually need `8080`**), `username`, `password`. See below. |
+| `cameras[].streams` | Which of the camera's two streams each HomeKit part reads (optional; see [Main or sub, per camera](#main-or-sub-per-camera-87)): `{"snapshot": "auto"\|"main"\|"sub", "live": "main"\|"sub", "recording": "main"\|"sub"}`. Absent = how it always worked: snapshots automatic, live view and recording on main. `"sub"` needs a sub stream (`rtspSub`, or `host` + paths). |
 | `cameras[].prebufferSeconds` | Rolling prebuffer length (HAP requires ≥ 4). |
 | `cameras[].hksv` | Enable HomeKit Secure Video recording (default `true`). |
 | `cameras[].copyVideo` | `true` (default) copies the camera's H.264; set `false` to transcode (forces a 4s keyframe cadence — see caveat below). |
@@ -290,12 +291,27 @@ The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open
 - **Different addresses:** when the dashboard and the pane don't share a host (for example the dashboard on its own IP at port 80), set `UNSCRYPTED_ADMIN_URL` (e.g. `http://192.168.1.10:8190`, where the Settings button goes) and `UNSCRYPTED_DASH_URL` (e.g. `http://192.168.1.20/`, where the settings page sends you back). Unset, both are worked out from the browser's address and the ports. A bad value is ignored, and the dashboard says so.
 - **Fonts** are files in `./data/dash/fonts` (`.otf`, `.ttf`, `.woff`, `.woff2`), with display names in `./data/dash/fonts/names.json` (`{ "<file>": "<name>" }`). **Photos** come from an iCloud shared-album link (cached in `./data/dash/cache/icloud`) or a folder.
 
+### Main or sub, per camera (#87)
+
+Each camera has a main stream (full quality) and usually a sub stream (small). On the Cameras page, **Edit** a camera and open **Which stream each part uses**: one choice for each of
+
+| Part | Choices | Default | When a change applies |
+|---|---|---|---|
+| **Wall dashboard tile** | main, sub | what the dashboard settings say (main) | saved in the dashboard settings; the dashboard reloads within a few seconds |
+| **Snapshots** (the still in the Home app's tile) | automatic, main, sub | automatic: a stream go2rtc already holds, else sub | the next snapshot |
+| **Live view** (opening the camera in Home) | main, sub | main | the next live view; one already open keeps its stream until closed |
+| **Recording** (HomeKit Secure Video) | main, sub | main | now: the recording buffer restarts on the other stream |
+
+Nothing needs a bridge restart, and the page says so after saving. The choice is stored in `config.json` as `cameras[].streams` (the wall tile's, being the dashboard's own setting, stays in `data/dash/settings.json`); a camera you never touched has no `streams` block at all. Each camera's card on the Cameras page shows the current choices at a glance. A camera with no sub stream has **Sub** greyed out with the reason ("no sub stream configured for this camera"); a bad or impossible choice in a hand-edited `config.json` is refused by name when the bridge loads it.
+
+**Recording on the sub stream** is a real trade: the sub stream is low resolution, so clips look softer in Home (how Home treats a recording smaller than the resolutions the camera advertises has not been checked on a real camera yet). Switching the recording stream restarts the camera's recording buffer so it reads the other stream: the next few seconds of pre-roll are lost, a clip being recorded right now finishes on the old stream first (the switch follows within a couple of seconds), and a clip never mixes the two streams. The log names the camera and the stream (`recording buffer switching to reading the sub stream through go2rtc (it was reading the main stream)`). Everything still reads through go2rtc: choosing sub opens go2rtc's sub-stream session to the camera, so with main and sub both in use a camera sees up to two sessions from go2rtc (one per stream), never one per consumer.
+
 ### One connection per camera
 
 These cameras handle one RTSP client well and several badly (stalls, dropped frames, the live view in Home spinning). So since 0.1.7 the bundled go2rtc holds the one session per camera stream, and everything else reads from go2rtc instead of the camera:
 
 - **HomeKit's recording buffer** (HKSV pre-roll) reads `rtsp://127.0.0.1:8554/<stream>` (go2rtc's RTSP restream, loopback only, never on the LAN).
-- **Snapshots** read whichever stream go2rtc is already holding (costs the camera nothing), else the sub stream, never main while a sub exists.
+- **Snapshots** read whichever stream go2rtc is already holding (costs the camera nothing), else the sub stream, never main while a sub exists, unless the camera's snapshot stream is set to main or sub (see [Main or sub, per camera](#main-or-sub-per-camera-87)).
 - **The dashboard and the admin pane's preview** already played through go2rtc (WebRTC).
 - **The live view in Home** is a policy, `UNSCRYPTED_LIVE_SOURCE`: `camera` (default) opens its own camera session, which starts on a keyframe in about a second but is a second connection while someone is watching; `go2rtc` keeps one connection per camera, and a viewer joining a stream go2rtc already holds waits for the camera's next keyframe (up to one GOP: 4 s on the Boavisions, which ignore ONVIF's keyframe request).
 

@@ -46,7 +46,7 @@ test("off mode never changes, and the selector always picks the camera", () => {
   sel.update(up(1));
   assert.equal(sel.state().mode, "off");
   sel.setCameras([{ name: "Cam", rtspSub: undefined }]);
-  assert.deepEqual(sel.picker({ name: "Cam", rtspMain: "rtsp://u:p@h/11" })("main"), { url: "rtsp://u:p@h/11", via: "camera" });
+  assert.deepEqual(sel.picker({ name: "Cam", rtspMain: "rtsp://u:p@h/11" })("main"), { url: "rtsp://u:p@h/11", via: "camera", stream: "main" });
   assert.match(sourceText(sel.state(), String), /^HomeKit reads the cameras directly: go2rtc is switched off/);
 });
 
@@ -55,13 +55,13 @@ test("picker: restream in go2rtc mode, camera in direct mode, null for a missing
   const sel = new SourceSelector({ rtspPort: 8554, log: new Logger("t"), now: () => now });
   sel.setCameras([{ name: "Garage Cam", rtspSub: "rtsp://u:p@h/12" }, { name: "NoSub" }]);
   const pick = sel.picker({ name: "Garage Cam", rtspMain: "rtsp://u:p@h/11", rtspSub: "rtsp://u:p@h/12" });
-  assert.deepEqual(pick("main"), { url: "rtsp://127.0.0.1:8554/garage_cam", via: "go2rtc" });
-  assert.deepEqual(pick("sub"), { url: "rtsp://127.0.0.1:8554/garage_cam_sub", via: "go2rtc" });
+  assert.deepEqual(pick("main"), { url: "rtsp://127.0.0.1:8554/garage_cam", via: "go2rtc", stream: "main" });
+  assert.deepEqual(pick("sub"), { url: "rtsp://127.0.0.1:8554/garage_cam_sub", via: "go2rtc", stream: "sub" });
   assert.equal(sel.picker({ name: "NoSub", rtspMain: "rtsp://x/1" })("sub"), null);
   let heard = 0; sel.onChange(() => heard++);
   for (now = 5000; now <= 20_000; now += 5000) sel.update(down(now));
   assert.equal(heard, 1);
-  assert.deepEqual(pick("main"), { url: "rtsp://u:p@h/11", via: "camera" });
+  assert.deepEqual(pick("main"), { url: "rtsp://u:p@h/11", via: "camera", stream: "main" });
 });
 
 test("status text says direct, why and since when, in plain words", () => {
@@ -227,12 +227,12 @@ test("snapshot picks a held stream, else sub, never main while a sub exists; liv
   sel.update({ ...up(3), streams: { garage: view("streaming"), garage_sub: view("streaming") } });
   assert.equal(sel.picker(garage)("snapshot")!.url, "rtsp://127.0.0.1:8554/garage_sub");
   // Live view: policy "camera" (default) reads the camera even while go2rtc is healthy; "go2rtc" reads the restream.
-  assert.deepEqual(sel.picker(garage)("live"), { url: "rtsp://u:p@h/11", via: "camera" });
+  assert.deepEqual(sel.picker(garage)("live"), { url: "rtsp://u:p@h/11", via: "camera", stream: "main" });
   const all = new SourceSelector({ rtspPort: 8554, live: "go2rtc", log, now: () => 0 });
   all.setCameras(cams);
-  assert.deepEqual(all.picker(garage)("live"), { url: "rtsp://127.0.0.1:8554/garage", via: "go2rtc" });
+  assert.deepEqual(all.picker(garage)("live"), { url: "rtsp://127.0.0.1:8554/garage", via: "go2rtc", stream: "main" });
   // Direct picker (no go2rtc at all): sub for snapshots, main for live.
   const d = sel.picker(garage); for (let t = 5000; t <= 20_000; t += 5000) sel.update(down(t));
-  assert.deepEqual(d("snapshot"), { url: "rtsp://u:p@h/12", via: "camera" });
-  assert.deepEqual(d("live"), { url: "rtsp://u:p@h/11", via: "camera" });
+  assert.deepEqual(d("snapshot"), { url: "rtsp://u:p@h/12", via: "camera", stream: "sub" });
+  assert.deepEqual(d("live"), { url: "rtsp://u:p@h/11", via: "camera", stream: "main" });
 });

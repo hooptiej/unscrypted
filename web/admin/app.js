@@ -7,7 +7,7 @@ const banners = document.getElementById("banners");
 let csrf = null;
 let lastStatus = null;
 let statusError = null;
-let notices = { prebufferRestart: "", prebufferFields: [] };
+let notices = { prebufferRestart: "", prebufferFields: [], recordingStreamSwitch: "" };
 
 // ---------- helpers ----------
 
@@ -389,6 +389,7 @@ async function renderCameras() {
     const add = (k, v) => facts.append(el("dt", {}, k), el("dd", {}, v));
     if (!s) {
       add("Status", "Not running yet (saved, waiting for the bridge or a restart).");
+      add("Streams", streamsLine(cam.streams, r.dashStreams && r.dashStreams[cam.name]));
     } else {
       add("Motion source", MOTION_LABEL[s.motionKind] || s.motionKind);
       add("HKSV", s.hksv ? "on" : "off");
@@ -396,10 +397,11 @@ async function renderCameras() {
       add("Video (go2rtc)", feedText(s.feed));
       if (s.subFeed) add("Sub stream (go2rtc)", feedText(s.subFeed));
       add("HomeKit reads", viaText(s));
+      add("Streams", streamsLine(s.streams, r.dashStreams && r.dashStreams[cam.name]));
       add("Live viewers", String(s.liveSessions));
       add("Recording", s.recordingActive ? "on" : "off");
       if (s.prebuffer) add("Recording buffer", s.prebuffer.running
-        ? `running, reading ${s.prebuffer.via === "go2rtc" ? "through go2rtc" : "the camera directly"}${s.prebuffer.lastFragmentAt ? `, last video ${ago(s.prebuffer.lastFragmentAt)}` : ", no video yet"}`
+        ? `running, reading the ${s.prebuffer.stream === "sub" ? "sub" : "main"} stream ${s.prebuffer.via === "go2rtc" ? "through go2rtc" : "the camera directly"}${s.prebuffer.lastFragmentAt ? `, last video ${ago(s.prebuffer.lastFragmentAt)}` : ", no video yet"}`
         : "not running (HomeKit hasn't asked for recording)");
       add("Last motion", ago(s.lastMotionAt));
       if (s.pendingRestart) add("Pending", el("span", { class: "badtext" }, "change waits for a bridge restart"));
@@ -571,6 +573,103 @@ function globalHoldPanel(r) {
     el("div", { class: "row" }, save, reset), out);
 }
 
+// ---------- which stream each part uses (#87) ----------
+
+const STREAM_DEFAULTS = { snapshot: "auto", live: "main", recording: "main" };
+const STREAM_WORD = { auto: "automatic", main: "main", sub: "sub" };
+
+/** One line for a camera card: "Wall tile: sub · Snapshots: automatic · Live view: main · Recording: main". */
+function streamsLine(streams, dash) {
+  const s = { ...STREAM_DEFAULTS, ...(streams || {}) };
+  return `Wall tile: ${dash ? STREAM_WORD[dash] || dash : "unknown"} · Snapshots: ${STREAM_WORD[s.snapshot]} · Live view: ${STREAM_WORD[s.live]} · Recording: ${STREAM_WORD[s.recording]}`;
+}
+
+/** The four consumers. `fallback` is today's behaviour, which is what a camera with no choice saved uses. */
+const STREAM_ROWS = [
+  { key: "dash", label: "Wall dashboard tile", fallback: "main", options: [["main", "Main"], ["sub", "Sub"]],
+    hint: "The living-room dashboard's tile for this camera. This one is a dashboard setting: it's saved there, and the dashboard reloads with it within a few seconds." },
+  { key: "snapshot", label: "Snapshots", fallback: "auto", options: [["auto", "Automatic (default)"], ["main", "Main"], ["sub", "Sub"]],
+    hint: "The still picture in the Home app's tile and room view. Automatic uses the cheapest: a stream that's already running, else the sub stream. Applies to the next snapshot." },
+  { key: "live", label: "Live view", fallback: "main", options: [["main", "Main (default)"], ["sub", "Sub"]],
+    hint: "What the Home app shows when you open the camera. Applies to the next live view; one that's already open keeps its stream until it's closed." },
+  { key: "recording", label: "Recording", fallback: "main", options: [["main", "Main (default)"], ["sub", "Sub"]],
+    hint: "What HomeKit Secure Video records from. Sub is lower resolution, so clips look softer in Home." },
+];
+
+/**
+ * The "Streams" part of the camera form: one choice per consumer, current choice showing, Sub greyed (with the
+ * reason) when the camera has no sub stream. Returns { node, edit(), dashChoice(), dashChanged(), refresh() }.
+ *   o.cam         the stored camera (its `streams` are the saved choices)
+ *   o.dash        the wall tile's saved stream ("main"/"sub"), or null when it can't be read
+ *   o.dashWhy     why the wall tile's choice can't be changed here (or null)
+ *   o.hasSub      () => whether the camera has a sub stream as the form stands now
+ *   o.recordingWarning  the sentence shown when the recording choice differs from what's saved
+ */
+function streamsControl(o) {
+  const saved = { ...STREAM_DEFAULTS, ...(o.cam.streams || {}), dash: o.dash || "main" };
+  const rows = STREAM_ROWS.map((row) => {
+    const sel = el("select", { id: `streams-${row.key}`, "aria-describedby": `streams-${row.key}-hint` },
+      row.options.map(([v, t]) => el("option", { value: v }, t)));
+    sel.value = saved[row.key];
+    const why = el("p", { class: "why", hidden: true });
+    const hint = el("p", { class: "hint", id: `streams-${row.key}-hint` }, row.hint);
+    const wrap = el("div", { class: "streamrow" }, el("label", { class: "field", for: sel.id }, row.label, sel), hint, why);
+    return { row, sel, why, wrap };
+  });
+  const warn = el("div", { class: "msg amber", hidden: true }, o.recordingWarning);
+  const draw = () => {
+    const sub = o.hasSub();
+    for (const r of rows) {
+      const subOpt = [...r.sel.options].find((x) => x.value === "sub");
+      let reason = null;
+      if (r.row.key === "dash" && o.dashWhy) { reason = o.dashWhy; r.sel.disabled = true; }
+      else {
+        r.sel.disabled = false;
+        subOpt.disabled = !sub;
+        subOpt.textContent = sub ? "Sub" : "Sub (no sub stream configured for this camera)";
+        if (!sub && r.sel.value === "sub") {
+          r.sel.value = r.row.fallback;
+          reason = `Switched back to ${STREAM_WORD[r.row.fallback]}: this camera has no sub stream now, so Sub can't be used.`;
+        } else if (!sub) {
+          reason = "Sub is greyed out: no sub stream is configured for this camera. Give it a sub stream URL (Stream, above) to use it.";
+        }
+      }
+      r.why.hidden = !reason;
+      r.why.textContent = reason || "";
+    }
+    const rec = rows.find((r) => r.row.key === "recording").sel;
+    warn.hidden = rec.value === saved.recording;
+  };
+  rows.forEach((r) => r.sel.addEventListener("change", draw));
+  const get = (key) => rows.find((r) => r.row.key === key).sel.value;
+  draw();
+  return {
+    node: el("div", { class: "streams" }, rows.map((r) => r.wrap), warn),
+    refresh: draw,
+    /** The camera's `streams` for config.json: a choice equal to today's behaviour is sent as null (= not set). */
+    edit: () => Object.fromEntries(["snapshot", "live", "recording"].map((k) => [k, get(k) === STREAM_DEFAULTS[k] ? null : get(k)])),
+    dashChoice: () => get("dash"),
+    dashChanged: () => !o.dashWhy && get("dash") !== saved.dash,
+    /** These choices are now what's saved (after a successful save), so "changed" and the recording warning start over. */
+    commit: (keys) => { for (const k of keys) saved[k] = get(k); draw(); },
+  };
+}
+
+/**
+ * Save the wall tile's stream choice into the dashboard's settings (it lives there, not in config.json). Re-reads
+ * the dashboard's settings first so nothing else on that page is touched. Returns { ok: true, message } or { error }.
+ */
+async function saveDashStream(cameraName, stream) {
+  const cur = await api("GET", "/api/dash/settings");
+  if (cur.error) return { error: cur.error };
+  const cameras = (cur.cameras || []).filter((c) => !c.missing).map((c) => ({
+    camera: c.camera, label: c.label, shown: c.shown, stream: c.camera === cameraName ? stream : c.stream,
+  }));
+  const r = await api("PUT", "/api/dash/settings", { cameras });
+  if (r.error) return { error: r.error };
+  return { ok: true, message: `The wall tile for "${cameraName}" now plays the ${stream} stream (saved in the dashboard settings; the dashboard reloads with it within a few seconds).` };
+}
+
 // ---------- add / edit form ----------
 
 const PART_FIELDS = [["host", "Camera address (IP or host name)", "text"], ["rtspPort", "RTSP port", "number", "554"], ["rtspUser", "User name", "text"],
@@ -670,6 +769,20 @@ async function renderForm(name) {
   const manu = input("manufacturer", "Manufacturer", "text", "Foscam", cam.manufacturer);
   const model = input("model", "Model", "text", "IP Camera", cam.model);
 
+  // Which stream each part reads (#87).
+  const dashSaved = r.dashStreams && !isNew ? r.dashStreams[cam.name] || null : null;
+  const streamsCtl = streamsControl({
+    cam, dash: dashSaved,
+    dashWhy: isNew ? "The wall tile's choice is a dashboard setting, which can be set once the camera has been added."
+      : dashSaved ? null : "The dashboard's settings couldn't be read, so the wall tile's choice can't be changed here. Use the dashboard settings page.",
+    hasSub: () => (modeParts.checked ? true : Boolean(subIn.i.value.trim())),
+    recordingWarning: notices.recordingStreamSwitch,
+  });
+  const showStreams = () => streamsCtl.refresh();
+  subIn.i.addEventListener("input", showStreams);
+  modeUrl.addEventListener("change", showStreams);
+  modeParts.addEventListener("change", showStreams);
+
   const prebufferWarn = el("div", { class: "msg amber", hidden: true }, notices.prebufferRestart);
   const out = el("div");
   const checkOut = el("div");
@@ -708,6 +821,7 @@ async function renderForm(name) {
       if (hold !== null) blk.motionCooldownMs = hold;
       else if (stored && stored.motionCooldownMs !== undefined) blk.motionCooldownMs = null;   // back to following the default
     }
+    e.streams = streamsCtl.edit();
     e.hksv = hksv.checked;
     e.audio = audio.checked;
     e.copyVideo = copy.checked;
@@ -743,14 +857,25 @@ async function renderForm(name) {
     saveBtn.textContent = isNew ? "Adding..." : "Saving...";
     out.replaceChildren();
     const r2 = isNew ? await api("POST", "/api/cameras", buildEdit()) : await api("PUT", `/api/cameras/${encodeURIComponent(cam.name)}`, buildEdit());
+    const extras = [...(r2.notes || []), r2.warning, r2.backupPath ? `Previous config.json kept at ${r2.backupPath}.` : null];
+    // The wall tile's choice lives in the dashboard's settings: saved after the camera, and said separately (#87).
+    let dashResult = null;
+    if (!r2.error && !isNew && streamsCtl.dashChanged()) {
+      saveBtn.textContent = "Saving the wall tile...";
+      dashResult = await saveDashStream(cam.name, streamsCtl.dashChoice());
+    }
     saveBtn.disabled = false;
     saveBtn.textContent = isNew ? "Add camera" : "Save";
-    const extras = [...(r2.notes || []), r2.warning, r2.backupPath ? `Previous config.json kept at ${r2.backupPath}.` : null];
     if (r2.error) {
-      out.replaceChildren(errorBox(r2.error), ...(r2.saved ? [msgBox("amber", ...extras)] : []));
+      out.replaceChildren(errorBox(r2.error), ...(r2.saved ? [msgBox("amber", ...extras)] : []),
+        ...(streamsCtl.dashChanged() ? [msgBox("amber", "The wall tile's stream choice was not saved either, because the camera didn't save. Nothing changed.")] : []));
     } else {
       const kindClass = r2.status === 200 && r2.mode !== "restart-needed" ? "ok" : "amber";
-      out.replaceChildren(msgBox(kindClass, r2.message, ...extras));
+      streamsCtl.commit(["snapshot", "live", "recording"]);
+      if (dashResult && dashResult.ok) streamsCtl.commit(["dash"]);
+      out.replaceChildren(msgBox(kindClass, r2.message, ...extras),
+        ...(dashResult && dashResult.ok ? [msgBox("ok", dashResult.message)] : []),
+        ...(dashResult && dashResult.error ? [msgBox("amber", `The camera's settings were saved, but the wall tile's stream choice was not (it is a dashboard setting). The tile still plays the ${dashSaved} stream.`), errorBox(dashResult.error)] : []));
       await refreshStatus();
       if (isNew && r2.saved) out.append(el("p", {}, el("a", { href: `#/camera/${encodeURIComponent(inputs.name.value.trim())}` }, "Open the new camera's settings")));
     }
@@ -771,6 +896,9 @@ async function renderForm(name) {
     el("label", { class: "check" }, copy, "Copy video as-is (no transcode)"),
     el("div", { class: "two" }, pre.node, maxRec.node, manu.node, model.node),
     el("p", { class: "hint" }, "HKSV, prebuffer, manufacturer and model are things Home sees: changing them is saved now and takes effect after a bridge restart.")),
+  el("fieldset", {}, el("legend", {}, "Which stream each part uses"),
+    el("p", { class: "hint" }, "Main is the full-quality stream; Sub is the small one. Each part can use either, and the default is how it worked before this setting: snapshots automatic, live view and recording on main. Changes apply without restarting the bridge."),
+    streamsCtl.node),
   prebufferWarn,
   el("div", { class: "row" }, saveBtn, checkBtn, el("a", { href: "#/cameras" }, "Back to cameras")),
   checkWhy, checkOut, out);

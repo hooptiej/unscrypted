@@ -3,7 +3,7 @@
  * and a fake ffmpeg (the node binary running a one-line script, so real exit codes and signals).
  */
 
-import { ResolvedCamera } from "../../src/config";
+import { DEFAULT_STREAMS, ResolvedCamera } from "../../src/config";
 import { FfmpegDeps, SpawnedFfmpeg, spawnFfmpeg } from "../../src/ffmpeg";
 import { setLogLevel } from "../../src/logger";
 
@@ -12,6 +12,7 @@ export function fakeCamera(over: Partial<ResolvedCamera> = {}): ResolvedCamera {
     name: "Test Cam",
     rtspMain: "rtsp://u:p@127.0.0.1:8554/main",
     rtspSub: "rtsp://u:p@127.0.0.1:8554/sub",
+    streams: { ...DEFAULT_STREAMS },
     prebufferSeconds: 4,
     hksv: true,
     maxRecordingSeconds: 170,

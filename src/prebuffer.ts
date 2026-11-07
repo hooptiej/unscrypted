@@ -30,11 +30,12 @@ import { Logger } from "./logger";
 import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, FfmpegDeps } from "./ffmpeg";
 import { FragmentedMp4Parser } from "./mp4";
 import { ResolvedCamera } from "./config";
-import { directPicker, FeedChoice, FeedFailure, FeedPicker, FeedVia } from "./source";
+import { directPicker, feedWords, FeedChoice, FeedFailure, FeedPicker, FeedVia } from "./source";
+import { StreamChoice } from "./config";
 
-export interface PrebufferStatus { running: boolean; via: FeedVia | null; lastFragmentAt: number | null }
+export interface PrebufferStatus { running: boolean; via: FeedVia | null; /** Which stream the running buffer reads (#87). */ stream: StreamChoice | null; lastFragmentAt: number | null }
 
-const readsFrom = (via: FeedVia) => (via === "go2rtc" ? "through go2rtc" : "the camera directly");
+const readsFrom = feedWords;
 
 /**
  * Why the buffer's ffmpeg stopped, in plain words. ffmpeg's own stderr is often empty here: when
@@ -42,7 +43,7 @@ const readsFrom = (via: FeedVia) => (via === "go2rtc" ? "through go2rtc" : "the 
  */
 export function prebufferExitReason(code: number | null, feed: FeedChoice, ranMs: number, lastFragmentAgoMs: number | null): string {
   const src = feed.via === "go2rtc" ? "go2rtc's restream" : "the camera";
-  if (code === null) return `ffmpeg was killed or couldn't run (reading ${readsFrom(feed.via)})`;
+  if (code === null) return `ffmpeg was killed or couldn't run (reading ${readsFrom(feed)})`;
   if (lastFragmentAgoMs === null) {
     return ranMs >= 9000
       ? `no video arrived from ${src} in ${Math.round(ranMs / 1000)} s, so ffmpeg's 10 s timeout ended it` +
@@ -298,8 +299,13 @@ export class Prebuffer {
     return this.ffmpeg ? this.feed?.via ?? null : null;
   }
 
+  /** Which stream the running buffer reads, main or sub (null when it isn't running). */
+  currentStream(): StreamChoice | null {
+    return this.ffmpeg ? this.feed?.stream ?? null : null;
+  }
+
   status(): PrebufferStatus {
-    return { running: this.ffmpeg !== null, via: this.currentVia(), lastFragmentAt: this.lastFragmentAt };
+    return { running: this.ffmpeg !== null, via: this.currentVia(), stream: this.currentStream(), lastFragmentAt: this.lastFragmentAt };
   }
 
   /** Stop and start again now, reading from the current source. No-op unless it should be running. */
@@ -310,9 +316,12 @@ export class Prebuffer {
   }
 
   private spawn(ffmpegPath: string): void {
-    const feed = this.pick("main");
+    const feed = this.pick("recording");
     if (!feed) {
-      this.log.error("prebuffer has no main stream URL; recording won't work for this camera until config.json gives one");
+      this.log.error(
+        `prebuffer has no URL for the stream recording is set to read (${this.camera.streams?.recording ?? "main"}); ` +
+          "recording won't work for this camera until its stream settings are fixed (the Edit page, or config.json)",
+      );
       return;
     }
     const args = buildPrebufferArgs(this.camera, feed.url);
@@ -339,7 +348,7 @@ export class Prebuffer {
     this.log.info(
       `prebuffer running (${this.camera.prebufferSeconds}s window, video ${
         this.camera.copyVideo ? "copy" : "transcode"
-      }, reading ${readsFrom(feed.via)})`,
+      }, ${feed.stream ?? "main"} stream, reading ${feed.via === "go2rtc" ? "through go2rtc" : "the camera directly"})`,
     );
 
     ff.proc.stdout.on("data", (chunk: Buffer) => {
@@ -361,7 +370,7 @@ export class Prebuffer {
       stalled = lastAt === null
         ? `ffmpeg was still running but sent no video in ${secs} s (it connected, nothing came through)`
         : `ffmpeg was still running but sent no new video for ${secs} s (it had stalled)`;
-      this.log.warn(`prebuffer stalled while reading ${readsFrom(feed.via)}: ${stalled}; stopping it so it restarts`);
+      this.log.warn(`prebuffer stalled while reading ${readsFrom(feed)}: ${stalled}; stopping it so it restarts`);
       ff.kill();
     }, Math.max(50, Math.min(5000, Math.floor(this.stallMs / 3))));
     stallCheck.unref();
@@ -376,7 +385,7 @@ export class Prebuffer {
         const videoAt = lastAt !== null && now - lastAt < 1000 ? prevAt : lastAt;   // skip the exit flush
         const why = stalled ?? prebufferExitReason(code, feed, now - startedAt, videoAt === null ? null : now - videoAt);
         if (this.wantRunning) {
-          this.log.warn(`prebuffer ffmpeg exited (code ${code}) while reading ${readsFrom(feed.via)}: ${why}; restarting in ${Math.round(this.restartDelayMs / 1000)}s`);
+          this.log.warn(`prebuffer ffmpeg exited (code ${code}) while reading ${readsFrom(feed)}: ${why}; restarting in ${Math.round(this.restartDelayMs / 1000)}s`);
           try { this.onFailure?.(feed, why); }
           catch (err) { this.log.error(`couldn't report the prebuffer failure to the source selector (the restart still happens): ${(err as Error).message}`); }
         }
