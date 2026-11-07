@@ -137,6 +137,48 @@ test("RECONFIGURE re-spawns ffmpeg at the new size; the retired ffmpeg's exit do
   assert.equal(sd.liveSessionCount(), 0);
 });
 
+test("#40: ffmpeg ending cleanly (code 0) tears the session down with a WARN, not a phantom session", async () => {
+  const logs = captureLogs();
+  try {
+    const { sd, s } = await started(fakeFfmpeg(FFMPEG.exitsClean));
+    const sock = watchClose(s);
+    await until(() => sd.liveSessionCount() === 0, "the session torn down");
+    await until(() => sock.closed() === 2, "both return sockets closed");
+    const warn = logs.warns().find((l) => l.includes("live view for Test Cam lost its video"));
+    assert.ok(warn, logs.lines.join("\n"));
+    assert.match(warn!, /ended cleanly \(code 0: its input closed the stream\) after [\d.]+ s while reading the camera directly/);
+  } finally {
+    logs.restore();
+  }
+});
+
+test("#40: ffmpeg stopped by a signal the bridge didn't send tears the session down with a WARN naming it", async () => {
+  const logs = captureLogs();
+  try {
+    const ff = fakeFfmpeg(FFMPEG.runs);
+    const { sd, s } = await started(ff);
+    const sock = watchClose(s);
+    ff.spawned[0].proc.kill("SIGTERM");   // behind the delegate's back, like the OOM killer or a stray kill
+    await until(() => sd.liveSessionCount() === 0, "the session torn down");
+    await until(() => sock.closed() === 2, "both return sockets closed");
+    assert.ok(logs.warns().some((l) => l.includes("lost its video") && l.includes("was stopped by SIGTERM, which the bridge didn't send")), logs.lines.join("\n"));
+  } finally {
+    logs.restore();
+  }
+});
+
+test("#40: an ffmpeg the bridge stopped itself (STOP) is not reported as lost video", async () => {
+  const logs = captureLogs();
+  try {
+    const { sd, id } = await started(fakeFfmpeg(FFMPEG.runs));
+    await request(sd, { sessionID: id, type: StreamRequestTypes.STOP } as StreamingRequest);
+    await new Promise((r) => setTimeout(r, 200));   // let the killed ffmpeg's exit land
+    assert.ok(!logs.lines.some((l) => l.includes("lost its video")), logs.lines.join("\n"));
+  } finally {
+    logs.restore();
+  }
+});
+
 test("shutdown stops every live session and closes every pending one", async () => {
   const ff = fakeFfmpeg(FFMPEG.runs);
   const { sd, s } = await started(ff);

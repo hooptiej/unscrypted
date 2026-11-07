@@ -685,13 +685,28 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       startedAt: prev?.startedAt ?? Date.now(),
     });
 
-    // ffmpeg exiting unexpectedly (non-zero) tears the session down, loudly. One exception (#78): the
-    // fast probe missing the video stream is retried once with full probing, same session, same endpoint.
-    // The camera only moves to full probing if that retry keeps running (#99): a retry that dies too
-    // was an outage, not a late camera.
+    // ffmpeg exiting on its own tears the session down, loudly: a non-zero exit, a clean exit (code 0:
+    // its RTSP input ended) or a signal we didn't send (#40; before, the last two left a phantom session
+    // with no video and no WARN). An exit we caused (STOP, RECONFIGURE, the watchdog) finds the proc no
+    // longer current and does nothing. One exception (#78): the fast probe missing the video stream is
+    // retried once with full probing, same session, same endpoint. The camera only moves to full
+    // probing if that retry keeps running (#99): a retry that dies too was an outage, not a late camera.
     void proc.done.then(async (code) => {
       const cur = this.activeSessions.get(sessionID);
-      if (!(cur && cur.procs.includes(proc) && code !== null && code !== 0)) return;
+      if (!(cur && cur.procs.includes(proc))) return;
+      if (code === null || code === 0) {
+        const signal = proc.proc.signalCode;
+        const how = code === 0
+          ? "ended cleanly (code 0: its input closed the stream)"
+          : signal ? `was stopped by ${signal}, which the bridge didn't send` : "couldn't run (see the error above)";
+        const ranS = Math.round((Date.now() - cur.startedAt) / 100) / 10;
+        this.log.warn(
+          `live view for ${this.camera.name} lost its video: ffmpeg ${how} after ${ranS} s while reading ${readsFrom(feed)}; ` +
+            `ending the live session so it doesn't stay open with no video`,
+        );
+        this.stopStream(sessionID, `its ffmpeg ${how} while reading ${readsFrom(feed)}`);
+        return;
+      }
       if (probe === "fast" && isProbeMiss(code, proc.stderrTail())) {
         this.log.info(`live view ${readsFrom(feed)}: the fast probe found no video stream; retrying with full probing`);
         const again = await this.spawnLive(sessionID, session, cur.video, cur.audio, "full");

@@ -4,7 +4,7 @@
  */
 
 import { ResolvedCamera } from "../../src/config";
-import { FfmpegDeps, spawnFfmpeg } from "../../src/ffmpeg";
+import { FfmpegDeps, SpawnedFfmpeg, spawnFfmpeg } from "../../src/ffmpeg";
 import { setLogLevel } from "../../src/logger";
 
 export function fakeCamera(over: Partial<ResolvedCamera> = {}): ResolvedCamera {
@@ -67,6 +67,8 @@ export const FFMPEG = {
 export interface FakeFfmpeg extends FfmpegDeps {
   /** The args each spawn was given (what real ffmpeg would have run). */
   calls: string[][];
+  /** What each spawn returned, so a test can kill one behind the code's back. */
+  spawned: SpawnedFfmpeg[];
 }
 
 /**
@@ -75,13 +77,17 @@ export interface FakeFfmpeg extends FfmpegDeps {
  */
 export function fakeFfmpeg(...scripts: string[]): FakeFfmpeg {
   const calls: string[][] = [];
+  const spawned: SpawnedFfmpeg[] = [];
   return {
     calls,
+    spawned,
     resolve: async () => "fake-ffmpeg",
     spawn: (_path, args, log, opts) => {
       const script = scripts[Math.min(calls.length, scripts.length - 1)];
       calls.push(args);
-      return spawnFfmpeg(process.execPath, ["-e", script], log, opts);
+      const s = spawnFfmpeg(process.execPath, ["-e", script], log, opts);
+      spawned.push(s);
+      return s;
     },
   };
 }
