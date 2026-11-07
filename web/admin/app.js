@@ -463,10 +463,20 @@ async function watchLive(check, tile, btn) {
 const PART_FIELDS = [["host", "Camera address (IP or host name)", "text"], ["rtspPort", "RTSP port", "number", "554"], ["rtspUser", "User name", "text"],
   ["rtspPassword", "Password", "password"], ["rtspMainPath", "Main stream path", "text", "/videoMain"], ["rtspSubPath", "Sub stream path", "text", "/videoSub"]];
 const FOSCAM_FIELDS = [["cgiBase", "CGI base URL", "text", "http://192.168.1.50:88"], ["username", "User name", "text"], ["password", "Password", "password"],
-  ["pollIntervalMs", "Poll every (ms)", "number", "1000"], ["motionCooldownMs", "Hold motion for (ms)", "number", "8000"]];
+  ["pollIntervalMs", "Poll every (ms)", "number", "1000"], ["motionCooldownMs", "Hold motion for (ms)", "number", "60000"]];
 const ONVIF_FIELDS = [["host", "ONVIF address", "text"], ["port", "ONVIF port", "number", "80 (XM cameras: 8080)"], ["username", "User name", "text"],
   ["password", "Password", "password"], ["notifyPort", "Push receiver port", "number", "0 = random"], ["notifyHost", "Push receiver address", "text", "auto-detected"],
-  ["pollIntervalMs", "PullPoint wait (ms)", "number", "60000"], ["motionCooldownMs", "Hold motion for (ms)", "number", "8000"]];
+  ["pollIntervalMs", "PullPoint wait (ms)", "number", "60000"], ["motionCooldownMs", "Hold motion for (ms)", "number", "60000"]];
+
+/**
+ * A field's placeholder: the bridge's real default when the server sent one (GET /api/cameras
+ * `defaults`, from src/config.ts), else the hint written above (#90: the hold hint said 8000 when
+ * the bridge really holds for 60000).
+ */
+function placeholderFor(key, fallback, defaults) {
+  const v = defaults && defaults[key];
+  return typeof v === "number" ? String(v) : fallback;
+}
 
 function input(key, label, type, placeholder, value, opts = {}) {
   const isSecret = type === "password";
@@ -523,8 +533,8 @@ async function renderForm(name) {
   // Motion source.
   const kind = cam.foscam ? "foscam" : cam.onvif ? "onvif" : "none";
   const radios = ["none", "foscam", "onvif"].map((k) => el("input", { type: "radio", name: "motion", value: k, checked: kind === k }));
-  const fosIns = FOSCAM_FIELDS.map(([k, l, t, p]) => [k, t, input(k, l, t, p, cam.foscam && cam.foscam[k])]);
-  const onvIns = ONVIF_FIELDS.map(([k, l, t, p]) => [k, t, input(k, l, t, p, cam.onvif && cam.onvif[k])]);
+  const fosIns = FOSCAM_FIELDS.map(([k, l, t, p]) => [k, t, input(k, l, t, placeholderFor(k, p, r.defaults), cam.foscam && cam.foscam[k])]);
+  const onvIns = ONVIF_FIELDS.map(([k, l, t, p]) => [k, t, input(k, l, t, placeholderFor(k, p, r.defaults), cam.onvif && cam.onvif[k])]);
   const fosBox = el("div", { class: "two" }, fosIns.map(([, , x]) => x.node));
   const onvBox = el("div", { class: "two" }, onvIns.map(([, , x]) => x.node));
   const showMotion = () => { fosBox.hidden = !radios[1].checked; onvBox.hidden = !radios[2].checked; };

@@ -19,7 +19,7 @@ import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin } from "./ipc";
 import { UserError, toErrorJson } from "./errors";
 import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
-import { Config, ResolvedCamera, resolveConfig } from "../config";
+import { Config, ResolvedCamera, resolveConfig, DEFAULT_MOTION_COOLDOWN_MS } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
   loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
@@ -511,6 +511,8 @@ export function createAdminServer(d: AdminDeps): http.Server {
           ...redactConfig(readRawConfig(d.configPath)),
           status: d.bridge.status()?.cameras ?? [],
           notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS },
+          // The form's placeholders show the defaults the bridge really applies (#90).
+          defaults: { motionCooldownMs: DEFAULT_MOTION_COOLDOWN_MS },
         });
       }
 

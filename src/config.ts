@@ -175,6 +175,12 @@ export interface Config {
 
 export class ConfigError extends Error {}
 
+/**
+ * Default motion hold (cooldown) in ms, for both Foscam and ONVIF cameras. One constant so the
+ * admin pane's "Hold motion for (ms)" hint shows the value the bridge actually uses (#90).
+ */
+export const DEFAULT_MOTION_COOLDOWN_MS = 60000;
+
 function assembleRtsp(
   cam: CameraConfig,
   which: "main" | "sub",
@@ -295,7 +301,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
         username: cam.foscam.username,
         password: cam.foscam.password,
         pollIntervalMs: cam.foscam.pollIntervalMs ?? 1000,
-        motionCooldownMs: cam.foscam.motionCooldownMs ?? 60000,
+        motionCooldownMs: cam.foscam.motionCooldownMs ?? DEFAULT_MOTION_COOLDOWN_MS,
       };
     }
 
@@ -324,7 +330,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
         username: cam.onvif.username,
         password: cam.onvif.password,
         pollIntervalMs: cam.onvif.pollIntervalMs ?? 60000,
-        motionCooldownMs: cam.onvif.motionCooldownMs ?? 60000,
+        motionCooldownMs: cam.onvif.motionCooldownMs ?? DEFAULT_MOTION_COOLDOWN_MS,
         notifyPort,
         notifyHost: cam.onvif.notifyHost,
       };
