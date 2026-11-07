@@ -17,7 +17,7 @@ import { Supervisor, ChildStatus } from "./admin/supervisor";
 import { Go2rtcClient, Go2rtcManager, maskSecretsInLine } from "./admin/go2rtc";
 import { streamNames } from "./shared/streams";
 import { Go2rtcWatcher } from "./admin/go2rtcWatch";
-import { cameraDirectText, SourceSelector, sourceText } from "./source";
+import { cameraDirectText, SourceSelector, sourceText, streamChangeNotes } from "./source";
 import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
 import { UserError, toErrorJson } from "./shared/errors";
 import { resolveChildEntry } from "./shared/childEntry";
@@ -272,6 +272,7 @@ export class BridgeRuntime {
         liveSessions: s?.liveSessions ?? 0, recordingActive: s?.recordingActive ?? false,
         motionActive: s?.motionActive ?? false, lastMotionAt: s?.lastMotionAt ?? null,
         offline: s?.offline ?? null,
+        streams: rc.streams, hasSub: Boolean(rc.rtspSub),
         pendingRestart: this.pendingRestart.has(rc.name) || !cam,
       };
     });
@@ -409,9 +410,12 @@ export class BridgeRuntime {
     let message: string;
 
     if (mode === "live" && cam) {
+      // The source selector learns the camera's streams first, so a pipeline restarted by this change finds the right one.
+      this.sources.setCameras(this.config.cameras.map((c) => (c.name === name ? after : c)));
       cam.reconfigure(after);
       this.pendingRestart.delete(name);
       message = `Saved and applied to "${name}" without restarting. Home was not disturbed.`;
+      if (before) for (const note of streamChangeNotes(before.streams, after.streams)) message += ` ${note}`;
     } else if (mode === "added") {   // also a boot-time camera that failed to configure (no instance)
       ({ mode, message } = this.addCamera(after));
     } else {

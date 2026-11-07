@@ -74,6 +74,29 @@ export interface OnvifConfig {
   notifyHost?: string;
 }
 
+/** Which of a camera's two streams a consumer reads. */
+export type StreamChoice = "main" | "sub";
+/**
+ * Which stream each part of unscrypted reads for a camera (#87). All optional; an absent key is today's behaviour.
+ * The dashboard tile's choice lives in the dashboard settings (it's the wall's own setting), not here.
+ */
+export interface CameraStreams {
+  /**
+   * HomeKit snapshots. "auto" (default) = the cheapest still: a stream go2rtc already holds, else the sub
+   * stream, else main. "main" or "sub" always uses that one.
+   */
+  snapshot?: "auto" | StreamChoice;
+  /** HomeKit live view. Default "main". */
+  live?: StreamChoice;
+  /** HomeKit Secure Video recording (the rolling buffer). Default "main". Changing it restarts the buffer. */
+  recording?: StreamChoice;
+}
+/** The resolved form: every key filled in. */
+export interface ResolvedStreams { snapshot: "auto" | StreamChoice; live: StreamChoice; recording: StreamChoice }
+export const DEFAULT_STREAMS: Readonly<ResolvedStreams> = { snapshot: "auto", live: "main", recording: "main" };
+export const STREAM_CONSUMERS = ["snapshot", "live", "recording"] as const;
+const STREAM_LABEL: Record<(typeof STREAM_CONSUMERS)[number], string> = { snapshot: "snapshots", live: "live view", recording: "recording" };
+
 export interface CameraConfig {
   /** Display name shown in the Home app. Must be unique. */
   name: string;
@@ -108,6 +131,9 @@ export interface CameraConfig {
 
   /** ONVIF event control block — drives the ONVIF motion source. Optional. */
   onvif?: OnvifConfig;
+
+  /** Which stream snapshots, live view and recording read (#87). Default: snapshots automatic, live view and recording main. */
+  streams?: CameraStreams;
 
   /** Rolling prebuffer length in seconds (HAP requires >= 4). Default 4. */
   prebufferSeconds?: number;
@@ -202,6 +228,36 @@ export function checkMotionCooldown(v: unknown, where: string): number {
   return v;
 }
 
+/**
+ * The camera's per-consumer stream choice (#87), validated: an unknown key or value is refused by name, and "sub"
+ * needs a sub stream. Returns every key filled in (absent = the default, i.e. today's behaviour).
+ */
+export function resolveStreams(v: unknown, where: string, hasSub: boolean): ResolvedStreams {
+  if (v === undefined || v === null) return { ...DEFAULT_STREAMS };
+  if (typeof v !== "object" || Array.isArray(v)) {
+    throw new ConfigError(`${where}: streams must be an object like {"live": "sub"} (got ${JSON.stringify(v)})`);
+  }
+  const o = v as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(STREAM_CONSUMERS as readonly string[]).includes(k));
+  if (unknown.length) {
+    throw new ConfigError(`${where}: unknown streams key${unknown.length > 1 ? "s" : ""} ${unknown.map((k) => `"${k}"`).join(", ")}; the choices are ${STREAM_CONSUMERS.join(", ")}`);
+  }
+  const out: ResolvedStreams = { ...DEFAULT_STREAMS };
+  for (const k of STREAM_CONSUMERS) {
+    const val = o[k];
+    if (val === undefined || val === null) continue;
+    const allowed = k === "snapshot" ? ["auto", "main", "sub"] : ["main", "sub"];
+    if (typeof val !== "string" || !allowed.includes(val)) {
+      throw new ConfigError(`${where}: streams.${k} (the stream ${STREAM_LABEL[k]} read) must be ${allowed.map((a) => `"${a}"`).join(" or ")} (got ${JSON.stringify(val)})`);
+    }
+    if (val === "sub" && !hasSub) {
+      throw new ConfigError(`${where}: streams.${k} is "sub" but this camera has no sub stream configured; give it a sub stream URL (rtspSub) or choose "main"`);
+    }
+    (out as unknown as Record<string, string>)[k] = val;
+  }
+  return out;
+}
+
 function assembleRtsp(
   cam: CameraConfig,
   which: "main" | "sub",
@@ -238,6 +294,8 @@ export interface ResolvedCamera {
     notifyPort: number;
     notifyHost?: string;
   };
+  /** Which stream each HomeKit consumer reads (#87), every key filled in. */
+  streams: ResolvedStreams;
   prebufferSeconds: number;
   hksv: boolean;
   maxRecordingSeconds: number;
@@ -310,6 +368,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       );
     }
     const rtspSub = assembleRtsp(cam, "sub");
+    const streams = resolveStreams(cam.streams, `cameras[${i}] "${cam.name}"`, Boolean(rtspSub));
 
     if (cam.foscam && cam.onvif) {
       throw new ConfigError(
@@ -372,6 +431,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       rtspSub,
       foscam,
       onvif,
+      streams,
       prebufferSeconds,
       hksv: cam.hksv ?? true,
       maxRecordingSeconds: Math.min(180, cam.maxRecordingSeconds ?? 170),

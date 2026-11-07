@@ -6,7 +6,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Config, CameraConfig, FoscamConfig, OnvifConfig, resolveConfig, ConfigError, checkMotionCooldown, MIN_MOTION_COOLDOWN_MS, MAX_MOTION_COOLDOWN_MS } from "../config";
+import { Config, CameraConfig, CameraStreams, FoscamConfig, OnvifConfig, resolveConfig, ConfigError, checkMotionCooldown, MIN_MOTION_COOLDOWN_MS, MAX_MOTION_COOLDOWN_MS } from "../config";
 import { UserError } from "../shared/errors";
 import { readRawConfig } from "../shared/rawConfig";
 
@@ -18,9 +18,11 @@ export type PublicCamera = Omit<CameraConfig, "rtspPassword" | "foscam" | "onvif
   foscam?: Omit<FoscamConfig, "password"> & { password: Secret };
   onvif?: Omit<OnvifConfig, "password"> & { password: Secret };
 };
-export type CameraEdit = Partial<Omit<CameraConfig, "foscam" | "onvif">> & {
+export type CameraEdit = Partial<Omit<CameraConfig, "foscam" | "onvif" | "streams">> & {
   foscam?: Partial<FoscamConfig> | null;
   onvif?: Partial<OnvifConfig> | null;
+  /** Which stream each consumer reads (#87): a key set to null (or "") goes back to its default; null for the whole block clears all three. */
+  streams?: { [K in keyof CameraStreams]?: CameraStreams[K] | null } | null;
 };
 
 const MASK = "***";
@@ -29,9 +31,10 @@ const URL_CREDS = /^(rtsp:\/\/[^:/@]+:)([^@]*)(@.*)$/i;
 /** Top-level camera fields the pane may set. Anything else in an edit is refused. */
 const EDITABLE_KEYS: ReadonlySet<string> = new Set([
   "name", "rtspMain", "rtspSub", "host", "rtspPort", "rtspUser", "rtspPassword", "rtspMainPath",
-  "rtspSubPath", "foscam", "onvif", "prebufferSeconds", "hksv", "maxRecordingSeconds", "copyVideo",
+  "rtspSubPath", "foscam", "onvif", "streams", "prebufferSeconds", "hksv", "maxRecordingSeconds", "copyVideo",
   "audio", "manufacturer", "model", "serialNumber",
 ]);
+const STREAMS_KEYS: ReadonlySet<string> = new Set(["snapshot", "live", "recording"]);
 const FOSCAM_KEYS: ReadonlySet<string> = new Set(["cgiBase", "username", "password", "pollIntervalMs", "motionCooldownMs"]);
 const ONVIF_KEYS: ReadonlySet<string> = new Set([
   "host", "port", "username", "password", "pollIntervalMs", "motionCooldownMs", "notifyPort", "notifyHost",
@@ -166,8 +169,22 @@ export function applyCameraEdit(raw: Config, originalName: string | null, edit: 
   refuseUnknown(cam.name, "on the camera", edit, EDITABLE_KEYS);
   if (edit.foscam) refuseUnknown(cam.name, "in the Foscam block", edit.foscam, FOSCAM_KEYS);
   if (edit.onvif) refuseUnknown(cam.name, "in the ONVIF block", edit.onvif, ONVIF_KEYS);
+  if (edit.streams && typeof edit.streams === "object" && !Array.isArray(edit.streams)) refuseUnknown(cam.name, "in the streams block", edit.streams, STREAMS_KEYS);
 
-  const { foscam, onvif, name: _ignored, ...plain } = edit;
+  const { foscam, onvif, streams, name: _ignored, ...plain } = edit;
+  if (streams === null) delete cam.streams;
+  else if (streams !== undefined) {
+    if (typeof streams !== "object" || Array.isArray(streams)) {
+      throw new UserError({ attempted: `Save camera "${cam.name}"`, happened: "The streams choice wasn't an object like {\"live\": \"sub\"}.", changed: "Nothing was saved.",
+        next: "Reload the page (it may be out of date with the server) and save again." });
+    }
+    // A key set to null (or blank) goes back to its default; the others are kept as they are.
+    const merged: Record<string, unknown> = { ...(cam.streams ?? {}) };
+    for (const [k, v] of Object.entries(streams)) {
+      if (v === null || (v as unknown) === "") delete merged[k]; else merged[k] = v;
+    }
+    if (Object.keys(merged).length) cam.streams = merged as CameraStreams; else delete cam.streams;
+  }
   for (const [k, v] of Object.entries(plain)) {
     if (v === undefined) continue;
     if (k === "rtspPassword") {

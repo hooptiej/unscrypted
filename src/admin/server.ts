@@ -63,6 +63,9 @@ export interface AdminDeps {
 /** Shown before and after saving a change that restarts the camera's prebuffer. Easy to change. */
 export const PREBUFFER_RESTART_WARNING =
   "Saving a new stream address restarts this camera's recording buffer; a clip being recorded right now will be cut short.";
+/** Shown beside the recording stream choice, before saving a change to it (#87). */
+export const RECORDING_STREAM_SWITCH_WARNING =
+  "Changing the recording stream restarts this camera's recording buffer so it reads the other stream: the next few seconds of pre-roll are lost, a clip being recorded right now finishes first, and later recordings come from the other stream. The sub stream is lower resolution, so recordings from it look softer in Home.";
 /** Fields whose change restarts the prebuffer on a live apply (see UnscryptedCamera.reconfigure). */
 export const PREBUFFER_FIELDS = ["rtspMain", "host", "rtspPort", "rtspUser", "rtspPassword", "rtspMainPath", "audio", "copyVideo"];
 
@@ -108,6 +111,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
   const log = d.log ?? new Logger("admin");
   const dash = d.dash ?? { dir: "/data/dash", port: 8180, url: null };
   const dashSettingsFile = path.join(dash.dir, "settings.json");
+  /** The wall tile's stream choice (#87) for each camera name; a camera the dashboard hasn't heard of plays main. */
+  const dashStreamsFor = (names: string[]): Record<string, "main" | "sub"> =>
+    Object.fromEntries(effectiveCameras(loadSettings(dashSettingsFile).settings, names).map((c) => [c.camera, c.stream]));
   /** Where the dashboard is, as the browser should reach it. */
   const dashUrlFor = (req: http.IncomingMessage): string => {
     if (dash.url) return dash.url.endsWith("/") ? dash.url : dash.url + "/";
@@ -487,7 +493,9 @@ export function createAdminServer(d: AdminDeps): http.Server {
         return json(res, 200, {
           ...redactConfig(readRawConfig(d.configPath)),
           status: d.bridge.status()?.cameras ?? [],
-          notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS },
+          notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS, recordingStreamSwitch: RECORDING_STREAM_SWITCH_WARNING },
+          // #87: which stream the wall's tile plays for each camera. It's the dashboard's own setting (its settings.json), shown here beside the camera's other stream choices.
+          dashStreams: dashStreamsFor(readRawConfig(d.configPath).cameras.map((c) => c.name)),
           // The form's placeholders show the defaults the bridge really applies (#90).
           defaults: { motionCooldownMs: DEFAULT_MOTION_COOLDOWN_MS },
           limits: { motionCooldownMs: { min: MIN_MOTION_COOLDOWN_MS, max: MAX_MOTION_COOLDOWN_MS } },

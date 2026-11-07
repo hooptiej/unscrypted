@@ -23,11 +23,11 @@ import {
   VideoCodecType,
 } from "hap-nodejs";
 import { Logger } from "./logger";
-import { ResolvedCamera } from "./config";
+import { ResolvedCamera, StreamChoice } from "./config";
 import { StreamingDelegate } from "./streamingDelegate";
 import { RecordingDelegate } from "./recordingDelegate";
 import { Prebuffer, PrebufferStatus } from "./prebuffer";
-import { directPicker, FeedFailure, FeedPicker, FeedVia, SourceSelector } from "./source";
+import { directPicker, FeedFailure, FeedPicker, FeedVia, SourceSelector, streamWord } from "./source";
 import { FoscamClient, MotionPoller } from "./foscam";
 import { OnvifClient, OnvifMotionSource } from "./onvif";
 import { redactUrl } from "./util";
@@ -202,18 +202,24 @@ export class UnscryptedCamera {
   }
 
   /**
-   * The source mode changed (go2rtc <-> direct, globally or for this camera): re-point a running
-   * recording buffer. A clip being recorded finishes first; the switch follows within 2 s.
+   * The source mode changed (go2rtc <-> direct, globally or for this camera), or the recording stream
+   * choice did (main <-> sub, #87): re-point a running recording buffer. A clip being recorded finishes
+   * first (so a clip never spans two streams: a new ffmpeg has a new init segment); the switch follows
+   * within 2 s. Says which camera and which stream, at INFO.
    */
   private syncPrebufferSource(): void {
     const pb = this.prebuffer;
     if (!pb?.isRunning()) return;
-    const want = this.pick("main")?.via;
-    if (!want || want === pb.currentVia()) return;
-    const where = want === "go2rtc" ? "through go2rtc" : "the camera directly";
+    const want = this.pick("recording");
+    if (!want) return;
+    const wantStream: StreamChoice = want.stream ?? "main";
+    const haveStream: StreamChoice = pb.currentStream() ?? "main";
+    if (want.via === pb.currentVia() && wantStream === haveStream) return;
+    const where = `${streamWord(wantStream)} ${want.via === "go2rtc" ? "through go2rtc" : "the camera directly"}`;
+    const from = wantStream !== haveStream ? ` (it was reading ${streamWord(haveStream)})` : "";
     if ((this.recordingDelegate?.activeClips() ?? 0) > 0) {
       if (!this.syncTimer) {
-        this.log.info(`recording buffer will switch to reading ${where} as soon as the clip being recorded ends`);
+        this.log.info(`"${this.camera.name}": recording buffer will switch to reading ${where}${from} as soon as the clip being recorded ends`);
         this.syncTimer = setInterval(() => {
           if ((this.recordingDelegate?.activeClips() ?? 0) === 0) {
             clearInterval(this.syncTimer!);
@@ -224,7 +230,7 @@ export class UnscryptedCamera {
       }
       return;
     }
-    this.log.info(`recording buffer switching to reading ${where} (the next few seconds of pre-roll are lost)`);
+    this.log.info(`"${this.camera.name}": recording buffer switching to reading ${where}${from} (the next few seconds of pre-roll are lost)`);
     pb.restart();
   }
 
@@ -350,8 +356,14 @@ export class UnscryptedCamera {
     const prev = { ...this.camera };
     const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
     const motionChanged = !same(prev.foscam, next.foscam) || !same(prev.onvif, next.onvif);
+    // The URL the recording buffer reads: the main or the sub stream, by the camera's recording choice (#87).
+    // A changed CHOICE is not handled here: syncPrebufferSource() below moves a running buffer to it without
+    // cutting a clip that's being recorded. A changed URL of the stream it already reads is.
+    const recSel = (c: ResolvedCamera) => c.streams?.recording ?? "main";
+    const recUrl = (c: ResolvedCamera) => (recSel(c) === "sub" ? c.rtspSub : c.rtspMain);
+    const streamSwitched = recSel(prev) !== recSel(next);
     const prebufferChanged =
-      prev.rtspMain !== next.rtspMain || prev.audio !== next.audio || prev.copyVideo !== next.copyVideo;
+      (!streamSwitched && recUrl(prev) !== recUrl(next)) || prev.audio !== next.audio || prev.copyVideo !== next.copyVideo;
     const restarted: string[] = [];
 
     if (motionChanged) {
@@ -378,6 +390,10 @@ export class UnscryptedCamera {
         this.motionSource?.start();
         restarted.push("motion source");
       }
+    }
+    if (streamSwitched && !prebufferWasRunning && (this.prebuffer?.isRunning() ?? false)) {
+      this.syncPrebufferSource();
+      restarted.push(`prebuffer (now reading ${streamWord(recSel(next))})`);
     }
     if (prebufferWasRunning && this.prebuffer) {
       restarted.push("prebuffer");

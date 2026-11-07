@@ -8,6 +8,7 @@ import { ChildStatus } from "./supervisor";
 import { UserErrorBody } from "../shared/errors";
 import type { FeedStatus } from "./go2rtcWatch";
 import type { CameraDirect, FeedVia, SourceState } from "../source";
+import type { ResolvedStreams } from "../config";
 
 export type MotionKind = "foscam-cgi" | "onvif" | "none";
 
@@ -19,7 +20,9 @@ export interface CameraStatus {
   via: FeedVia;
   /** This camera alone reading directly (per-camera fallback), with the reason and the retry time. */
   direct: (CameraDirect & { text: string }) | null;
-  prebuffer: { running: boolean; via: FeedVia | null; lastFragmentAt: number | null } | null;
+  prebuffer: { running: boolean; via: FeedVia | null; /** Which stream the running buffer reads (#87). */ stream: "main" | "sub" | null; lastFragmentAt: number | null } | null;
+  /** Which stream each HomeKit consumer reads, as running now (#87), and whether the camera has a sub stream to choose. */
+  streams: ResolvedStreams; hasSub: boolean;
   liveSessions: number; recordingActive: boolean; motionActive: boolean; lastMotionAt: number | null;
   /** Offline for the whole grace (#113): Home shows a fault on this camera. null = answering (or not known). */
   offline: { since: number; reason: string } | null;

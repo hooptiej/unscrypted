@@ -30,7 +30,7 @@ import { Logger } from "./logger";
 import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU, FfmpegDeps } from "./ffmpeg";
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
-import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
+import { directPicker, feedWords, FeedChoice, FeedFailure, FeedPicker } from "./source";
 import { Capture, ProbeMemory, ProbeMode, SnapshotServer } from "./snapshots";
 import { closingConnection } from "./hapEventHold";
 
@@ -43,7 +43,7 @@ const RTSP_TIMEOUT_US = "10000000";
  * the H.264 parameter sets, so there is nothing to probe for.
  */
 export const LOW_LATENCY_INPUT = ["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0"];
-const readsFrom = (f: FeedChoice) => (f.via === "go2rtc" ? "through go2rtc" : "the camera directly");
+const readsFrom = (f: FeedChoice) => feedWords(f);
 
 /**
  * How ffmpeg looks at the input before it starts (#78). "fast" is LOW_LATENCY_INPUT: right for the
@@ -332,14 +332,14 @@ export class StreamingDelegate implements CameraStreamingDelegate {
   // mute spinner (#64). Only if the placeholder itself can't be rendered do we
   // surface the original error — never worse than the pre-#64 behaviour.
   private async captureSnapshot(width: number, height: number): Promise<Capture> {
-    const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
+    const ff = await (this.ffmpegDeps.resolve ?? resolveFfmpeg)(this.ffmpegPath, this.log);
     if (!ff) {
       throw new Error("ffmpeg unavailable; cannot produce snapshot");
     }
-    // The cheapest still: a stream go2rtc already holds, else the sub stream (never main while a
+    // The stream snapshots are set to read (#87): by default the cheapest still: a stream go2rtc already holds, else the sub stream (never main while a
     // sub exists, #55), or the camera itself while go2rtc is down.
     const feed = this.pick("snapshot");
-    if (!feed) throw new Error("no stream URL configured for this camera");
+    if (!feed) throw new Error(`no URL for the stream snapshots are set to read (${this.camera.streams?.snapshot ?? "auto"}); fix this camera's stream settings`);
     const from = readsFrom(feed) + (this.probe === "full" ? " (full probing)" : "");
     try {
       const jpeg = await captureSnapshotJpeg(ff, feed, width, height, this.log, this.probe, this.probeOutcome("snapshot"));
@@ -666,7 +666,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     }
     const feed = this.pick("live");
     if (!feed) {
-      this.log.error("live view can't start: this camera has no main stream URL");
+      this.log.error(
+        `live view can't start: this camera has no URL for the stream live view is set to read (${this.camera.streams?.live ?? "main"}); ` +
+          "fix its stream settings (the Edit page, or config.json)",
+      );
       return undefined;
     }
     const probe = probeOverride ?? this.probe;
