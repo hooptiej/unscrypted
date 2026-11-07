@@ -7,6 +7,7 @@ import * as http from "http";
 import { AddressInfo } from "net";
 import {
   OnvifClient, OnvifMotionSource, parseFault, parseMotionReadings, extractSubscriptionAddress,
+  resolveSenderAddresses,
 } from "../src/onvif";
 import { Logger, setLogLevel } from "../src/logger";
 import { captureLogs, until } from "./helpers/fakes";
@@ -260,6 +261,113 @@ test("push: a failed renewal is logged at WARN and the source subscribes again",
   } finally {
     src?.stop();
     mock.timers.reset();
+    logs.restore();
+  }
+});
+
+// ---- #42: who may talk to the push receiver ------------------------------------------------
+
+/** A push-mode source whose camera is configured at `cameraHost` (the Subscribe still reaches the fake camera). */
+async function startPushFor(cameraHost: string, edges: boolean[]): Promise<{ src: OnvifMotionSource; consumer: string }> {
+  const src = new OnvifMotionSource(await client(), cameraHost, await port, "Back Gate",
+    { cooldownMs: 150, pullTimeoutMs: 1000, notifyPort: 0, notifyHost: "127.0.0.1", terminationSeconds: 10 }, (a) => edges.push(a), log);
+  src.start();
+  await untilIo(() => count("SubscribeRequest") >= 1 && subscribed(src), "the push Subscribe");
+  const sub = seen.find((s) => s.action.endsWith("SubscribeRequest"))!;
+  return { src, consumer: /<wsa:Address>([^<]+)<\/wsa:Address>/.exec(sub.body)![1] };
+}
+
+/** POST `xml` to `consumer`; resolves with the status, or the socket error code if the receiver cut the connection first. */
+function notifyRaw(consumer: string, xml: string): Promise<number | string> {
+  return new Promise((resolve) => {
+    const u = new URL(consumer);
+    const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST" }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on("error", (err: NodeJS.ErrnoException) => resolve(err.code ?? err.message));
+    req.end(xml);
+  });
+}
+
+const ON = env(`<wsnt:Notify>${motionMsg(CELL, "IsMotion", "true")}</wsnt:Notify>`);
+
+test("#42: a sender that isn't a configured camera is refused (403), logged at WARN with its address, and raises no motion", async () => {
+  reset({ pullPoint: false });
+  const logs = captureLogs();
+  const edges: boolean[] = [];
+  // The camera is configured at 192.0.2.77; the POST below comes from 127.0.0.1, which is not a camera.
+  const { src, consumer } = await startPushFor("192.0.2.77", edges);
+  try {
+    assert.equal(await notifyRaw(consumer, ON), 403);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(edges, [], "a stranger's notification must not reach the camera's motion handler");
+    const warn = logs.warns().find((l) => l.includes("refused"));
+    assert.ok(warn, logs.lines.join("\n"));
+    assert.match(warn!, /from 127\.0\.0\.1: that address isn't one of the ONVIF cameras in config\.json/);
+  } finally {
+    src.stop();
+    logs.restore();
+  }
+});
+
+test("#42: refusals from one address are logged once a minute, not once per request", async () => {
+  reset({ pullPoint: false });
+  const logs = captureLogs();
+  const { src, consumer } = await startPushFor("192.0.2.77", []);
+  try {
+    for (let i = 0; i < 5; i++) assert.equal(await notifyRaw(consumer, ON), 403);
+    assert.equal(logs.warns().filter((l) => l.includes("refused an ONVIF notification")).length, 1, logs.lines.join("\n"));
+  } finally {
+    src.stop();
+    logs.restore();
+  }
+});
+
+test("#42: a known camera (its configured address) still gets through", async () => {
+  reset({ pullPoint: false });
+  const logs = captureLogs();
+  const edges: boolean[] = [];
+  const { src, consumer } = await startPushFor("127.0.0.1", edges);
+  try {
+    assert.equal(await notifyRaw(consumer, ON), 200);
+    await until(() => edges.length === 2, "ON then OFF");
+    assert.deepEqual(edges, [true, false]);
+    assert.equal(logs.warns().filter((l) => l.includes("refused")).length, 0, logs.lines.join("\n"));
+  } finally {
+    src.stop();
+    logs.restore();
+  }
+});
+
+test("#42: a body over the size cap is refused (413 or a cut connection), logged at WARN, and never parsed", async () => {
+  reset({ pullPoint: false });
+  const logs = captureLogs();
+  const edges: boolean[] = [];
+  const { src, consumer } = await startPushFor("127.0.0.1", edges);
+  try {
+    // A valid motion-ON notification padded past the cap: if it were read and parsed, it would raise motion.
+    const huge = ON + " ".repeat(256 * 1024 + 1024);
+    const result = await notifyRaw(consumer, huge);
+    assert.ok(result === 413 || typeof result === "string", `expected 413 or a cut connection, got ${result}`);
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepEqual(edges, [], "an oversized notification must not raise motion");
+    const warn = logs.warns().find((l) => l.includes("refused"));
+    assert.ok(warn, logs.lines.join("\n"));
+    assert.match(warn!, /256 KB/);
+    // The receiver is still serving the camera afterwards.
+    assert.equal(await notifyRaw(consumer, ON), 200);
+  } finally {
+    src.stop();
+    logs.restore();
+  }
+});
+
+test("#42: resolveSenderAddresses uses an IP as is (v4-mapped form cleaned) and warns when a name doesn't resolve", async () => {
+  const logs = captureLogs();
+  try {
+    assert.deepEqual(await resolveSenderAddresses("10.0.0.5", log), ["10.0.0.5"]);
+    assert.deepEqual(await resolveSenderAddresses("::ffff:10.0.0.5", log), ["10.0.0.5"]);
+    assert.deepEqual(await resolveSenderAddresses("no-such-camera.invalid", log), []);
+    assert.ok(logs.warns().some((l) => l.includes("no-such-camera.invalid") && l.includes("will be refused")), logs.lines.join("\n"));
+  } finally {
     logs.restore();
   }
 });
