@@ -33,6 +33,30 @@ import { Logger } from "./logger";
 import { Prebuffer } from "./prebuffer";
 import { ResolvedCamera } from "./config";
 
+/**
+ * HAP's HDSProtocolSpecificErrorReason values, by name with a plain-words gloss (#10). hap-nodejs
+ * declares the enum `const`, so it is spelled out here rather than read from the package.
+ */
+const CLOSE_REASONS: Record<number, [name: string, plain: string]> = {
+  0: ["NORMAL", "the clip ended normally"],
+  1: ["NOT_ALLOWED", "HomeKit didn't allow it"],
+  2: ["BUSY", "HomeKit was busy"],
+  3: ["CANCELLED", "the clip was cancelled (by HomeKit, or by hap-nodejs when it didn't close in time)"],
+  4: ["UNSUPPORTED", "HomeKit doesn't support what was sent"],
+  5: ["UNEXPECTED_FAILURE", "an unexpected failure"],
+  6: ["TIMEOUT", "HomeKit timed out waiting for video"],
+  7: ["BAD_DATA", "HomeKit couldn't use the video it got"],
+  8: ["PROTOCOL_ERROR", "a protocol error"],
+  9: ["INVALID_CONFIGURATION", "an invalid configuration"],
+};
+
+/** A recording close reason for the log: "TIMEOUT (6): HomeKit timed out waiting for video". */
+export function describeCloseReason(reason: number | undefined): string {
+  if (reason === undefined) return "the HomeKit data connection closed";
+  const known = CLOSE_REASONS[reason];
+  return known ? `${known[0]} (${reason}): ${known[1]}` : `unknown reason ${reason}`;
+}
+
 /** Minimal async queue of buffers with close + async iteration. */
 class FragmentQueue {
   private items: Buffer[] = [];
@@ -245,7 +269,14 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     streamId: number,
     reason: HDSProtocolSpecificErrorReason | undefined,
   ): void {
-    this.log.info(`recording stream ${streamId} closed (reason ${reason ?? "connection"})`);
+    // A non-zero reason is a failed or cut-short clip: WARN, so a run of them shows at the default
+    // log level (#10: ~120 timeouts in a row once logged only as INFO "closed (reason 6)").
+    const why = describeCloseReason(reason);
+    if (reason !== undefined && reason !== 0) {
+      this.log.warn(`recording stream ${streamId} closed with ${why}`);
+    } else {
+      this.log.info(`recording stream ${streamId} closed (${why})`);
+    }
     const close = this.closeSignals.get(streamId);
     if (close) {
       close();

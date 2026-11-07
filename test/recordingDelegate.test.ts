@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CameraRecordingConfiguration, RecordingPacket } from "hap-nodejs";
-import { RecordingDelegate } from "../src/recordingDelegate";
+import { RecordingDelegate, describeCloseReason } from "../src/recordingDelegate";
 import { Prebuffer, PrebufferSession } from "../src/prebuffer";
 import { Logger, setLogLevel } from "../src/logger";
 import { captureLogs, fakeCamera } from "./helpers/fakes";
@@ -122,6 +122,31 @@ test("closeRecordingStream ends the clip that is waiting for live fragments", as
   assert.equal((await waiting).done, true);
   assert.equal(rd.activeClips(), 0);
   assert.equal(pb.subs.size, 0);
+});
+
+test("#10: describeCloseReason names HAP's close reasons in plain words", () => {
+  assert.equal(describeCloseReason(6), "TIMEOUT (6): HomeKit timed out waiting for video");
+  assert.equal(describeCloseReason(0), "NORMAL (0): the clip ended normally");
+  assert.match(describeCloseReason(7), /^BAD_DATA \(7\)/);
+  assert.equal(describeCloseReason(undefined), "the HomeKit data connection closed");
+  assert.equal(describeCloseReason(42), "unknown reason 42");
+});
+
+test("#10: a clip closed with a non-zero reason is a WARN naming it; a normal close stays INFO", () => {
+  const { rd } = delegate();
+  const logs = captureLogs();
+  try {
+    rd.closeRecordingStream(20, 6 as never);
+    rd.closeRecordingStream(21, 0 as never);
+    rd.closeRecordingStream(22, undefined);
+    const warns = logs.warns();
+    assert.equal(warns.length, 1, warns.join("\n"));
+    assert.match(warns[0], /recording stream 20 closed with TIMEOUT \(6\): HomeKit timed out waiting for video/);
+    assert.ok(logs.lines.some((l) => l.includes("[INFO]") && l.includes("recording stream 21 closed (NORMAL (0)")), logs.lines.join("\n"));
+    assert.ok(logs.lines.some((l) => l.includes("[INFO]") && l.includes("recording stream 22 closed (the HomeKit data connection closed)")), logs.lines.join("\n"));
+  } finally {
+    logs.restore();
+  }
 });
 
 test("no init segment after the warm-up: the clip is aborted with an ERROR, nothing is sent", async () => {
