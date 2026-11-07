@@ -153,6 +153,29 @@ export function createAdminServer(d: AdminDeps): http.Server {
     r.on("timeout", () => r.destroy(new Error("no answer within 1.5 s")));
     r.on("error", (err: NodeJS.ErrnoException) => fail(err.code === "ECONNREFUSED" ? "connection refused: it isn't running" : err.message));
   });
+  /**
+   * #109: forward one on-demand status-light check to the dashboard's /api/check (same loopback-or-
+   * own-address transport as dashLights), and hand back its JSON and status. Never throws: a failure
+   * to reach the dashboard is the four-part error the settings page shows by the Test button.
+   */
+  const dashCheck = (attempted: string, payload: unknown): Promise<{ status: number; json: unknown }> => new Promise((resolve) => {
+    const host = !dash.host || dash.host === "0.0.0.0" || dash.host === "::" ? "127.0.0.1" : dash.host;
+    const buf = Buffer.from(JSON.stringify(payload ?? {}), "utf8");
+    const fail = (why: string) => resolve({ status: 502, json: { error: {
+      attempted, happened: `Couldn't reach the dashboard to run the check (${why}).`, changed: "Nothing was checked.",
+      next: "If the dashboard is down, the admin pane's Status tab says why; otherwise try the Test button again." } } });
+    const r = http.request({ host, port: dash.port, path: "/api/check", method: "POST", timeout: 12_000,
+      headers: { "content-type": "application/json", "content-length": buf.length, "x-dash-action": "check", accept: "application/json" } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c: string) => { body += c; if (body.length > 1_000_000) r.destroy(new Error("its answer was too big")); });
+      res.on("end", () => { try { resolve({ status: res.statusCode ?? 502, json: JSON.parse(body) }); } catch (err) { fail(`its answer wasn't JSON: ${(err as Error).message}`); } });
+    });
+    r.on("timeout", () => r.destroy(new Error("no answer within 12 s")));
+    r.on("error", (err: NodeJS.ErrnoException) => fail(err.code === "ECONNREFUSED" ? "connection refused: it isn't running" : err.message));
+    r.write(buf);
+    r.end();
+  });
   // Read once at start. A bad key file disables sign-in (every request gets its 503) rather than
   // being replaced; the bridge and /healthz carry on.
   let secret: Buffer = Buffer.alloc(0);
@@ -446,6 +469,16 @@ export function createAdminServer(d: AdminDeps): http.Server {
         }
         log.info(`dashboard font "${got.name}" fetched from Constructicon into ${fontsDir}/${got.file}`);
         return json(res, 200, { ...got, fonts: listFonts(fontsDir).fonts, message: `"${got.name}" is in the fonts folder now; pick it and save.` });
+      }
+
+      // #109: test one status light as entered in the editor, before it's saved. Behind the same admin
+      // sign-in + CSRF as the settings route (a POST, so the block above already enforced them); the body
+      // {check, build?} is forwarded to the dashboard, which runs the probe and reads the build page.
+      if (url.pathname === "/api/dash/check" && method === "POST") {
+        attempted = "Test a status light";
+        const body = await readJson(req, attempted);
+        const { status, json: result } = await dashCheck(attempted, { check: body?.check, build: body?.build });
+        return json(res, status, result);
       }
 
       if (url.pathname === "/api/status" && method === "GET") {

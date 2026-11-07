@@ -170,3 +170,60 @@ test("a hand-edited glow in settings.json is clamped on load, and the dashboard 
   assert.deepEqual(ok.settings.glow, { intensity: 0, size: 0 }, "an older file without glow gets 0% for both");
   assert.equal(ok.warning, null);
 });
+
+// #109: the full status-light tree can be replaced through the `services` edit key
+const TREE = [
+  { id: "nas", name: "NAS", rollup: true, check: { kind: "alive", host: "10.0.1.78", port: 80 }, children: [
+    { id: "smb", name: "SMB", check: { kind: "tcp", host: "127.0.0.1", port: 445 } },
+    { id: "web", name: "Web", link: "http://web.local", check: { kind: "http", url: "http://10.0.1.1/", ok: "200" }, build: { url: "http://10.0.1.1/healthz" } },
+    { id: "hk", name: "HomeKit bridge", check: { kind: "bridge" } },
+    { id: "far", name: "Far thing", check: { kind: "blocked", reason: "can't reach it from here" } },
+  ] },
+];
+const refuseServices = (svc: unknown, re: RegExp) => assert.throws(() => applySettingsEdit(DEFAULTS, { services: svc }, ctx), (e: unknown) =>
+  e instanceof UserError && re.test(e.body.happened) && /Nothing was saved/.test(e.body.changed));
+
+test("#109: a valid full tree is accepted and returned cleaned, with every kind", () => {
+  const s = applySettingsEdit(DEFAULTS, { services: TREE }, ctx);
+  assert.deepEqual(s.services, TREE);
+  assert.deepEqual(DEFAULTS.services, DEFAULTS.services, "the defaults aren't mutated");
+});
+
+test("#109: add, remove and relabel round-trip through applySettingsEdit; the id never changes on relabel", () => {
+  const relabel = JSON.parse(JSON.stringify(TREE));
+  relabel[0].name = "Home NAS";
+  const a = applySettingsEdit(DEFAULTS, { services: relabel }, ctx).services[0];
+  assert.equal(a.name, "Home NAS");
+  assert.equal(a.id, "nas", "the id is immutable; only the name changed");
+  const removed = JSON.parse(JSON.stringify(TREE));
+  removed[0].children.splice(0, 1);
+  assert.equal(applySettingsEdit(DEFAULTS, { services: removed }, ctx).services[0].children!.length, 3);
+  const added = JSON.parse(JSON.stringify(TREE));
+  added[0].children.push({ id: "new", name: "New", check: { kind: "tcp", host: "h", port: 22 } });
+  const kids = applySettingsEdit(DEFAULTS, { services: added }, ctx).services[0].children!;
+  assert.equal(kids.length, 5);
+  assert.equal(kids[4].id, "new");
+});
+
+test("#109: each bad tree is refused by field with nothing saved", () => {
+  refuseServices({}, /must be a list of lights/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "nope" } }], /unknown kind/);
+  refuseServices([{ id: "a", name: "", check: { kind: "bridge" } }], /needs a name/);
+  refuseServices([{ id: "Bad_ID", name: "A", check: { kind: "bridge" } }], /id of lowercase/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "bridge" } }, { id: "a", name: "B", check: { kind: "bridge" } }], /another light already uses/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "tcp", host: "h", port: 70000 } }], /port/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "tcp", host: "", port: 80 } }], /needs a host/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "http", url: "http://x/", ok: "maybe" } }], /ok must be/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "http", url: "not a url", ok: "any" } }], /url must be a web address/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "bridge" }, build: { url: "ftp://x/y" } }], /Build page for "A"/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "bridge" }, link: "notaurl" }], /link must be a web address/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "tcp", host: "h", port: 80, extra: 1 } }], /that a tcp check doesn't use/);
+  refuseServices([{ id: "a", name: "A", check: { kind: "bridge" }, weird: 1 }], /that a status light doesn't use/);
+});
+
+test("#109: ids must be unique across the whole tree, not just among siblings", () => {
+  refuseServices([
+    { id: "root", name: "Root", check: { kind: "bridge" }, children: [{ id: "dup", name: "C1", check: { kind: "bridge" } }] },
+    { id: "dup", name: "Other", check: { kind: "bridge" } },
+  ], /another light already uses/);
+});

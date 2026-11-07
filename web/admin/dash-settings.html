@@ -60,7 +60,7 @@
     <section>
       <h2>Status lights</h2>
       <div id="lights" class="lights"><p class="hint">Loading the dashboard's status lights...</p></div>
-      <p class="hint">The dashboard shows a short label under each light that isn't green; the full reason is here (and on a tap there). A light with a build page (a JSON address with a <code>build</code> field, for example a <code>/healthz</code> page) starts its pulse when the build changes; leave the box empty for no build watch. Save to apply.</p>
+      <p class="hint">Add, remove or edit the lights on the wall. Each light has a name, a check (a port, an HTTP page, the HomeKit bridge, or a plain "can't check here" reason), an optional build page (a JSON address with a <code>build</code> field, for example a <code>/healthz</code> page) that starts its pulse when the build changes, and an optional link. Test probes the check as entered. A light's id (shown in the editor) is made once from its name and never changes, so the deploy pulse config can rely on it. Changes here apply when you Save.</p>
     </section>
   </div>
 
