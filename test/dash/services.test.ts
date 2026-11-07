@@ -82,19 +82,16 @@ test("bridge: green only when HomeKit is on and paired; otherwise says which", a
 });
 
 test("blocked: still a red light with the plain reason, pointing at the shim", async () => {
-  assert.match((await runCheck({ kind: "blocked", reason: IPVLAN_REASON }, noBridge))!, /can't be checked from the NAS's own network/);
+  assert.match((await runCheck({ kind: "blocked", reason: IPVLAN_REASON }, noBridge))!, /can't be checked from this host's own network/);
   assert.match(IPVLAN_REASON, /ipvlan-shim\.sh/);
 });
 
-test("defaults: the ipvlan apps are real http checks again, reached through the NAS shim (#11)", () => {
-  const checks = new Map<string, ServiceNode["check"]>();
-  const walk = (ns: ServiceNode[]) => ns.forEach((n) => { checks.set(n.id, n.check); walk(n.children ?? []); });
+test("defaults are install-neutral (#44): just the HomeKit bridge's light, no address, link or blocked light", () => {
+  const lamps: ServiceNode[] = [];
+  const walk = (ns: ServiceNode[]) => ns.forEach((n) => { lamps.push(n); walk(n.children ?? []); });
   walk(DEFAULT_SERVICES);
-  assert.equal([...checks.values()].filter((c) => c.kind === "blocked").length, 0, "no default light is blocked any more");
-  assert.deepEqual(checks.get("constructicon"), { kind: "http", url: "http://10.0.1.240/", ok: "any" });
-  assert.deepEqual(checks.get("constructicon-dev"), { kind: "http", url: "http://10.0.1.241/", ok: "any" });
-  assert.deepEqual(checks.get("questlog"), { kind: "http", url: "http://10.0.1.250/", ok: "200" });
-  assert.deepEqual(checks.get("questlog-dev"), { kind: "http", url: "http://10.0.1.246/", ok: "200" });
+  assert.deepEqual(lamps.map((n) => [n.id, n.check.kind]), [["homekit", "bridge"]]);
+  assert.doesNotMatch(JSON.stringify(DEFAULT_SERVICES), /\d+\.\d+\.\d+\.\d+|\.local|http/, "nothing about any one network");
 });
 
 test("an unknown check kind (a hand-edited settings file) is a reason, not a crash or a green", async () => {
@@ -195,8 +192,7 @@ test("a rollup that's orange says why: how many below it aren't green, and which
   assert.match(m.reason!, /SMB: not answering/);
 });
 
-test("the old default 'Server' rollup is the NAS: renamed in the defaults and in saved settings", () => {
-  assert.equal(DEFAULT_SERVICES[0].name, "NAS");
+test("the old default 'Server' rollup is still shown as NAS in saved settings (and only that node)", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-"));
   const f = path.join(dir, "settings.json");
   fs.writeFileSync(f, JSON.stringify({ services: [{ id: "server", name: "Server", rollup: true, check: { kind: "bridge" } }, { id: "other", name: "Server", check: { kind: "bridge" } }] }));

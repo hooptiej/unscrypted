@@ -18,8 +18,8 @@ import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin } from "./ipc";
 import { UserError, toErrorJson } from "../shared/errors";
 import { securityHeaders, sendJson, readFontFile, proxyGo2rtcFile, proxyGo2rtcSocket, STREAM_NAME } from "../shared/http";
-import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
-import { Config, ResolvedCamera, resolveConfig, DEFAULT_MOTION_COOLDOWN_MS } from "../config";
+import { readRawConfig, redactConfig, applyCameraEdit, applyMotionDefault, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
+import { Config, ResolvedCamera, resolveConfig, DEFAULT_MOTION_COOLDOWN_MS, MIN_MOTION_COOLDOWN_MS, MAX_MOTION_COOLDOWN_MS } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
   loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
@@ -32,7 +32,7 @@ import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
 import { ConstructiconFonts, cachedFontFile } from "./constructicon";
 
 type Applied = Extract<ToAdmin, { type: "applied" }>;
-type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "remove"; name: string } | { type: "restart-bridge" } | { type: "reload-go2rtc" };
+type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "remove"; name: string } | { type: "restart-bridge" } | { type: "reload-go2rtc" } | { type: "apply-defaults" };
 
 export interface AdminDeps {
   configPath: string;
@@ -52,7 +52,7 @@ export interface AdminDeps {
   };
   /**
    * The dashboard's settings folder, its port, and its public base URL when it isn't this host
-   * (UNSCRYPTED_DASH_URL, e.g. http://10.0.1.248/ once it has its own address). Defaults: /data/dash, 8180, derived.
+   * (UNSCRYPTED_DASH_URL, e.g. http://192.168.1.20/ once it has its own address). Defaults: /data/dash, 8180, derived.
    */
   dash?: { dir: string; port: number; url: string | null; host?: string };
   /** The Constructicon font list (#14): where the read-only token file is. Default /run/secrets/constructicon_token. */
@@ -291,10 +291,10 @@ export function createAdminServer(d: AdminDeps): http.Server {
         // The same font files the open dashboard serves, for the settings page's live preview.
         attempted = "Load a dashboard font for the preview";
         const name = url.pathname.slice("/dash-fonts/".length);
-        const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the NAS, then reload." }, 404);
+        const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the host (next to docker-compose.yml), then reload." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
         const body = readFontFile(path.join(dash.dir, "fonts"), name, { attempted, log, notThere: gone, changed: "Nothing.",
-          unreadableNext: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), then reload." });
+          unreadableNext: "Check the file's permissions in data/dash/fonts on the host (the container must be able to read it), then reload." });
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length) });
         return res.end(body);
       }
@@ -357,7 +357,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         const body = await readJson(req, attempted);
         if (!checkPassword(String(body?.password ?? ""), password)) {
           limiter.fail(ip);
-          throw new UserError({ attempted, happened: "Wrong password.", changed: "Nothing.", next: "Check ~/unscrypted/secrets/admin_password on the NAS if you've forgotten it. 5 wrong tries pause sign-in for 5 minutes." }, 401);
+          throw new UserError({ attempted, happened: "Wrong password.", changed: "Nothing.", next: "Check secrets/admin_password next to docker-compose.yml on the host if you've forgotten it. 5 wrong tries pause sign-in for 5 minutes." }, 401);
         }
         limiter.reset(ip);
         const session = issueSession(secret);
@@ -406,7 +406,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
           let backupPath: string | null;
           try { ({ backupPath } = saveSettings(dashSettingsFile, next)); } catch (err) {
             throw new UserError({ attempted, happened: `${dashSettingsFile} couldn't be written (${(err as Error).message}).`, changed: "Nothing was saved; the dashboard keeps its current settings.",
-              next: "Check that ./data/dash on the NAS exists and is writable by the container, then save again." }, 500);
+              next: "Check that ./data/dash on the host exists and is writable by the container, then save again." }, 500);
           }
           log.info(`dashboard settings saved (${Object.keys(edit).join(", ")})`);
           return json(res, 200, { saved: true, backupPath, settings: next, message: "Saved. The dashboard reloads with it within a few seconds." });
@@ -490,7 +490,34 @@ export function createAdminServer(d: AdminDeps): http.Server {
           notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS },
           // The form's placeholders show the defaults the bridge really applies (#90).
           defaults: { motionCooldownMs: DEFAULT_MOTION_COOLDOWN_MS },
+          limits: { motionCooldownMs: { min: MIN_MOTION_COOLDOWN_MS, max: MAX_MOTION_COOLDOWN_MS } },
         });
+      }
+
+      // #90: the install-wide motion hold (cameras without their own value use it). Body {motionCooldownMs: ms}
+      // or {motionCooldownMs: null} to go back to the built-in default. Validated 5000 to 180000, written
+      // atomically, then applied live to every running camera that uses it: no restart.
+      if (url.pathname === "/api/settings/motion" && method === "PUT") {
+        attempted = "Save the default motion hold";
+        const body = await readJson(req, attempted);
+        if (!body || typeof body !== "object" || Array.isArray(body) || !("motionCooldownMs" in body)) {
+          throw new UserError({ attempted, happened: "The request didn't carry a motionCooldownMs value.", changed: "Nothing was saved.", next: "Reload the page and try again." });
+        }
+        const next = applyMotionDefault(readRawConfig(d.configPath), body.motionCooldownMs);
+        const { backupPath, warning } = writeConfigAtomic(d.configPath, next);
+        const extra = { saved: true, backupPath, notes: [] as string[], ...(warning ? { warning } : {}) };
+        const savedChanged = `config.json WAS saved${backupPath ? ` (previous version kept at ${backupPath})` : ""}; the running bridge did not apply it.`;
+        let reply: Applied | null;
+        try {
+          reply = await askBridge({ type: "apply-defaults" });
+        } catch (err) {
+          return json(res, 500, { ...extra, error: { attempted, happened: `Saved, but the bridge couldn't be told about it: ${(err as Error).message}`, changed: savedChanged, next: "Use \"Restart bridge\" to apply it." } });
+        }
+        if (!reply) {
+          return json(res, 202, { ...extra, message: `Saved to config.json, but the bridge didn't confirm applying it within ${APPLY_TIMEOUT_MS / 1000}s. The change is NOT live yet. Use "Restart bridge" to apply it.` });
+        }
+        if (!reply.ok) return json(res, 500, { ...extra, error: { ...reply.error, changed: `${savedChanged} ${reply.error.changed}` } });
+        return json(res, 200, { ...extra, mode: reply.mode, message: reply.message });
       }
 
       // One camera's logins, for the signed-in admin's Show button (#18). POST only, so it carries the
@@ -636,7 +663,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         attempted = "Restart the bridge";
         const reply = await askBridge({ type: "restart-bridge" });
         if (!reply) {
-          throw new UserError({ attempted, happened: `The bridge didn't answer within ${APPLY_TIMEOUT_MS / 1000}s.`, changed: "Probably nothing; the bridge may be busy or stuck.", next: "Restart the container on the NAS: sudo docker restart unscrypted." }, 504);
+          throw new UserError({ attempted, happened: `The bridge didn't answer within ${APPLY_TIMEOUT_MS / 1000}s.`, changed: "Probably nothing; the bridge may be busy or stuck.", next: "Restart the unscrypted container on the host (docker compose restart, run in the folder that holds docker-compose.yml)." }, 504);
         }
         return reply.ok ? json(res, 200, { message: reply.message }) : json(res, 500, { error: reply.error });
       }

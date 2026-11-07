@@ -6,7 +6,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Config, CameraConfig, FoscamConfig, OnvifConfig, resolveConfig, ConfigError } from "../config";
+import { Config, CameraConfig, FoscamConfig, OnvifConfig, resolveConfig, ConfigError, checkMotionCooldown, MIN_MOTION_COOLDOWN_MS, MAX_MOTION_COOLDOWN_MS } from "../config";
 import { UserError } from "../shared/errors";
 import { readRawConfig } from "../shared/rawConfig";
 
@@ -95,8 +95,9 @@ export function cameraLogins(cam: CameraConfig): CameraLogins {
   };
 }
 
-export function redactConfig(raw: Config): { cameras: PublicCamera[] } {
-  return { cameras: raw.cameras.map(redactCamera) };
+export function redactConfig(raw: Config): { cameras: PublicCamera[]; motionCooldownMs: number | null } {
+  // motionCooldownMs: the install-wide motion hold the pane's slider shows (#90); null = the built-in default.
+  return { cameras: raw.cameras.map(redactCamera), motionCooldownMs: typeof raw.motionCooldownMs === "number" ? raw.motionCooldownMs : null };
 }
 
 /** A secret field from the browser: a string replaces, anything else (absent, {set:...}) keeps. */
@@ -120,6 +121,8 @@ function mergeBlock<T extends { password: string }>(
   if (edit === null) return undefined;          // explicit removal of the block
   if (edit === undefined) return stored;
   const merged = { ...(stored ?? {}), ...edit } as T;
+  // A null from the pane means "take this setting off" (e.g. a camera going back to the default motion hold, #90).
+  for (const k of Object.keys(merged)) if ((merged as Record<string, unknown>)[k] === null) delete (merged as Record<string, unknown>)[k];
   if (!isNewSecret(edit.password)) {
     if (stored) merged.password = stored.password;
     else delete (merged as Partial<T>).password;  // let the validator say a password field is needed
@@ -188,6 +191,26 @@ export function applyCameraEdit(raw: Config, originalName: string | null, edit: 
     if (err instanceof ConfigError) {
       throw new UserError({ attempted: `Save camera "${cam.name}"`, happened: err.message,
         changed: "Nothing was saved; config.json is untouched.", next: "Fix the field named above and save again." });
+    }
+    throw err;
+  }
+  return next;
+}
+
+/**
+ * #90: the config with the install-wide motion hold set to `ms` (5000 to 180000), or taken off (null =
+ * back to the built-in default). Cameras with their own value keep it. Validated by the bridge's own
+ * validator, so an out-of-range value is refused with the allowed range in the message.
+ */
+export function applyMotionDefault(raw: Config, ms: unknown): Config {
+  const next: Config = JSON.parse(JSON.stringify(raw));
+  try {
+    if (ms === null) delete next.motionCooldownMs; else next.motionCooldownMs = checkMotionCooldown(ms, "motionCooldownMs (the default for every camera)");
+    resolveConfig(next, "/");
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw new UserError({ attempted: "Save the default motion hold", happened: err.message,
+        changed: "Nothing was saved; config.json is untouched.", next: `Pick a value from ${MIN_MOTION_COOLDOWN_MS / 1000} to ${MAX_MOTION_COOLDOWN_MS / 1000} seconds and save again.` });
     }
     throw err;
   }

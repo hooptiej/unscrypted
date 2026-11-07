@@ -29,7 +29,7 @@ function badKey(happened: string, next: string): UserError {
  * The key itself never goes into a message or the log.
  */
 export function loadOrCreateSessionKey(file: string): { key: Buffer; created: boolean } {
-  const fix = `On the NAS: delete the key file (the container sees it as ${file}; in Docker it's ./data/admin-session.key next to docker-compose.yml) and restart the container. It makes a new key; everyone just signs in again.`;
+  const fix = `On the host: delete the key file (the container sees it as ${file}; in Docker it's ./data/admin-session.key next to docker-compose.yml) and restart the container. It makes a new key; everyone just signs in again.`;
   let key: Buffer;
   try {
     key = fs.readFileSync(file);
@@ -75,7 +75,7 @@ function noPassword(file: string, happened: string): UserError {
     attempted: "Start the admin pane's sign-in",
     happened,
     changed: "The admin pane is refusing every request; the HomeKit bridge is running normally.",
-    next: `On the NAS: put a password (one line) in ~/unscrypted/secrets/admin_password, which the container reads as ${file}, then restart the container.`,
+    next: `On the host: put a password (one line) in secrets/admin_password next to docker-compose.yml, which the container reads as ${file}, then restart the container.`,
   }, 503);
 }
 

@@ -419,6 +419,7 @@ async function renderCameras() {
   }
   const notes = lastStatus && lastStatus.notices ? lastStatus.notices.filter((n) => /HomeKit is off/.test(n)) : [];
   app.replaceChildren(el("h1", {}, "Cameras"), ...notes.map((n) => msgBox("amber", n)),
+    r.cameras.length ? globalHoldPanel(r) : null,
     r.cameras.length ? grid : el("p", { class: "muted" }, "No cameras in config.json yet. Use Add camera."));
 }
 
@@ -458,15 +459,126 @@ async function watchLive(check, tile, btn) {
   }
 }
 
+// ---------- the motion hold slider (#90) ----------
+
+/** Seconds the way the pane says them: "60 s", "2 min 30 s". */
+function holdText(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
+}
+
+/** One camera's live motion state, in words, from the 5 s status poll. */
+function motionLiveText(name) {
+  if (!lastStatus) return "Live motion state: waiting for the bridge's status...";
+  if (!lastStatus.hapEnabled) return "Live motion state: unavailable here. HomeKit is off on this instance, so motion sources aren't started.";
+  const c = lastStatus.cameras.find((x) => x.name === name);
+  if (!c) return "Live motion state: this camera isn't running yet (saved, waiting for the bridge or a restart).";
+  if (c.motionKind === "none") return "Live motion state: this camera has no motion source.";
+  return `Motion right now: ${c.motionActive ? "ON" : "off"}. Last motion: ${ago(c.lastMotionAt)}.`;
+}
+
+/**
+ * A "hold motion for" slider, 5 to 180 s (the limits come from the server, which enforces them too).
+ *  o.value        ms, or null to follow the default
+ *  o.defaultMs    the default it follows
+ *  o.canInherit   adds the "use the default" box (per-camera only)
+ *  o.disabledWhy  () => string | null; when it says why, the slider is greyed and the reason shows
+ *  o.liveFor      camera name whose live motion state shows beside the slider
+ * Returns { node, get() -> ms | null (null = follow the default), refresh() }.
+ */
+function holdControl(o) {
+  const minS = Math.round(o.limits.min / 1000), maxS = Math.round(o.limits.max / 1000);
+  const hintId = `holdhint-${Math.random().toString(36).slice(2, 8)}`;
+  const slider = el("input", { type: "range", min: String(minS), max: String(maxS), step: "1", "aria-describedby": hintId });
+  const out = el("output", {});
+  const inherit = o.canInherit ? el("input", { type: "checkbox", checked: o.value === null || o.value === undefined }) : null;
+  const inheritLabel = inherit ? el("label", { class: "check" }, inherit, `Use the default (${holdText(o.defaultMs)})`) : null;
+  const why = el("p", { class: "why", hidden: true });
+  const live = o.liveFor ? el("p", { class: "hint live", role: "status" }) : null;
+  slider.value = String(Math.round((o.value === null || o.value === undefined ? o.defaultMs : o.value) / 1000));
+  const draw = () => {
+    const reason = o.disabledWhy ? o.disabledWhy() : null;
+    const following = inherit && inherit.checked;
+    if (following) slider.value = String(Math.round(o.defaultMs / 1000));
+    slider.disabled = Boolean(reason) || Boolean(following);
+    if (inherit) inherit.disabled = Boolean(reason);
+    out.textContent = following ? `${holdText(o.defaultMs)} (default)` : holdText(Number(slider.value) * 1000);
+    why.hidden = !reason;
+    why.textContent = reason || "";
+    if (live) live.textContent = motionLiveText(o.liveFor);
+  };
+  slider.addEventListener("input", draw);
+  if (inherit) inherit.addEventListener("change", draw);
+  const hint = el("p", { class: "hint", id: hintId }, `Longer = fewer flickers in wind. How long the motion sensor stays on after the last movement (${minS} to ${maxS} seconds). Saving applies it live, with no restart.`);
+  const node = el("div", { class: "hold" },
+    el("div", { class: "knob" }, slider, out), inheritLabel, hint, why, live);
+  draw();
+  if (live) {
+    const t = setInterval(() => { if (!node.isConnected) clearInterval(t); else draw(); }, 2000);
+  }
+  return {
+    node, refresh: draw,
+    get: () => (inherit && inherit.checked ? null : Number(slider.value) * 1000),
+    set: (ms) => { slider.value = String(Math.round(ms / 1000)); draw(); },
+  };
+}
+
+/** The Cameras page's panel for the install-wide default hold. */
+function globalHoldPanel(r) {
+  const limits = (r.limits && r.limits.motionCooldownMs) || { min: 5000, max: 180000 };
+  const builtIn = (r.defaults && r.defaults.motionCooldownMs) || 60000;
+  let current = typeof r.motionCooldownMs === "number" ? r.motionCooldownMs : null;
+  const ctl = holdControl({ limits, value: current, defaultMs: builtIn, canInherit: false });
+  const out = el("div");
+  const save = el("button", { type: "button", class: "primary" }, "Save default");
+  const reset = el("button", { type: "button", class: "secondary" }, `Use the built-in ${holdText(builtIn)}`);
+  const withSource = r.cameras.filter((c) => c.foscam || c.onvif);
+  const hold = (c) => (c.foscam || c.onvif).motionCooldownMs;
+  const own = withSource.filter((c) => hold(c) !== undefined);
+  const follow = withSource.filter((c) => hold(c) === undefined);
+  const drawReset = () => {
+    reset.disabled = current === null;
+    reset.title = current === null ? `Already using the built-in default (${holdText(builtIn)}).` : "";
+  };
+  const send = async (value, btn, label) => {
+    save.disabled = true; reset.disabled = true;
+    btn.textContent = "Saving...";
+    out.replaceChildren();
+    const r2 = await api("PUT", "/api/settings/motion", { motionCooldownMs: value });
+    btn.textContent = label;
+    save.disabled = false;
+    const extras = [r2.warning, r2.backupPath ? `Previous config.json kept at ${r2.backupPath}.` : null];
+    if (r2.error) {
+      out.replaceChildren(errorBox(r2.error), ...(r2.saved ? [msgBox("amber", ...extras)] : []));
+    } else {
+      current = value;
+      if (value === null) ctl.set(builtIn);   // the slider follows the reset
+      out.replaceChildren(msgBox(r2.status === 200 ? "ok" : "amber", r2.message, ...extras));
+    }
+    drawReset();
+  };
+  const resetLabel = reset.textContent;
+  save.addEventListener("click", () => send(ctl.get(), save, "Save default"));
+  reset.addEventListener("click", () => send(null, reset, resetLabel));
+  drawReset();
+  return el("section", { class: "panel" },
+    el("h2", {}, "Motion hold for all cameras"),
+    el("p", { class: "hint" }, "The default for every camera that doesn't set its own. A camera's own value (its Edit page) wins over this."),
+    ctl.node,
+    el("p", { class: "hint" }, follow.length ? `Following this default: ${follow.map((c) => c.name).join(", ")}.` : "No camera with a motion source is following this default."),
+    own.length ? el("p", { class: "hint" }, `With their own hold: ${own.map((c) => `${c.name} (${holdText(hold(c))})`).join(", ")}.`) : null,
+    el("div", { class: "row" }, save, reset), out);
+}
+
 // ---------- add / edit form ----------
 
 const PART_FIELDS = [["host", "Camera address (IP or host name)", "text"], ["rtspPort", "RTSP port", "number", "554"], ["rtspUser", "User name", "text"],
   ["rtspPassword", "Password", "password"], ["rtspMainPath", "Main stream path", "text", "/videoMain"], ["rtspSubPath", "Sub stream path", "text", "/videoSub"]];
 const FOSCAM_FIELDS = [["cgiBase", "CGI base URL", "text", "http://192.168.1.50:88"], ["username", "User name", "text"], ["password", "Password", "password"],
-  ["pollIntervalMs", "Poll every (ms)", "number", "1000"], ["motionCooldownMs", "Hold motion for (ms)", "number", "60000"]];
+  ["pollIntervalMs", "Poll every (ms)", "number", "1000"]];
 const ONVIF_FIELDS = [["host", "ONVIF address", "text"], ["port", "ONVIF port", "number", "80 (XM cameras: 8080)"], ["username", "User name", "text"],
   ["password", "Password", "password"], ["notifyPort", "Push receiver port", "number", "0 = random"], ["notifyHost", "Push receiver address", "text", "auto-detected"],
-  ["pollIntervalMs", "PullPoint wait (ms)", "number", "60000"], ["motionCooldownMs", "Hold motion for (ms)", "number", "60000"]];
+  ["pollIntervalMs", "PullPoint wait (ms)", "number", "60000"]];
 
 /**
  * A field's placeholder: the bridge's real default when the server sent one (GET /api/cameras
@@ -537,7 +649,15 @@ async function renderForm(name) {
   const onvIns = ONVIF_FIELDS.map(([k, l, t, p]) => [k, t, input(k, l, t, placeholderFor(k, p, r.defaults), cam.onvif && cam.onvif[k])]);
   const fosBox = el("div", { class: "two" }, fosIns.map(([, , x]) => x.node));
   const onvBox = el("div", { class: "two" }, onvIns.map(([, , x]) => x.node));
-  const showMotion = () => { fosBox.hidden = !radios[1].checked; onvBox.hidden = !radios[2].checked; };
+  const holdCtl = holdControl({
+    limits: (r.limits && r.limits.motionCooldownMs) || { min: 5000, max: 180000 },
+    value: kind === "none" ? null : (cam[kind] ? cam[kind].motionCooldownMs : null),
+    defaultMs: typeof r.motionCooldownMs === "number" ? r.motionCooldownMs : ((r.defaults && r.defaults.motionCooldownMs) || 60000),
+    canInherit: true,
+    disabledWhy: () => (radios[0].checked ? "Pick Foscam CGI or ONVIF above: with no motion source there is nothing to hold." : null),
+    liveFor: isNew ? null : cam.name,
+  });
+  const showMotion = () => { fosBox.hidden = !radios[1].checked; onvBox.hidden = !radios[2].checked; holdCtl.refresh(); };
   radios.forEach((r) => r.addEventListener("change", showMotion));
 
   // Recording / HomeKit.
@@ -580,6 +700,13 @@ async function renderForm(name) {
     if (radios[1].checked) { e.foscam = block(fosIns, cam.foscam); if (cam.onvif) e.onvif = null; }
     else if (radios[2].checked) { e.onvif = block(onvIns, cam.onvif); if (cam.foscam) e.foscam = null; }
     else { if (cam.foscam) e.foscam = null; if (cam.onvif) e.onvif = null; }
+    if (radios[1].checked || radios[2].checked) {
+      const hold = holdCtl.get();
+      const blk = radios[1].checked ? e.foscam : e.onvif;
+      const stored = radios[1].checked ? cam.foscam : cam.onvif;
+      if (hold !== null) blk.motionCooldownMs = hold;
+      else if (stored && stored.motionCooldownMs !== undefined) blk.motionCooldownMs = null;   // back to following the default
+    }
     e.hksv = hksv.checked;
     e.audio = audio.checked;
     e.copyVideo = copy.checked;
@@ -635,7 +762,8 @@ async function renderForm(name) {
   el("fieldset", {}, el("legend", {}, "Motion source"),
     el("div", { class: "row" }, el("label", { class: "check" }, radios[0], "None"), el("label", { class: "check" }, radios[1], "Foscam CGI"), el("label", { class: "check" }, radios[2], "ONVIF")),
     el("p", { class: "hint" }, "Without a motion source nothing triggers HomeKit Secure Video recordings. Changing the source type takes a bridge restart."),
-    fosBox, onvBox),
+    fosBox, onvBox,
+    el("h3", { class: "sub" }, "Hold motion for"), holdCtl.node),
   el("fieldset", {}, el("legend", {}, "Recording and HomeKit"),
     el("label", { class: "check" }, hksv, "HomeKit Secure Video recording"),
     el("label", { class: "check" }, audio, "Camera has audio"),

@@ -305,6 +305,8 @@ export class BridgeRuntime {
         await this.applyCamera(m.reqId, m.name);
       } else if (m.type === "remove") {
         await this.removeCamera(m.reqId, m.name);
+      } else if (m.type === "apply-defaults") {
+        await this.applyDefaults(m.reqId);
       } else if (m.type === "reload-go2rtc") {
         if (!this.go2rtc) {
           throw new UserError({ attempted: "Restart go2rtc", happened: `go2rtc isn't running in this instance: ${this.go2rtcOff}.`,
@@ -319,7 +321,8 @@ export class BridgeRuntime {
         setTimeout(() => this.o.requestRestart("restart requested from the admin pane"), 500);
       }
     } catch (err) {
-      const attempted = m.type === "apply" ? `Apply the saved change to "${m.name}"` : m.type === "remove" ? `Remove "${m.name}" from the running bridge` : "Handle a request from the admin pane";
+      const attempted = m.type === "apply" ? `Apply the saved change to "${m.name}"` : m.type === "remove" ? `Remove "${m.name}" from the running bridge`
+        : m.type === "apply-defaults" ? "Apply the default motion hold" : "Handle a request from the admin pane";
       if (!(err instanceof UserError)) this.o.log.error(`${attempted} failed: ${(err as Error).stack ?? err}`);
       const { body } = toErrorJson(err, attempted);
       this.send({ type: "applied", reqId: m.reqId, ok: false, error: body.error });
@@ -389,6 +392,53 @@ export class BridgeRuntime {
     this.send({ type: "applied", reqId, ok: true, mode, message });
     this.pushStatus();
     this.pushDash(true);   // a new or edited camera reaches the dashboard's allowlist and tiles
+  }
+
+  /**
+   * #90: the install-wide motion hold in config.json changed. Re-apply it live to every running
+   * camera that uses it (no per-camera value of its own), leaving everything else about each camera
+   * as it is running now: only the hold is taken from the file, so a change still waiting for a
+   * restart isn't dragged in. A camera whose motion source type differs from the running one, or
+   * that has none, is skipped.
+   */
+  private async applyDefaults(reqId: string): Promise<void> {
+    const attempted = "Apply the default motion hold";
+    let next: ResolvedConfig;
+    try {
+      next = loadConfig(this.o.configPath);
+    } catch (err) {
+      if (err instanceof ConfigError) {
+        throw new UserError({ attempted, happened: `config.json no longer loads: ${err.message}`, changed: "The running bridge kept its previous settings.",
+          next: "Fix config.json (or restore the newest copy from ./config/backups), then save again." });
+      }
+      throw err;
+    }
+    const applied: string[] = [];
+    const cameras = [...this.config.cameras];
+    for (const after of next.cameras) {
+      const cam = this.cams.get(after.name);
+      if (!cam) continue;
+      const before = cam.resolved;
+      const b = before.foscam ?? before.onvif;
+      const a = after.foscam ?? after.onvif;
+      if (!b || !a || motionKindOf(before) !== motionKindOf(after)) continue;
+      const hold = a.motionCooldownMs ?? next.motionCooldownMs;
+      if ((b.motionCooldownMs ?? this.config.motionCooldownMs) === hold) continue;
+      const merged: ResolvedCamera = { ...before };
+      if (before.foscam) merged.foscam = { ...before.foscam, motionCooldownMs: hold };
+      if (before.onvif) merged.onvif = { ...before.onvif, motionCooldownMs: hold };
+      cam.reconfigure(merged);
+      applied.push(after.name);
+      const idx = cameras.findIndex((c) => c.name === after.name);
+      if (idx >= 0) cameras[idx] = { ...cameras[idx], foscam: merged.foscam, onvif: merged.onvif };
+    }
+    this.config = { ...this.config, motionCooldownMs: next.motionCooldownMs, cameras };
+    const secs = next.motionCooldownMs / 1000;
+    const message = applied.length
+      ? `Saved. The default motion hold is ${secs} s and is live for ${applied.map((n) => `"${n}"`).join(", ")} (cameras with their own hold keep it). Home was not disturbed.`
+      : `Saved. The default motion hold is ${secs} s. No running camera was using a different default, so nothing needed to change now (cameras with their own hold keep it).`;
+    this.send({ type: "applied", reqId, ok: true, mode: "live", message });
+    this.pushStatus();
   }
 
   /**

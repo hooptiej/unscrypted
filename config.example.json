@@ -9,6 +9,7 @@
   "persistDir": "persist",
   "ffmpegPath": "ffmpeg",
   "logLevel": "info",
+  "motionCooldownMs": 60000,
   "cameras": [
     {
       "name": "Front Door",

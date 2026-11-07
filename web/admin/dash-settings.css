@@ -85,7 +85,8 @@ a.btn:hover,a.btn:focus-visible{border-color:var(--acc);color:var(--acc)}
 .lights .l .lbtns{margin-left:auto;display:flex;gap:calc(8*var(--u))}
 .lights .l .lbtns button{background:var(--bg);color:var(--text);border:calc(2*var(--u)) solid var(--line);
   border-radius:calc(6*var(--u));padding:calc(4*var(--u)) calc(13*var(--u));font-size:calc(22*var(--u));font-weight:400}
-.lights .l .lbtns button:hover{border-color:var(--acc);color:var(--acc)}
+.lights .l .lbtns button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+.lights .l .lbtns button:disabled{opacity:.4;cursor:not-allowed}
 .ladd{margin-top:calc(12*var(--u))}
 .ladd button{background:var(--bg);color:var(--acc);border:calc(2*var(--u)) solid var(--line);
   border-radius:calc(8*var(--u));padding:calc(9*var(--u)) calc(22*var(--u));font-size:calc(24*var(--u));font-weight:500}

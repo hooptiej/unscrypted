@@ -42,7 +42,9 @@ export type ToBridge =
   | { type: "apply"; reqId: string; name: string; isNew: boolean }
   | { type: "remove"; reqId: string; name: string }
   | { type: "restart-bridge"; reqId: string }
-  | { type: "reload-go2rtc"; reqId: string };
+  | { type: "reload-go2rtc"; reqId: string }
+  /** #90: the install-wide motion hold changed in config.json; re-apply it to every running camera that uses it. */
+  | { type: "apply-defaults"; reqId: string };
 
 /** Shape-check a message from the admin child. Returns a reason string when it's malformed. */
 export function checkToBridge(m: unknown): ToBridge | string {
@@ -58,6 +60,7 @@ export function checkToBridge(m: unknown): ToBridge | string {
       return { type: "remove", reqId: o.reqId, name: o.name };
     case "restart-bridge":
     case "reload-go2rtc":
+    case "apply-defaults":
       return { type: o.type, reqId: o.reqId };
     default:
       return `unknown message type ${JSON.stringify(o.type)}`;

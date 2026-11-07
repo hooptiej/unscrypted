@@ -66,7 +66,7 @@ RUN printf '%s %s\n' "${UNSCRYPTED_BUILD_SHA}" "${UNSCRYPTED_BUILD_DATE}" > /app
 
 # ---- go2rtc (feed checks and previews in the admin pane, and the dashboard's live tiles).
 # Pinned version + checksum, never latest. The checksum is the release asset's SHA-256 as
-# published by GitHub for v1.9.14 (and re-hashed on the NAS). ADD --checksum fails the build on
+# published by GitHub for v1.9.14 (and re-hashed independently). ADD --checksum fails the build on
 # any mismatch. (Re-applied from f68c95c on the old lineage; the 0.1.x trunk never baked it.)
 ARG GO2RTC_VERSION=1.9.14
 ARG GO2RTC_SHA256=32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6

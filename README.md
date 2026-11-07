@@ -47,6 +47,7 @@ Key fields (`config.example.json` has the full shape):
 | `bridge.username` | A stable locally-administered MAC-style id for the bridge. Keep it constant across restarts. |
 | `bridge.pin` | 8-digit HomeKit setup code, format `XXX-XX-XXX`. |
 | `bridge.port` | TCP port for the HAP server (default `51826`). |
+| `motionCooldownMs` | The motion hold for every camera that doesn't set its own (see "Motion hold" below): 5000 to 180000 ms, default `60000`. |
 | `cameras[].name` | Unique display name in the Home app. |
 | `cameras[].host` + `rtspUser`/`rtspPassword` | unscrypted assembles `rtsp://user:pass@host:554/videoMain` and `/videoSub`. Or set `rtspMain`/`rtspSub` directly. |
 | `cameras[].foscam` | Foscam CGI motion source: CGI base (`http://<ip>:88`), username, password → drives the motion poller. |
@@ -72,11 +73,11 @@ For cameras that have no Foscam CGI, unscrypted subscribes to the camera's ONVIF
 ```json
 {
   "name": "Garage",
-  "rtspMain": "rtsp://admin:PASSWORD@10.0.1.3:554/11",
-  "rtspSub": "rtsp://admin:PASSWORD@10.0.1.3:554/12",
+  "rtspMain": "rtsp://admin:PASSWORD@192.168.1.30:554/11",
+  "rtspSub": "rtsp://admin:PASSWORD@192.168.1.30:554/12",
   "audio": false,
   "onvif": {
-    "host": "10.0.1.3",
+    "host": "192.168.1.30",
     "port": 8080,
     "username": "admin",
     "password": "PASSWORD"
@@ -89,7 +90,7 @@ For cameras that have no Foscam CGI, unscrypted subscribes to the camera's ONVIF
 | `host` / `port` | ONVIF device service host and port. Default port `80`. **Generic XM/Sofia cameras serve ONVIF on `8080`** (port 80 is the web UI); set it explicitly if the device service 404s. |
 | `username` / `password` | ONVIF account (WS-Security digest auth). Often the same as the RTSP login. |
 | `pollIntervalMs` | PullPoint long-poll window in ms (default `60000`). Ignored for push cameras. |
-| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (default `60000`, i.e. 60s — long enough that outdoor wind-gust gaps don't clear the sensor and flap HomeKit's event channel; see #65). |
+| `motionCooldownMs` | Hold the MotionSensor "on" this long after the last trigger (5000 to 180000 ms; default `60000`, i.e. 60s — long enough that outdoor wind-gust gaps don't clear the sensor and flap HomeKit's event channel; see #65). |
 | `notifyPort` | For push cameras (see below): TCP port the local notification receiver listens on. Default `0` (ephemeral). Set a fixed port if a firewall sits between unscrypted and the cameras. One receiver is shared across all ONVIF cameras. |
 | `notifyHost` | Override the local IP advertised to the camera as the notification consumer address (default: auto-detected). Set this if auto-detection picks the wrong NIC, e.g. in Docker with a custom network. |
 | (push security) | The push receiver only accepts notifications **from the `host` address of a configured ONVIF camera** (a host name is looked up; an IP is safest), and refuses a body over 256 KB. Anything else gets a 403/413 and a `refused an ONVIF notification from <address>` WARN in the log (at most once a minute per address). If a real camera sends from a different address than its ONVIF `host`, set `host` to the address it sends from. |
@@ -187,7 +188,7 @@ Once a host is set up (deploy key below), `scripts/deploy.sh` is the whole deplo
 ./scripts/deploy.sh --backup-plan   # say what the backup would do; change nothing
 ```
 
-Prod vs test is read from `.env`'s `COMPOSE_FILE` (the test image is `…-test`). **A prod deploy restarts HomeKit** (the heads-up under [Dashboard](#dashboard)); the test instance has HomeKit off, so a test deploy is safe. Optional: set `UNSCRYPTED_PULSE_URL`, `UNSCRYPTED_PULSE_TOKEN_FILE` and `UNSCRYPTED_PULSE_LIGHT` (`…_TEST` for the test install) in `.env` to pulse the dashboard's status light on a successful deploy (never fatal).
+Prod vs test is read from `.env`'s `COMPOSE_FILE` (the test image is `…-test`). **A prod deploy restarts HomeKit** (the heads-up under [Dashboard](#dashboard)); the test instance has HomeKit off, so a test deploy is safe. Optional: set `UNSCRYPTED_PULSE_URL`, `UNSCRYPTED_PULSE_TOKEN_FILE` and `UNSCRYPTED_PULSE_LIGHT` (`…_TEST` for the test install) in `.env` to pulse the dashboard's status light on a successful deploy (never fatal). On prod the dashboard is the container that was just recreated, so the script first waits for the dashboard's `/healthz` to answer (up to 90 s; `UNSCRYPTED_PULSE_WAIT` in `.env` changes it, `0` skips the wait). If it still hasn't answered, the script says so, tries the pulse once anyway, and tells you plainly if the light stayed unlit.
 
 **Deploy-key setup (one-time, per host).** The box pulls this private repo over a **read-only SSH deploy key**, so `deploy.sh` can `git fetch` without a password or a writable credential on the box:
 
@@ -205,7 +206,7 @@ Prod vs test is read from `.env`'s `COMPOSE_FILE` (the test image is `…-test`)
 
 ## Dashboard
 
-The living-room camera dashboard (formerly the separate Homedash app) runs inside the same container, as its own supervised child process: `http://<host>:8180` (test instance: `http://10.0.1.78:8181`, tab title `Homedash - TEST`). It shows up to four live camera tiles (WebRTC, video only, straight from the bundled go2rtc), service status lights, the weather and a photo slideshow.
+The living-room camera dashboard (formerly the separate Homedash app) runs inside the same container, as its own supervised child process: `http://<host>:8180` (a test install on the same host uses its own port, e.g. `:8181`, tab title `Homedash - TEST`). It shows up to four live camera tiles (WebRTC, video only, straight from the bundled go2rtc), service status lights (a fresh install starts with just the HomeKit bridge's light; add, rename, reorder and remove the rest on the settings page, which saves them in that install's own `./data/dash/settings.json`), the weather and a photo slideshow.
 
 - **Open and watch-only, by design.** There's no sign-in: anyone on the LAN can watch the cameras, the same as Homedash. Every request that would change something gets a 405, except the two new-build calls under [New-build pulse](#new-build-pulse-103): the open one can only clear a pulse, and the switch needs the token. It never sends passwords, RTSP URLs, camera IPs, the setup code or tokens, and it only opens live video for the cameras in `config.json` (at most 16 viewers at once).
 - **Settings** live in `./data/dash/` (`settings.json`, `fonts/`, the photo cache) and are changed on the admin pane's settings page, behind the admin password (see [Dashboard settings](#dashboard-settings)).
@@ -220,7 +221,7 @@ A status light can breathe in its own colour while a build is waiting on test fo
 
 - **Build page:** on the settings page, under *Status lights*, type a light's build page address (a JSON page with a `build` field, for example `http://<host>/healthz`). Each minute the dashboard reads it. The first build it sees is only recorded; a later, different build starts the pulse. A page that can't be read changes nothing and says why on the settings page.
 - **Look:** two sliders under *Display*, *New-build pulse speed* and *strength* (-100% to +100%, 0% is the standard breath). Reduced-motion settings show a steady halo.
-- **The switch** is token-protected. Put one line in `./secrets/dash_pulse_token` on the NAS (for example `openssl rand -base64 24 > secrets/dash_pulse_token`; `UNSCRYPTED_DASH_PULSE_TOKEN_FILE` moves it). The file is read on every call, so changing it takes effect at once. The token never reaches the browser or the logs.
+- **The switch** is token-protected. Put one line in `./secrets/dash_pulse_token` on the host (for example `openssl rand -base64 24 > secrets/dash_pulse_token`; `UNSCRYPTED_DASH_PULSE_TOKEN_FILE` moves it). The file is read on every call, so changing it takes effect at once. The token never reaches the browser or the logs.
 - **Its calls**, with placeholders (use your dashboard's address and your token):
 
   ```bash
@@ -241,27 +242,28 @@ A status light can breathe in its own colour while a build is waiting on test fo
 
 ### Its own IP address (so `http://homedash.local` works with no port)
 
-By default the dashboard listens on every address at port 8180. To give it its own address on port 80 (prod `10.0.1.248`, `homedash.local`; test `10.0.1.249`, `homedash-test.local`):
+By default the dashboard listens on every address at port 8180. To give it its own address on port 80 (for example `192.168.1.20` and a `.local` name of your choice):
 
-1. **Add the address to the NAS first** (TrueNAS network settings, as a second address on the LAN interface; TrueNAS tests it and reverts on its own if you don't confirm). Reserve it in UniFi, or keep it outside the DHCP pool.
-2. Set `UNSCRYPTED_DASH_HOST=10.0.1.248` and `UNSCRYPTED_DASH_PORT=80` in the compose environment, and `UNSCRYPTED_ADMIN_URL` / `UNSCRYPTED_DASH_URL` (see [Dashboard settings](#dashboard-settings)), then `docker compose up -d`.
-3. The mDNS name (`homedash-mdns` publishing `homedash.local` → `.248`) and the kiosk URL don't change.
+1. **Add the address to the host first** (as a second address on the LAN interface; on TrueNAS, its network settings test the change and revert on their own if you don't confirm). Reserve it in your router, or keep it outside the DHCP pool.
+2. Set `UNSCRYPTED_DASH_HOST=192.168.1.20` and `UNSCRYPTED_DASH_PORT=80` in the compose environment, and `UNSCRYPTED_ADMIN_URL` / `UNSCRYPTED_DASH_URL` (see [Dashboard settings](#dashboard-settings)), then `docker compose up -d`.
+3. If you publish an mDNS name for that address (for example with `avahi-publish`), it and the kiosk URL don't change.
 
-**Note:** on this NAS, `10.0.1.249` is now the ipvlan shim's address (below), not a test dashboard. There's no standing test instance; pick another free address if you ever give the test dashboard its own IP.
+**Note:** if you use the ipvlan shim (below), its address is taken: pick another free one for a test dashboard.
 
 ### Status lights for apps on an ipvlan network (the shim)
 
-unscrypted runs with host networking, and a Linux host can't talk to its own ipvlan containers (Constructicon and Questlog sit on the `questlog-lan` ipvlan). [`scripts/nas/ipvlan-shim.sh`](scripts/nas/ipvlan-shim.sh) gives the host a small ipvlan interface (`ipvlshim`, `10.0.1.249/32`) and one `/32` route per app address, so the dashboard's http checks reach them. Nothing else on the LAN changes. The interface and routes are runtime state and vanish on reboot, so the script registers itself as a **TrueNAS post-init command**: `sudo bash scripts/nas/ipvlan-shim.sh install ~/nas-scripts` copies it to a stable folder and creates (or updates) the entry through `midclt`; `sudo bash scripts/nas/ipvlan-shim.sh status` says what's present (interface, address, every route, the boot entry) and exits non-zero if anything is missing; running it with no argument applies the shim by hand (idempotent). Before using it on another install, edit the parent interface, the shim address (check it's free on the whole LAN and reserve it in DHCP) and the app list at the top. Without the shim, set those lights to `{"kind": "blocked", "reason": "..."}` in the dashboard settings so they say why they're red. A settings file saved by 0.3.0 (before the shim) still carries the old "can't check yet" placeholder on those four lights; the dashboard swaps it back to the http checks on load and logs that it did, and the next save on the settings page writes it. (hooptiej/unscrypted#11)
+unscrypted runs with host networking, and a Linux host can't talk to its own ipvlan containers (for example apps on a Docker ipvlan network). [`scripts/nas/ipvlan-shim.sh`](scripts/nas/ipvlan-shim.sh) gives the host a small ipvlan interface (`ipvlshim`, one `/32` address you choose) and one `/32` route per app address, so the dashboard's http checks reach them. Nothing else on the LAN changes. The interface and routes are runtime state and vanish on reboot, so the script registers itself as a **TrueNAS post-init command**: `sudo bash scripts/nas/ipvlan-shim.sh install ~/nas-scripts` copies it to a stable folder and creates (or updates) the entry through `midclt`; `sudo bash scripts/nas/ipvlan-shim.sh status` says what's present (interface, address, every route, the boot entry) and exits non-zero if anything is missing; running it with no argument applies the shim by hand (idempotent). Before using it on another install, edit the parent interface, the shim address (check it's free on the whole LAN and reserve it in DHCP) and the app list at the top. Without the shim, set those lights to `{"kind": "blocked", "reason": "..."}` in the dashboard settings so they say why they're red. (A settings file saved before the shim existed may still carry the old "can't check yet" placeholder on those lights; since the defaults became install-neutral (#44) the dashboard no longer swaps it back by itself, so set those lights' checks on the settings page.) (hooptiej/unscrypted#11)
 
-If the address isn't on the NAS yet, the dashboard doesn't start and says so plainly in the log and on the admin pane's Status ("The address 10.0.1.248 isn't on this machine (EADDRNOTAVAIL)… Add 10.0.1.248 to the NAS's network"). It keeps retrying (up to once a minute) and starts on its own once the address appears. HomeKit and the admin pane are unaffected either way. HomeKit stays on the NAS's main address.
+If the address isn't on the host yet, the dashboard doesn't start and says so plainly in the log and on the admin pane's Status ("The address 192.168.1.20 isn't on this machine (EADDRNOTAVAIL)… Add 192.168.1.20 to the host's network"). It keeps retrying (up to once a minute) and starts on its own once the address appears. HomeKit and the admin pane are unaffected either way. HomeKit stays on the host's main address.
 
 ## Admin pane
 
-A small web page for the cameras, served by the same container: `http://<host>:8190` (on the NAS, `http://10.0.1.78:8190`).
+A small web page for the cameras, served by the same container: `http://<host>:8190` (for example `http://192.168.1.10:8190`).
 
 - **Sign-in:** the password is the one line in `./secrets/admin_password`. Sessions last 30 days and survive restarts (the signing key is kept in `./data/admin-session.key`). Five wrong passwords from one computer pause sign-in there for 5 minutes. If the password file is missing or empty, or the key file is unreadable or the wrong size, the pane says so and what to do; the HomeKit bridge keeps running either way.
 - **Camera logins:** each camera on the Cameras tab has a **Login** row: the RTSP user name (and the Foscam CGI or ONVIF one, when the camera has those) with the password shown as `••••••••`. **👁 Show** fetches that one camera's passwords and its web UI link (opens in a new tab); **Hide**, or 60 seconds, masks them again, and each value has a **Copy** button. Nothing is fetched until you press Show, and each Show is logged by camera name only (`credentials for "<name>" shown`, never the value). **This means the admin password now guards the camera passwords too:** anyone signed in to the pane can read them, so keep `./secrets/admin_password` as private as the cameras' own logins. The open dashboard never sees any of it.
 - **What it does:** list cameras (the list itself never carries passwords; they show as set, and URLs show `rtsp://user:***@host/...`; see Camera logins above for showing them), check a feed (a test frame through the bundled go2rtc), a live preview (WebRTC, the way Homedash plays these cameras: they don't play over MSE), edit a camera, add a camera, and show the pairing code and bridge status.
+- **Motion hold** (hooptiej/unscrypted#90): how long a camera's motion sensor stays on after the last movement. A slider from 5 to 180 seconds (default 60; "longer = fewer flickers in wind") with the camera's live motion state beside it, on each camera's Edit page, plus an install-wide default on the Cameras page. A camera's own value wins; tick **Use the default** on its page to follow the default again. Saving applies live, with no restart (a hold that is running when you save is cut and the sensor starts fresh). The same limits are enforced on the server: a value outside 5 to 180 seconds is refused with the range in the message, and `config.json` is untouched. In `config.json` the default is the top-level `motionCooldownMs` and a camera's own is `foscam.motionCooldownMs` / `onvif.motionCooldownMs`; a hand-edited value outside the range stops the bridge from loading that file, with the same message. On a test instance with HomeKit off, motion sources aren't started, so the live state says it's unavailable.
 - **How changes take effect:** logins, stream addresses and motion timings apply live to that one camera. New cameras are added live. Changes that Home itself sees (HKSV on/off, prebuffer, motion source type, model) are saved and wait for **Restart bridge** (about 30 seconds of "No Response" in Home).
 - **Removing a camera** (the Remove section at the bottom of its page) takes it out of the bridge and, live, out of Home: Home drops the camera with its HKSV recordings, its room and any automations, and the pane says so before you confirm. The camera's full entry is kept first at `./config/removed-cameras/<name>-<time>.json` (logins included, mode 0600), and the previous `config.json` in `./config/backups/`. To put it back, add it again under the same name (Home treats it as the same camera; the old recordings are gone), or paste the kept entry into `config.json` and restart. (hooptiej/unscrypted#8)
 - **Don't rename cameras.** A camera's name is its identity in Home: renaming it would make Home see a new camera and drop the old one's room, settings and recordings. The pane refuses renames and warns that a new camera's name is permanent. Don't rename them by hand in `config.json` either.
@@ -270,12 +272,14 @@ A small web page for the cameras, served by the same container: `http://<host>:8
 
 ### Dashboard settings
 
-The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open and watch-only. Its settings are a separate page on the admin pane, behind the same password: **`http://<host>:8190/dash-settings`** (test: `http://10.0.1.78:8191/dash-settings`). It's Homedash's own one-screen page: fonts, which cameras show and in what order (at most 4; a fifth is refused with a message), each tile's dashboard-only label (the HomeKit name never changes) and main or sub stream, display timings, the photo slideshow and the weather place. Saving writes `./data/dash/settings.json` (the previous copy is kept as `settings.json.bak`); the dashboard reloads with it within a few seconds.
+The living-room dashboard (Homedash, `http://<host>:8180`, test `:8181`) is open and watch-only. Its settings are a separate page on the admin pane, behind the same password: **`http://<host>:8190/dash-settings`** (a test install on the same host: the same path on its own admin port, e.g. `:8191`). It's Homedash's own one-screen page: fonts, which cameras show and in what order (at most 4; a fifth is refused with a message), each tile's dashboard-only label (the HomeKit name never changes) and main or sub stream, display timings, the photo slideshow and the weather place. Saving writes `./data/dash/settings.json` (the previous copy is kept as `settings.json.bak`); the dashboard reloads with it within a few seconds.
 
-**Fonts from Constructicon** (hooptiej/unscrypted#14): the font pickers also list the font files kept in Constructicon as brand assets, the way Homedash's did. Enter the Constructicon address on the settings page (for example `http://10.0.1.240`; it's saved with the other dashboard settings) and put a **read-only** Constructicon token, one line, in `./secrets/constructicon_token` (the `./secrets` folder is already mounted read-only at `/run/secrets`; `UNSCRYPTED_CONSTRUCTICON_TOKEN_FILE` moves it). The token is read by the admin process only and never reaches the browser or the open dashboard. Picking a Constructicon font copies it once into `data/dash/fonts` (as `cx-<slug>.<ext>`, with its name in `names.json`), so from then on it's an ordinary folder font: the dashboard keeps it when Constructicon is down. When the list can't be had (no address, no token, token refused, Constructicon unreachable), the "From Constructicon" group stays in the picker, greyed out, with the reason; the folder and system fonts work regardless.
+**Status lights** (hooptiej/unscrypted#109, #116): the *Status lights* section lists every light with its live state and why. **+ Add status light** makes a new one (optionally under a parent), the pencil edits a light's name, check, link and build page, the bin removes it, and **↑ / ↓** move a light up or down within its own group (its nested lights travel with it; a light that is already first or last has the arrow greyed, with the reason on hover). The dashboard shows the lights in exactly this order. Nothing is applied until you **Save**, and the order is saved with the rest of the lights in `./data/dash/settings.json`. A light's id never changes when you rename or move it, so `/api/pulse/<id>` and `scripts/deploy.sh` keep working.
+
+**Fonts from Constructicon** (hooptiej/unscrypted#14): the font pickers also list the font files kept in Constructicon as brand assets, the way Homedash's did. Enter the Constructicon address on the settings page (for example `http://192.168.1.20`; it's saved with the other dashboard settings) and put a **read-only** Constructicon token, one line, in `./secrets/constructicon_token` (the `./secrets` folder is already mounted read-only at `/run/secrets`; `UNSCRYPTED_CONSTRUCTICON_TOKEN_FILE` moves it). The token is read by the admin process only and never reaches the browser or the open dashboard. Picking a Constructicon font copies it once into `data/dash/fonts` (as `cx-<slug>.<ext>`, with its name in `names.json`), so from then on it's an ordinary folder font: the dashboard keeps it when Constructicon is down. When the list can't be had (no address, no token, token refused, Constructicon unreachable), the "From Constructicon" group stays in the picker, greyed out, with the reason; the folder and system fonts work regardless.
 
 - **The dashboard's Settings button** opens that page with `?from=dash`. Not signed in, it asks for the password first and comes straight back. From the kiosk, the page idles back to the dashboard after the fullscreen timeout and **signs that browser out**, so the living room never stays signed in.
-- **Different addresses:** when the dashboard and the pane don't share a host (for example the dashboard on its own IP at port 80), set `UNSCRYPTED_ADMIN_URL` (e.g. `http://10.0.1.78:8190`, where the Settings button goes) and `UNSCRYPTED_DASH_URL` (e.g. `http://10.0.1.248/`, where the settings page sends you back). Unset, both are worked out from the browser's address and the ports. A bad value is ignored, and the dashboard says so.
+- **Different addresses:** when the dashboard and the pane don't share a host (for example the dashboard on its own IP at port 80), set `UNSCRYPTED_ADMIN_URL` (e.g. `http://192.168.1.10:8190`, where the Settings button goes) and `UNSCRYPTED_DASH_URL` (e.g. `http://192.168.1.20/`, where the settings page sends you back). Unset, both are worked out from the browser's address and the ports. A bad value is ignored, and the dashboard says so.
 - **Fonts** are files in `./data/dash/fonts` (`.otf`, `.ttf`, `.woff`, `.woff2`), with display names in `./data/dash/fonts/names.json` (`{ "<file>": "<name>" }`). **Photos** come from an iCloud shared-album link (cached in `./data/dash/cache/icloud`) or a folder.
 
 ### One connection per camera
@@ -310,7 +314,7 @@ go2rtc's own SRTP (`8443`) and RTMP (`1935`) servers are switched off in the gen
 
 `docker-compose.test.yml` runs a second copy for trying changes before they reach the real bridge. It runs with **HomeKit off** (`UNSCRYPTED_HAP=off`): it never publishes a bridge and never starts motion sources, so it can't appear in the family's Home app or take prod's ONVIF port. Its page title is `unscrypted admin - TEST`.
 
-Run it from its own folder (on the NAS, `~/unscrypted-test`), with its own `config/`, `data/` and `secrets/`:
+Run it from its own folder (for example `~/unscrypted-test`), with its own `config/`, `data/` and `secrets/`:
 
 ```bash
 cd ~/unscrypted-test

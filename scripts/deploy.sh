@@ -26,7 +26,9 @@
 # DASHBOARD PULSE (optional, never fatal): if .env sets UNSCRYPTED_PULSE_URL,
 # UNSCRYPTED_PULSE_TOKEN_FILE and a light id (UNSCRYPTED_PULSE_LIGHT prod / UNSCRYPTED_PULSE_LIGHT_TEST
 # test), a successful deploy POSTs a build pulse. Unset = skipped. Nothing house-specific is in this
-# file; it all comes from .env.
+# file; it all comes from .env. The pulse waits (default 90 s, UNSCRYPTED_PULSE_WAIT in .env, 0 = don't
+# wait) for the dashboard's /healthz to answer first, because on prod the dashboard is the container
+# that was just recreated (#115). The wait is bounded and never fatal.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -44,7 +46,7 @@ while [ $# -gt 0 ]; do
     --rollback)
       shift; ROLLBACK="${1:-}"
       if [ -z "$ROLLBACK" ]; then echo "--rollback needs a version, e.g. --rollback 0.1.14 (see: docker image ls unscrypted)" >&2; exit 2; fi ;;
-    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -142,12 +144,35 @@ pulse_dashboard() {
   token="$(cat "$token_file" 2>/dev/null || sudo -n cat "$token_file" 2>/dev/null || true)"
   if [ -z "$token" ]; then echo "Dashboard pulse: skipped (token file $token_file not readable, with or without sudo)." >&2; return 0; fi
   build="$1"; note="${2:-unscrypted deploy}"
+  # #115: on prod the dashboard is the container that was just recreated, so wait for it to answer
+  # before pulsing. Bounded and never fatal: if it hasn't answered by the deadline, say so and try the
+  # pulse once anyway (the POST then fails with its own message if the dashboard really is down).
+  wait_for_dashboard "$url"
   if curl -fsS -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
        -d "{\"on\": true, \"build\": \"$build\", \"note\": \"$note\"}" "$url/api/pulse/$light" >/dev/null 2>&1; then
     echo "Dashboard pulse: lit '$light' (build $build)."
   else
-    echo "Dashboard pulse: POST to $url/api/pulse/$light failed (deploy still succeeded)." >&2
+    echo "Dashboard pulse: POST to $url/api/pulse/$light failed (deploy still succeeded, but the light is NOT lit). Once the dashboard is up, re-send the same POST by hand (or re-run with UNSCRYPTED_PULSE_WAIT=180 in .env if it was just slow)." >&2
   fi
+}
+
+# #115: poll $1/healthz until it answers 200, for at most PULSE_WAIT seconds (UNSCRYPTED_PULSE_WAIT in
+# .env, default 90; 0 = don't wait). Always returns 0: a dashboard that never answers is reported, not fatal.
+wait_for_dashboard() {
+  local url="$1" max waited=0
+  max="$(envget UNSCRYPTED_PULSE_WAIT)"; max="${max:-90}"
+  case "$max" in ''|*[!0-9]*) echo "Dashboard pulse: UNSCRYPTED_PULSE_WAIT='$max' isn't a whole number of seconds; using 90." >&2; max=90 ;; esac
+  [ "$max" -gt 0 ] || { echo "Dashboard pulse: not waiting for the dashboard (UNSCRYPTED_PULSE_WAIT=0)."; return 0; }
+  echo "Dashboard pulse: waiting up to ${max}s for $url/healthz to answer..."
+  while ! curl -fsS --max-time 3 "$url/healthz" >/dev/null 2>&1; do
+    if [ "$waited" -ge "$max" ]; then
+      echo "Dashboard pulse: $url/healthz didn't answer within ${max}s; trying the pulse anyway." >&2
+      return 0
+    fi
+    sleep 2; waited=$((waited + 2))
+  done
+  echo "Dashboard pulse: dashboard answered after ~${waited}s."
+  return 0
 }
 
 report_running() {

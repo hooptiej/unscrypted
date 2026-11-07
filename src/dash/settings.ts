@@ -32,7 +32,7 @@ export interface DashSettings {
   weather: { place: string; lat: number | null; lon: number | null; unit: "fahrenheit" | "celsius"; refreshSeconds: number };
   photos: { source: "folder" | "icloud"; folder: string; icloudUrl: string; rotateSeconds: number; refreshMinutes: number; maxPhotos: number; caption: string };
   fonts: { ui: FontSpec; clock: FontSpec };
-  /** Where Constructicon is (#14), e.g. http://10.0.1.240; "" = the Constructicon font list is off. The token is a secrets file, never here. */
+  /** Where Constructicon is (#14), e.g. http://192.168.1.20; "" = the Constructicon font list is off. The token is a secrets file, never here. */
   constructicon: { url: string };
   /**
    * Background glow knobs (#25), whole percents from -100 to +100. 0 is the look #24 shipped;
@@ -53,35 +53,19 @@ export const PULSE_MIN = -100, PULSE_MAX = 100;
 export const FONT_FILE = /^[A-Za-z0-9_-]{1,64}\.(otf|ttf|woff2?)$/;
 
 /**
- * A light that can't be checked from the NAS's own network: an app on an ipvlan network, with no
+ * A light that can't be checked from the host's own network: an app on an ipvlan network, with no
  * ipvlan shim on the host. The "blocked" check kind keeps it red with this reason instead of a
  * timeout. The one-line label shows on the wall display; the full reason on tap/hover.
  */
 export const IPVLAN_SHORT = "can't check yet";
-export const IPVLAN_REASON = "can't be checked from the NAS's own network (the app is on an ipvlan LAN; add the host shim, scripts/nas/ipvlan-shim.sh)";
-/**
- * The placeholder the 0.3.0 move-in wrote into every saved settings file before the shim existed
- * ("…tracked in hooptiej/unscrypted#11"). A saved light still carrying it is migrated back to the
- * default http check on load (#11). A "blocked" light with any other reason was set on purpose
- * (an install without a shim) and is left alone.
- */
-export const IPVLAN_PLACEHOLDER = /can't be checked from the NAS's own network yet \(it sits on the ipvlan LAN; tracked in hooptiej\/unscrypted#11\)/;
+export const IPVLAN_REASON = "can't be checked from this host's own network (the app is on an ipvlan LAN; add the host shim, scripts/nas/ipvlan-shim.sh)";
 
-// Hosts as seen from the NAS's own network (unscrypted runs with host networking). The ipvlan
-// apps (Constructicon, Questlog) are reached through the host's ipvlan shim (scripts/nas/ipvlan-shim.sh,
-// hooptiej/unscrypted#11), with the same http checks Homedash used. The old Scrypted light is
-// replaced by the HomeKit bridge's own status (owner Q2 = a).
+// The default lights are install-neutral (#44): just the HomeKit bridge's own status, which every
+// install has. Everything else a house watches (its NAS, its apps, their links) lives in that
+// install's own ./data/dash/settings.json and is edited on the settings page; a saved list always
+// overrides this one. Nothing about one house's network belongs in the image.
 export const DEFAULT_SERVICES: ServiceNode[] = [
-  { id: "server", name: "NAS", rollup: true, check: { kind: "alive", host: "10.0.1.78", port: 80 }, children: [
-    { id: "smb", name: "SMB", check: { kind: "tcp", host: "127.0.0.1", port: 445 } },
-    { id: "homekit", name: "HomeKit bridge", check: { kind: "bridge" } },
-    { id: "constructicon", name: "Constructicon", link: "http://constructicon.local", check: { kind: "http", url: "http://10.0.1.240/", ok: "any" }, children: [
-      { id: "constructicon-dev", name: "dev", link: "http://10.0.1.241", check: { kind: "http", url: "http://10.0.1.241/", ok: "any" } },
-    ] },
-    { id: "questlog", name: "Questlog", link: "http://questlog.local", check: { kind: "http", url: "http://10.0.1.250/", ok: "200" }, children: [
-      { id: "questlog-dev", name: "dev", link: "http://questlog-dev.local", check: { kind: "http", url: "http://10.0.1.246/", ok: "200" } },
-    ] },
-  ] },
+  { id: "homekit", name: "HomeKit bridge", check: { kind: "bridge" } },
 ];
 
 export const DEFAULTS: DashSettings = {
@@ -151,7 +135,7 @@ export function loadSettings(file: string): LoadedSettings {
       glow: glow.glow,
       pulse: pulse.pulse,
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
-      services: Array.isArray(raw.services) ? raw.services.map((n: ServiceNode) => unblockIpvlanPlaceholder(renameOldServer(n), migrated)) : d.services,
+      services: Array.isArray(raw.services) ? raw.services.map((n: ServiceNode) => renameOldServer(n)) : d.services,
     };
     const fixed = [...glow.fixed, ...pulse.fixed];
     return { settings: s, warning: fixed.length ? `${file}: ${fixed.join("; ")}. Save the dashboard settings page to fix the file.` : null, mtimeMs, migrated };
@@ -203,34 +187,6 @@ function loadPulse(v: unknown): { pulse: DashSettings["pulse"]; fixed: string[] 
 /** The old default's rollup was called "Server"; it checks the NAS itself, so it's "NAS" now (owner eye-check). */
 function renameOldServer(n: ServiceNode): ServiceNode {
   return n && n.id === "server" && n.name === "Server" ? { ...n, name: "NAS" } : n;
-}
-
-/** The default check for a light id, wherever it sits in the default tree; null when the id isn't a default. */
-function defaultCheckFor(id: string, nodes: ServiceNode[] = DEFAULT_SERVICES): ServiceCheck | null {
-  for (const n of nodes) {
-    if (n.id === id) return n.check;
-    const below = n.children ? defaultCheckFor(id, n.children) : null;
-    if (below) return below;
-  }
-  return null;
-}
-
-/**
- * #11: a saved light still "blocked" with the pre-shim placeholder becomes the default http check
- * again, in memory; the next save on the settings page writes it. Any other "blocked" reason stays.
- */
-function unblockIpvlanPlaceholder(n: ServiceNode, migrated: string[]): ServiceNode {
-  if (!n || typeof n !== "object") return n;
-  let out = n;
-  if (n.check?.kind === "blocked" && IPVLAN_PLACEHOLDER.test(n.check.reason ?? "")) {
-    const def = defaultCheckFor(n.id);
-    if (def && def.kind !== "blocked") {
-      out = { ...n, check: clone(def) };
-      migrated.push(`"${n.name}" light: the pre-shim "can't check yet" placeholder became the default ${def.kind} check again (hooptiej/unscrypted#11); save the settings page once to keep it`);
-    }
-  }
-  if (n.children) out = { ...out, children: n.children.map((c) => unblockIpvlanPlaceholder(c, migrated)) };
-  return out;
 }
 
 const int = (v: unknown, lo: number, hi: number, label: string): number => {
@@ -424,7 +380,7 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
       if (u) {
         let ok = false;
         try { const p = new URL(u); ok = (p.protocol === "http:" || p.protocol === "https:") && (p.pathname === "/" || p.pathname === "") && !p.search && !p.hash && !p.username; } catch { ok = false; }
-        if (!ok) throw bad("Constructicon address", `must be just http(s)://host[:port] (for example http://10.0.1.240), or empty to switch the Constructicon font list off; "${u}" isn't`);
+        if (!ok) throw bad("Constructicon address", `must be just http(s)://host[:port] (for example http://192.168.1.20), or empty to switch the Constructicon font list off; "${u}" isn't`);
       }
       s.constructicon.url = u;
     }
@@ -531,6 +487,6 @@ export function parseBaseUrl(name: string, v: string | undefined): { url: string
   if (!t) return { url: null, error: null };
   let u: URL | null = null;
   try { u = /^https?:\/\/[^\s/]+/.test(t) ? new URL(t) : null; } catch { u = null; }
-  if (!u || !u.host) return { url: null, error: `${name} ("${t}") isn't a web address like http://10.0.1.78:8190, so it's ignored and the address is worked out from the browser's own. Fix it in docker-compose.yml.` };
+  if (!u || !u.host) return { url: null, error: `${name} ("${t}") isn't a web address like http://192.168.1.10:8190, so it's ignored and the address is worked out from the browser's own. Fix it in docker-compose.yml.` };
   return { url: t.replace(/\/+$/, ""), error: null };
 }

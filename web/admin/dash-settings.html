@@ -27,8 +27,8 @@
       <div class="row"><label for="fontUi">Interface font</label><select id="fontUi"></select></div>
       <div class="row"><label for="fontClock">Clock font</label><select id="fontClock"></select></div>
       <div class="preview" id="preview"><span id="previewTime"></span><small id="previewName"></small></div>
-      <p class="hint">"Fonts folder" lists the font files in data/dash/fonts on the NAS (names from names.json there). To add one, drop the file in that folder and reload this page.</p>
-      <div class="row"><label for="cxUrl">Constructicon address</label><input type="text" id="cxUrl" placeholder="http://10.0.1.240" autocomplete="off" spellcheck="false"></div>
+      <p class="hint">"Fonts folder" lists the font files in data/dash/fonts on the host (names from names.json there). To add one, drop the file in that folder and reload this page.</p>
+      <div class="row"><label for="cxUrl">Constructicon address</label><input type="text" id="cxUrl" placeholder="http://192.168.1.20" autocomplete="off" spellcheck="false"></div>
       <p class="hint" id="cxHint">"From Constructicon" lists the font files kept in Constructicon as brand assets. Picking one copies it into the fonts folder once, so the dashboard keeps it even when Constructicon is down. Needs a read-only Constructicon token in secrets/constructicon_token; save the address, then reload this page.</p>
     </section>
     <section>
@@ -68,7 +68,7 @@
     <section>
       <h2>Photo slideshow</h2>
       <div class="row"><label for="phSource">Source</label>
-        <select id="phSource"><option value="icloud">iCloud shared album</option><option value="folder">Folder on the NAS</option></select></div>
+        <select id="phSource"><option value="icloud">iCloud shared album</option><option value="folder">Folder on the host</option></select></div>
       <div class="row"><label for="phUrl">iCloud album link</label><input type="text" id="phUrl" placeholder="https://www.icloud.com/sharedalbum/#..."></div>
       <div class="row"><label for="phFolder">Folder</label><input type="text" id="phFolder" placeholder="/data/dash/photos"></div>
       <div class="row"><label for="phSecs">Seconds per photo</label><input type="number" id="phSecs" min="3" max="600"></div>

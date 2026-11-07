@@ -215,6 +215,20 @@ function lightRow(n, depth, live) {
   if (s && s.pulse) row.append(el("span", "full acc", s.pulse.build ? `new build ${s.pulse.build} is waiting on test` : "something is waiting on test"));
   if (s && s.buildError) row.append(el("span", "full warn", `build page: ${s.buildError}`));
   const btns = el("span", "lbtns");
+  // #116: move a light up or down within its group. Ids never change, so /api/pulse/<id> and deploy.sh keep working.
+  const pos = findNode(n.id);
+  for (const [txt, dir] of [["↑", -1], ["↓", 1]]) {
+    const b = el("button", "mv", txt);
+    b.type = "button";
+    b.dataset.lid = n.id; b.dataset.dir = String(dir);
+    const atEnd = !pos || (dir < 0 ? pos.index === 0 : pos.index === pos.siblings.length - 1);
+    const where = depth === 0 ? "the list" : "its group";
+    b.setAttribute("aria-label", `Move ${n.name} ${dir < 0 ? "up" : "down"}`);
+    b.title = atEnd ? `${n.name} is already ${dir < 0 ? "first" : "last"} in ${where}` : `Move ${dir < 0 ? "up" : "down"} within ${where}`;
+    b.disabled = atEnd;
+    b.addEventListener("click", () => moveLight(n.id, dir));
+    btns.append(b);
+  }
   const edit = el("button", null, "✎");
   edit.type = "button"; edit.title = "Edit"; edit.setAttribute("aria-label", `Edit ${n.name}`);
   edit.addEventListener("click", () => openPanel({ mode: "edit", id: n.id, row }));
@@ -224,6 +238,23 @@ function lightRow(n, depth, live) {
   btns.append(edit, del);
   row.append(btns);
   return row;
+}
+
+/* #116: swap a light with its neighbour in the same group (its children travel with it). Applied when you save. */
+function moveLight(id, dir) {
+  const f = findNode(id);
+  if (!f) return;
+  const to = f.index + dir;
+  if (to < 0 || to >= f.siblings.length) return;
+  if (openPanelEl && !window.confirm("A light editor is open. Moving a light closes it and drops what you typed there. Go on?")) return;
+  if (openPanelEl) { openPanelEl.remove(); openPanelEl = null; }
+  [f.siblings[f.index], f.siblings[to]] = [f.siblings[to], f.siblings[f.index]];
+  dirty = true;
+  renderLights(loaded.lights, services);
+  // keep the keyboard where it was: the same arrow on the same light, or its twin if it just hit the end
+  const mine = (d) => document.querySelector(`#lights button.mv[data-lid="${id}"][data-dir="${d}"]`);
+  const next = mine(dir);
+  (next && !next.disabled ? next : mine(-dir))?.focus();
 }
 
 function removeLight(id) {
@@ -252,9 +283,9 @@ function openPanel({ mode, id, row }) {
   for (const [v, t] of CHECK_KINDS) kind.append(opt(v, t));
 
   // fields per kind
-  const host = textInput("host, e.g. 10.0.1.78 or 127.0.0.1");
+  const host = textInput("host, e.g. 192.168.1.10 or 127.0.0.1");
   const port = document.createElement("input"); port.type = "number"; port.min = "1"; port.max = "65535"; port.placeholder = "port";
-  const urlIn = textInput("http://10.0.1.240/ or https://host/path");
+  const urlIn = textInput("http://192.168.1.20/ or https://host/path");
   const ok200 = document.createElement("input"); ok200.type = "checkbox";
   const reason = textInput("why it can't be checked from here");
   const build = textInput("build page address (optional, a JSON page with a build field)");
