@@ -215,6 +215,13 @@ The living-room camera dashboard (formerly the separate Homedash app) runs insid
 - **Background glow:** a soft olive wash that follows the sun along the bottom edge, warming at dawn and dusk. Two sliders under Display on the settings page tune it, each -100% to +100% (0% is the standard look). **Glow intensity** scales its strength: -100% turns it off, +100% doubles it. **Glow size** scales the ellipse, never smaller than 10% or larger than 200%. Both apply day and night for now. (hooptiej/unscrypted#25)
 - **The Mac kiosk** that shows it full screen lives in [`scripts/mac-kiosk/`](scripts/mac-kiosk/).
 
+### Don't blink: tiles hold their last picture (#113)
+
+A camera hiccup never turns a tile into a black box.
+
+- **Grace.** A camera is only called offline after it has gone unanswered for the whole *Call a camera offline after (s)* setting (dashboard settings, 5 to 120, default 20; 15 to 30 s is the sweet spot). A shorter miss changes nothing on the wall: no banner, no badge change. The status lights keep their own, faster checks.
+- **Held frame.** Each tile keeps the last picture it actually decoded, for as long as it takes: through a blip you see only that frozen frame; once the grace has run out the banner (*"Camera not answering at its RTSP port (...) since 9:38 AM. Showing the last picture, from 9:37 AM."*) goes over the **dimmed** picture, never a black void. The picture is also remembered in the kiosk browser (local storage, refreshed every 30 s and when the page unloads), so even the page's own 20-minute refresh doesn't lose it. If the browser can't store it, the dashboard says so on screen. A tile that has never had a picture falls back to the plain message on a dark tile. The same applies to the other trouble a tile can have (the video server restarting, a video that stops arriving): quiet through the grace, then the banner over the dimmed picture. The fullscreen view shows the same picture and reason while its own video isn't running.
+
 ### New-build pulse (#103)
 
 A status light can breathe in its own colour while a build is waiting on test for you to try. It turns on when the light's **build page** shows a new build, or when a Claude flips the token switch below. It turns off when you tap the light's dot (or open its link) on the wall, or when a Claude switches it off. Red lights never pulse; a red light keeps its pulse and shows it again once it's green. The label **new build** opens the full reason on a tap.

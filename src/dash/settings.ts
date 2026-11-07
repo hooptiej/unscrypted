@@ -7,6 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { UserError } from "../shared/errors";
+import { DEFAULT_OFFLINE_GRACE_SECONDS, MIN_OFFLINE_GRACE_SECONDS, MAX_OFFLINE_GRACE_SECONDS } from "./camGrace";
 
 export type SystemFamily = "sans" | "serif" | "mono" | "inherit";
 export type FontSpec = { kind: "system"; family: SystemFamily } | { kind: "file"; file: string };
@@ -27,6 +28,11 @@ export interface DashSettings {
   idleSeconds: number;
   pollSeconds: number;
   reloadMinutes: number;
+  /**
+   * How long a camera may go unanswered before its tile and Home's fault flag call it offline (#113), in
+   * seconds. A shorter miss is a blip and changes nothing on the wall; the tile keeps its last picture either way.
+   */
+  offlineGraceSeconds: number;
   /** Grid order. `camera` is the config.json camera name (HomeKit identity, never edited here). */
   cameras: DashCameraPref[];
   weather: { place: string; lat: number | null; lon: number | null; unit: "fahrenheit" | "celsius"; refreshSeconds: number };
@@ -72,6 +78,7 @@ export const DEFAULTS: DashSettings = {
   idleSeconds: 30,
   pollSeconds: 4,
   reloadMinutes: 20,
+  offlineGraceSeconds: DEFAULT_OFFLINE_GRACE_SECONDS,
   cameras: [],
   weather: { place: "", lat: null, lon: null, unit: "fahrenheit", refreshSeconds: 600 },
   photos: { source: "folder", folder: "/data/dash/photos", icloudUrl: "", rotateSeconds: 20, refreshMinutes: 30, maxPhotos: 0, caption: "" },
@@ -137,7 +144,9 @@ export function loadSettings(file: string): LoadedSettings {
       cameras: Array.isArray(raw.cameras) ? raw.cameras : d.cameras,
       services: Array.isArray(raw.services) ? raw.services.map((n: ServiceNode) => renameOldServer(n)) : d.services,
     };
-    const fixed = [...glow.fixed, ...pulse.fixed];
+    const grace = loadGrace(raw.offlineGraceSeconds);
+    s.offlineGraceSeconds = grace.seconds;
+    const fixed = [...glow.fixed, ...pulse.fixed, ...grace.fixed];
     return { settings: s, warning: fixed.length ? `${file}: ${fixed.join("; ")}. Save the dashboard settings page to fix the file.` : null, mtimeMs, migrated };
   } catch (err) {
     // The parser's message quotes a piece of the file (hosts, the album link), and this warning is shown on
@@ -147,6 +156,16 @@ export function loadSettings(file: string): LoadedSettings {
     const why = err instanceof SyntaxError ? `it isn't valid JSON${pos ? ` (near character ${pos})` : ""}` : "it isn't a JSON object";
     return { settings: clone(DEFAULTS), warning: `${file} couldn't be read (${why}); showing default dashboard settings. Fix it on the dashboard settings page (saving there rewrites it).`, mtimeMs, migrated: [] };
   }
+}
+
+/** The offline grace from a hand-edited file: missing = the default, out of range = clamped, not a number = the default; each said in `fixed`. */
+function loadGrace(v: unknown): { seconds: number; fixed: string[] } {
+  if (v === undefined) return { seconds: DEFAULT_OFFLINE_GRACE_SECONDS, fixed: [] };
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    return { seconds: DEFAULT_OFFLINE_GRACE_SECONDS, fixed: [`offlineGraceSeconds isn't a number, so cameras get the usual ${DEFAULT_OFFLINE_GRACE_SECONDS} s before they count as offline`] };
+  }
+  const c = Math.round(Math.max(MIN_OFFLINE_GRACE_SECONDS, Math.min(MAX_OFFLINE_GRACE_SECONDS, v)));
+  return { seconds: c, fixed: c === v ? [] : [`offlineGraceSeconds is ${v}, so it's ${c} (whole seconds from ${MIN_OFFLINE_GRACE_SECONDS} to ${MAX_OFFLINE_GRACE_SECONDS})`] };
 }
 
 /**
@@ -343,6 +362,7 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
   if ("idleSeconds" in edit) s.idleSeconds = int(edit.idleSeconds, 5, 600, "Fullscreen timeout (s)");
   if ("pollSeconds" in edit) s.pollSeconds = int(edit.pollSeconds, 2, 60, "Status check interval (s)");
   if ("reloadMinutes" in edit) s.reloadMinutes = int(edit.reloadMinutes, 1, 1440, "Page refresh (min)");
+  if ("offlineGraceSeconds" in edit) s.offlineGraceSeconds = int(edit.offlineGraceSeconds, MIN_OFFLINE_GRACE_SECONDS, MAX_OFFLINE_GRACE_SECONDS, "Call a camera offline after (s)");
   if ("cameras" in edit) {
     if (!Array.isArray(edit.cameras)) throw bad("Cameras", "must be a list");
     const seen = new Set<string>();

@@ -23,11 +23,17 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#e8ecd8;
 video::-webkit-media-controls,video::-webkit-media-controls-enclosure,video::-webkit-media-controls-panel{display:none!important}
 video-stream .info,video-stream .controls,video-stream .mode,video-stream .status{display:none!important}
 .cam .n{position:absolute;left:calc(14*var(--u));bottom:calc(10*var(--u));font-size:calc(20*var(--u));
-  color:#e8ecd8;background:#0b0d08;padding:0 calc(7*var(--u));border-radius:calc(4*var(--u));z-index:2}
+  color:#e8ecd8;background:#0b0d08;padding:0 calc(7*var(--u));border-radius:calc(4*var(--u));z-index:3}
 .cam .s{position:absolute;right:calc(14*var(--u));top:calc(10*var(--u));font-size:calc(16*var(--u));
-  color:#a3b83f;z-index:2}
+  color:#a3b83f;z-index:3}
 .cam .off{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  background:#151a0e;color:#d9a441;font-size:calc(26*var(--u));z-index:1}
+  background:#151a0e;color:#d9a441;font-size:calc(26*var(--u));z-index:2}
+/* #113: a tile that has shown a picture keeps its last frame. It shows plain through a blip (no banner), and
+   dimmed under the banner once the camera has been gone for the grace; the banner is then see-through, not a black box. */
+.cam .held,.full .held{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;z-index:1;pointer-events:none}
+.cam .held.dim,.full .held.dim{filter:brightness(.42) saturate(.55)}
+.cam .off.over{inset:auto calc(24*var(--u)) calc(52*var(--u)) calc(24*var(--u));padding:calc(10*var(--u)) calc(18*var(--u));
+  border-radius:calc(8*var(--u));background:rgba(11,13,8,.78);font-size:calc(22*var(--u));line-height:1.3}
 .cam.is-off .s{color:#d9a441}
 
 .band{grid-column:1 / -1;grid-row:2;display:flex;align-items:center;gap:calc(36*var(--u));padding:0 calc(28*var(--u));
@@ -94,6 +100,9 @@ video-stream .info,video-stream .controls,video-stream .mode,video-stream .statu
   background:#0b0d08;padding:calc(6*var(--u)) calc(10*var(--u));border-radius:calc(6*var(--u))}
 .full .flive{position:absolute;right:calc(30*var(--u));top:calc(24*var(--u));font-size:calc(20*var(--u));
   color:#a3b83f;z-index:2}
+.full .fnote{position:absolute;left:calc(40*var(--u));right:calc(40*var(--u));bottom:calc(30*var(--u));z-index:2;text-align:center;
+  background:rgba(11,13,8,.78);color:#d9a441;font-size:calc(28*var(--u));line-height:1.3;
+  padding:calc(12*var(--u)) calc(20*var(--u));border-radius:calc(8*var(--u))}
 .fbarwrap{padding-top:calc(24*var(--u))}
 .frow{display:flex;justify-content:space-between;margin-bottom:calc(14*var(--u));font-size:calc(40*var(--u));color:#8b9275}
 .ftrack{height:calc(10*var(--u));background:#232818;border-radius:calc(5*var(--u))}

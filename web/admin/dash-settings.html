@@ -36,6 +36,8 @@
       <div class="row"><label for="idle">Fullscreen timeout (s)</label><input type="number" id="idle" min="5" max="600"></div>
       <div class="row"><label for="reload">Page refresh (min)</label><input type="number" id="reload" min="1" max="1440"></div>
       <div class="row"><label for="poll">Status checks every (s)</label><input type="number" id="poll" min="2" max="60"></div>
+      <div class="row"><label for="grace">Call a camera offline after (s)</label><input type="number" id="grace" min="5" max="120" aria-describedby="gracehint"></div>
+      <p class="hint" id="gracehint">A camera that misses a check is just hiccuping; its tile keeps showing its last picture and nothing else changes. Only after it has gone this long without answering does the tile say it's offline (with a banner over the dimmed last picture), and Home shows a fault on the camera. 15 to 30 seconds is typical.</p>
       <div class="row"><label for="glowIntensity">Glow intensity</label>
         <div class="knob"><input type="range" id="glowIntensity" min="-100" max="100" step="5" aria-describedby="glowhint"><output id="glowIntensityOut" for="glowIntensity">0%</output></div></div>
       <div class="row"><label for="glowSize">Glow size</label>
