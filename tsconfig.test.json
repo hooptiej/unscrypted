@@ -1,0 +1,24 @@
+{
+  // Type-checks the tests as well as src (#47). tsx strips types without checking them, so without
+  // this a wrong type in a test passes silently. ES2022 for Array.prototype.at, which tests use.
+  // Never used to build: the image compiles src/ with tsconfig.json only.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  // These five had drifted out of type-correctness (118 errors as of 0.1.17, mostly untyped
+  // `await r.json()` results and fixtures missing newer fields). They still run under `npm test`;
+  // take each off this list once it type-checks.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test/admin/dashSettings.test.ts",
+    "test/admin/go2rtcConfig.test.ts",
+    "test/admin/server.test.ts",
+    "test/dash/pulse.test.ts",
+    "test/dash/server.test.ts"
+  ]
+}

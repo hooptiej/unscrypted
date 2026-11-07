@@ -27,7 +27,7 @@ import {
   AudioStreamingCodecType,
 } from "hap-nodejs";
 import { Logger } from "./logger";
-import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU } from "./ffmpeg";
+import { resolveFfmpeg, spawnFfmpeg, SpawnedFfmpeg, SRTP_SUITE, HOMEKIT_MTU, FfmpegDeps } from "./ffmpeg";
 import { ResolvedCamera } from "./config";
 import { reserveUdpPort } from "./util";
 import { directPicker, FeedChoice, FeedFailure, FeedPicker } from "./source";
@@ -279,6 +279,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     private readonly pick: FeedPicker = directPicker(camera),
     /** Told when a read through go2rtc fails, so a camera go2rtc keeps failing on can go direct. */
     private readonly onFailure?: FeedFailure,
+    /** How the live view finds and starts ffmpeg; unset in production (tests pass a fake, #47). */
+    private readonly ffmpegDeps: FfmpegDeps = {},
   ) {}
 
   private reportFailure(feed: FeedChoice, why: string): void {
@@ -658,7 +660,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     audio: LiveAudio,
     probeOverride?: ProbeMode,
   ): Promise<SpawnedFfmpeg | undefined> {
-    const ff = await resolveFfmpeg(this.ffmpegPath, this.log);
+    const ff = await (this.ffmpegDeps.resolve ?? resolveFfmpeg)(this.ffmpegPath, this.log);
     if (!ff) {
       return undefined;
     }
@@ -670,7 +672,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const probe = probeOverride ?? this.probe;
     const args = this.buildLiveArgs(feed, session, video, audio, probe);
     this.log.info(`live view reading ${readsFrom(feed)}${probe === "full" ? " (full probing)" : ""}`);
-    const proc = spawnFfmpeg(ff, args, this.log, {
+    const proc = (this.ffmpegDeps.spawn ?? spawnFfmpeg)(ff, args, this.log, {
       label: `live:${this.camera.name}:${sessionID.slice(0, 8)}`,
     });
     const prev = this.activeSessions.get(sessionID);
