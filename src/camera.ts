@@ -347,7 +347,7 @@ export class UnscryptedCamera {
     }
     const prebufferWasRunning = prebufferChanged && (this.prebuffer?.isRunning() ?? false);
     if (prebufferWasRunning) {
-      this.prebuffer?.stop();
+      this.prebuffer?.stop("the camera's stream settings were changed");
     }
 
     Object.assign(this.camera, next);

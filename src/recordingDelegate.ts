@@ -129,7 +129,7 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     if (active) {
       void this.prebuffer.start();
     } else {
-      this.prebuffer.stop();
+      this.prebuffer.stop("HomeKit switched recording off");
     }
   }
 
@@ -202,7 +202,14 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     const maxFragments = Math.ceil(maxMs / Math.max(1000, fragmentMs)) + 4;
 
     const queue = new FragmentQueue();
-    const unsubscribe = session.subscribeLive((f) => queue.push(f));
+    // If the buffer's ffmpeg stops under this clip, the clip ends here (the buffer WARNs, naming it):
+    // whatever comes after is a new ffmpeg with a new init segment, never part of this clip (#41).
+    let bufferEnded: string | null = null;
+    const unsubscribe = session.subscribeLive(
+      (f) => queue.push(f),
+      (why) => { bufferEnded = why; queue.close(); },
+      `clip ${streamId}`,
+    );
     let aborted = false;
     const onClose = () => {
       aborted = true;
@@ -257,7 +264,10 @@ export class RecordingDelegate implements CameraRecordingDelegate {
       unsubscribe();
       signal?.removeEventListener?.("abort", onClose);
       this.closeSignals.delete(streamId);
-      this.log.info(`recording stream ${streamId} finished (${count} fragments)`);
+      this.log.info(
+        `recording stream ${streamId} finished (${count} fragments)` +
+          (bufferEnded ? ` because the recording buffer stopped under it (${bufferEnded})` : ""),
+      );
     }
   }
 

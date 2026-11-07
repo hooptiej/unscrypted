@@ -161,8 +161,19 @@ export interface PrebufferSession {
   initSegment: Buffer;
   /** Fragments currently inside the prebuffer window, oldest first. */
   prebufferedFragments: Buffer[];
-  /** Subscribe to live fragments produced from now on. Returns an unsubscribe fn. */
-  subscribeLive: (cb: LiveSubscriber) => () => void;
+  /**
+   * Subscribe to live fragments produced from now on. Returns an unsubscribe fn. `onEnd` is called
+   * (once, with the reason) if this ffmpeg stops while subscribed: a respawn has a new init segment,
+   * so its fragments must never reach a clip that started on the old one (#41). `clip` names the
+   * subscriber in that WARN (e.g. "clip 12").
+   */
+  subscribeLive: (cb: LiveSubscriber, onEnd: (why: string) => void, clip: string) => () => void;
+}
+
+interface LiveSubscription {
+  onFragment: LiveSubscriber;
+  onEnd: (why: string) => void;
+  clip: string;
 }
 
 export class Prebuffer {
@@ -172,7 +183,7 @@ export class Prebuffer {
   private ring: StoredFragment[] = [];
   private readonly windowMs: number;
   private readonly keepMs: number;
-  private readonly liveSubscribers = new Set<LiveSubscriber>();
+  private readonly liveSubscribers = new Set<LiveSubscription>();
   private starting = false;
   private restartTimer: NodeJS.Timeout | null = null;
   private wantRunning = false;
@@ -240,7 +251,8 @@ export class Prebuffer {
     }
   }
 
-  stop(): void {
+  /** Stop the buffer. `why` is what a clip still being sent is told (and the WARN says) (#41). */
+  stop(why = "the recording buffer was stopped"): void {
     this.wantRunning = false;
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
@@ -251,10 +263,34 @@ export class Prebuffer {
       this.ffmpeg.kill();
       this.ffmpeg = null;
     }
+    this.endLive(why);
     this.feed = null;
     this.parser = null;
     this.initSegment = null;
     this.ring = [];
+  }
+
+  /**
+   * End every clip still subscribed to this ffmpeg's fragments (#41), with a WARN naming them. Called
+   * when the ffmpeg exits or the buffer is stopped, before anything can respawn it.
+   */
+  private endLive(why: string): void {
+    if (this.liveSubscribers.size === 0) return;
+    const subs = [...this.liveSubscribers];
+    this.liveSubscribers.clear();
+    const names = subs.map((s) => s.clip).join(", ");
+    this.log.warn(
+      subs.length === 1
+        ? `recording buffer stopped (${why}) while ${names} was being sent to HomeKit; the clip ends here`
+        : `recording buffer stopped (${why}) while ${names} were being sent to HomeKit; those clips end here`,
+    );
+    for (const s of subs) {
+      try {
+        s.onEnd(why);
+      } catch (err) {
+        this.log.error(`couldn't end ${s.clip} after the recording buffer stopped: ${(err as Error).message}`);
+      }
+    }
   }
 
   /** Where the running buffer reads from (null when it isn't running). */
@@ -269,7 +305,7 @@ export class Prebuffer {
   /** Stop and start again now, reading from the current source. No-op unless it should be running. */
   restart(): void {
     if (!this.wantRunning) return;
-    this.stop();
+    this.stop("it restarted to read from another source");
     void this.start();
   }
 
@@ -336,13 +372,17 @@ export class Prebuffer {
         this.ffmpeg = null;
         this.initSegment = null;
         // Restart if we still want to be running (camera dropped, network blip, a stall).
+        const now = Date.now();
+        const videoAt = lastAt !== null && now - lastAt < 1000 ? prevAt : lastAt;   // skip the exit flush
+        const why = stalled ?? prebufferExitReason(code, feed, now - startedAt, videoAt === null ? null : now - videoAt);
         if (this.wantRunning) {
-          const now = Date.now();
-          const videoAt = lastAt !== null && now - lastAt < 1000 ? prevAt : lastAt;   // skip the exit flush
-          const why = stalled ?? prebufferExitReason(code, feed, now - startedAt, videoAt === null ? null : now - videoAt);
           this.log.warn(`prebuffer ffmpeg exited (code ${code}) while reading ${readsFrom(feed.via)}: ${why}; restarting in ${Math.round(this.restartDelayMs / 1000)}s`);
           try { this.onFailure?.(feed, why); }
           catch (err) { this.log.error(`couldn't report the prebuffer failure to the source selector (the restart still happens): ${(err as Error).message}`); }
+        }
+        // A clip being sent ends with this ffmpeg; the respawn's fragments belong to a new init segment (#41).
+        this.endLive(`its ffmpeg exited: ${why}`);
+        if (this.wantRunning) {
           this.scheduleRestart();
         }
       }
@@ -373,7 +413,7 @@ export class Prebuffer {
     // Fan out to live subscribers (active recordings).
     for (const sub of this.liveSubscribers) {
       try {
-        sub(fragment);
+        sub.onFragment(fragment);
       } catch (err) {
         this.log.error(`live subscriber error: ${(err as Error).message}`);
       }
@@ -397,10 +437,11 @@ export class Prebuffer {
     return {
       initSegment: this.initSegment,
       prebufferedFragments,
-      subscribeLive: (cb: LiveSubscriber) => {
-        this.liveSubscribers.add(cb);
+      subscribeLive: (cb: LiveSubscriber, onEnd: (why: string) => void, clip: string) => {
+        const sub: LiveSubscription = { onFragment: cb, onEnd, clip };
+        this.liveSubscribers.add(sub);
         return () => {
-          this.liveSubscribers.delete(cb);
+          this.liveSubscribers.delete(sub);
         };
       },
     };
