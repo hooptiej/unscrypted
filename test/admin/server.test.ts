@@ -8,6 +8,7 @@ import { AddressInfo } from "net";
 import { createAdminServer, AdminDeps } from "../../src/admin/server";
 import { BridgeStatus } from "../../src/admin/ipc";
 import { setLogLevel } from "../../src/logger";
+import { DEFAULT_MOTION_COOLDOWN_MS } from "../../src/config";
 
 setLogLevel("error");
 
@@ -166,6 +167,13 @@ test("camera list never contains a password", async () => {
   for (const secret of ["s3cret", "pw2", "onvifpw", "letmein"]) assert.ok(!t.includes(secret), secret);
   assert.ok(t.includes("***"));
   assert.ok(t.includes('"set":true'));
+});
+
+test("camera list carries the real motion-hold default for the form's hint (#90)", async () => {
+  const s = await login();
+  const body = await (await fetch(base + "/api/cameras", { headers: { cookie: s.cookie } })).json();
+  assert.equal(body.defaults.motionCooldownMs, DEFAULT_MOTION_COOLDOWN_MS);
+  assert.equal(DEFAULT_MOTION_COOLDOWN_MS, 60000);
 });
 
 test("state-changing request without the CSRF token is refused, nothing written", async () => {

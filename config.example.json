@@ -23,7 +23,7 @@
         "username": "admin",
         "password": "CHANGE_ME_camera_password",
         "pollIntervalMs": 1000,
-        "motionCooldownMs": 8000
+        "motionCooldownMs": 60000
       },
       "prebufferSeconds": 4,
       "hksv": true,
