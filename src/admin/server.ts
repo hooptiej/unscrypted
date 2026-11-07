@@ -18,8 +18,8 @@ import QRCode from "qrcode";
 import { BridgeStatus, ToAdmin } from "./ipc";
 import { UserError, toErrorJson } from "../shared/errors";
 import { securityHeaders, sendJson, readFontFile, proxyGo2rtcFile, proxyGo2rtcSocket, STREAM_NAME } from "../shared/http";
-import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
-import { Config, ResolvedCamera, resolveConfig, DEFAULT_MOTION_COOLDOWN_MS } from "../config";
+import { readRawConfig, redactConfig, applyCameraEdit, applyMotionDefault, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
+import { Config, ResolvedCamera, resolveConfig, DEFAULT_MOTION_COOLDOWN_MS, MIN_MOTION_COOLDOWN_MS, MAX_MOTION_COOLDOWN_MS } from "../config";
 import { Go2rtcClient, explainGo2rtcFailure } from "./go2rtc";
 import {
   loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
@@ -32,7 +32,7 @@ import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
 import { ConstructiconFonts, cachedFontFile } from "./constructicon";
 
 type Applied = Extract<ToAdmin, { type: "applied" }>;
-type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "remove"; name: string } | { type: "restart-bridge" } | { type: "reload-go2rtc" };
+type BridgeRequest = { type: "apply"; name: string; isNew: boolean } | { type: "remove"; name: string } | { type: "restart-bridge" } | { type: "reload-go2rtc" } | { type: "apply-defaults" };
 
 export interface AdminDeps {
   configPath: string;
@@ -490,7 +490,34 @@ export function createAdminServer(d: AdminDeps): http.Server {
           notices: { prebufferRestart: PREBUFFER_RESTART_WARNING, prebufferFields: PREBUFFER_FIELDS },
           // The form's placeholders show the defaults the bridge really applies (#90).
           defaults: { motionCooldownMs: DEFAULT_MOTION_COOLDOWN_MS },
+          limits: { motionCooldownMs: { min: MIN_MOTION_COOLDOWN_MS, max: MAX_MOTION_COOLDOWN_MS } },
         });
+      }
+
+      // #90: the install-wide motion hold (cameras without their own value use it). Body {motionCooldownMs: ms}
+      // or {motionCooldownMs: null} to go back to the built-in default. Validated 5000 to 180000, written
+      // atomically, then applied live to every running camera that uses it: no restart.
+      if (url.pathname === "/api/settings/motion" && method === "PUT") {
+        attempted = "Save the default motion hold";
+        const body = await readJson(req, attempted);
+        if (!body || typeof body !== "object" || Array.isArray(body) || !("motionCooldownMs" in body)) {
+          throw new UserError({ attempted, happened: "The request didn't carry a motionCooldownMs value.", changed: "Nothing was saved.", next: "Reload the page and try again." });
+        }
+        const next = applyMotionDefault(readRawConfig(d.configPath), body.motionCooldownMs);
+        const { backupPath, warning } = writeConfigAtomic(d.configPath, next);
+        const extra = { saved: true, backupPath, notes: [] as string[], ...(warning ? { warning } : {}) };
+        const savedChanged = `config.json WAS saved${backupPath ? ` (previous version kept at ${backupPath})` : ""}; the running bridge did not apply it.`;
+        let reply: Applied | null;
+        try {
+          reply = await askBridge({ type: "apply-defaults" });
+        } catch (err) {
+          return json(res, 500, { ...extra, error: { attempted, happened: `Saved, but the bridge couldn't be told about it: ${(err as Error).message}`, changed: savedChanged, next: "Use \"Restart bridge\" to apply it." } });
+        }
+        if (!reply) {
+          return json(res, 202, { ...extra, message: `Saved to config.json, but the bridge didn't confirm applying it within ${APPLY_TIMEOUT_MS / 1000}s. The change is NOT live yet. Use "Restart bridge" to apply it.` });
+        }
+        if (!reply.ok) return json(res, 500, { ...extra, error: { ...reply.error, changed: `${savedChanged} ${reply.error.changed}` } });
+        return json(res, 200, { ...extra, mode: reply.mode, message: reply.message });
       }
 
       // One camera's logins, for the signed-in admin's Show button (#18). POST only, so it carries the

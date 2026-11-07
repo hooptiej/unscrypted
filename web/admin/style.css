@@ -118,6 +118,15 @@ input[readonly] { opacity: 0.75; }
 label.check { display: flex; gap: 8px; align-items: center; }
 .two { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .hint { font-size: 13px; color: var(--muted); margin: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 14px; display: grid; gap: 8px; }
+.panel h2 { margin: 0; }
+h3.sub { font-size: 14px; margin: 4px 0 0; }
+.hold { display: grid; gap: 6px; }
+.hold .knob { display: grid; grid-template-columns: 1fr 9em; gap: 10px; align-items: center; }
+.hold input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); }
+.hold input:disabled { opacity: 0.45; cursor: not-allowed; }
+.hold output { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.hold .live { color: var(--ink); }
 .lock::before { content: "\1F512  "; }
 
 .msg { border-radius: 8px; padding: 10px 12px; margin: 10px 0; }

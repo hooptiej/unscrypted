@@ -171,6 +171,12 @@ export interface Config {
   /** Path to ffmpeg binary. Default: "ffmpeg" (resolved on PATH). */
   ffmpegPath?: string;
   logLevel?: "debug" | "info" | "warn" | "error";
+  /**
+   * Motion hold for every camera that doesn't set its own foscam/onvif `motionCooldownMs` (#90): how
+   * long (ms) a MotionSensor stays "on" after the last trigger. 5000 to 180000; default 60000. A
+   * camera's own value overrides it. Changing it on the admin pane applies live.
+   */
+  motionCooldownMs?: number;
 }
 
 export class ConfigError extends Error {}
@@ -180,6 +186,21 @@ export class ConfigError extends Error {}
  * admin pane's "Hold motion for (ms)" hint shows the value the bridge actually uses (#90).
  */
 export const DEFAULT_MOTION_COOLDOWN_MS = 60000;
+/** The allowed motion hold, in ms (#90): 5 to 180 seconds. Enforced for the global default and every camera's own value. */
+export const MIN_MOTION_COOLDOWN_MS = 5000;
+export const MAX_MOTION_COOLDOWN_MS = 180000;
+
+/** The value when it's a whole number of ms inside the allowed range; otherwise a ConfigError that names the field and the range. */
+export function checkMotionCooldown(v: unknown, where: string): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < MIN_MOTION_COOLDOWN_MS || v > MAX_MOTION_COOLDOWN_MS) {
+    const shown = typeof v === "number" || typeof v === "string" ? String(v) : JSON.stringify(v);
+    throw new ConfigError(
+      `${where} (the motion hold) must be a whole number of milliseconds from ${MIN_MOTION_COOLDOWN_MS} to ${MAX_MOTION_COOLDOWN_MS} ` +
+        `(${MIN_MOTION_COOLDOWN_MS / 1000} to ${MAX_MOTION_COOLDOWN_MS / 1000} seconds); got ${shown}`,
+    );
+  }
+  return v;
+}
 
 function assembleRtsp(
   cam: CameraConfig,
@@ -230,6 +251,8 @@ export interface ResolvedCamera {
 
 export interface ResolvedConfig {
   bridge: Required<Omit<BridgeConfig, never>>;
+  /** The motion hold cameras without their own value use (config.motionCooldownMs, else the built-in 60000). */
+  motionCooldownMs: number;
   cameras: ResolvedCamera[];
   persistDir: string;
   /** config.persistDir, resolved, when UNSCRYPTED_PERSIST_DIR overrode it (else undefined). */
@@ -264,6 +287,11 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
       `bridge.pin must be formatted "XXX-XX-XXX" (got "${bridge.pin}")`,
     );
   }
+
+  const motionCooldownMs =
+    raw.motionCooldownMs === undefined || raw.motionCooldownMs === null
+      ? DEFAULT_MOTION_COOLDOWN_MS
+      : checkMotionCooldown(raw.motionCooldownMs, "motionCooldownMs (the default for every camera)");
 
   const seenNames = new Set<string>();
   const cameras: ResolvedCamera[] = raw.cameras.map((cam, i) => {
@@ -301,7 +329,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
         username: cam.foscam.username,
         password: cam.foscam.password,
         pollIntervalMs: cam.foscam.pollIntervalMs ?? 1000,
-        motionCooldownMs: cam.foscam.motionCooldownMs ?? DEFAULT_MOTION_COOLDOWN_MS,
+        motionCooldownMs: checkMotionCooldown(cam.foscam.motionCooldownMs ?? motionCooldownMs, `cameras[${i}] "${cam.name}": foscam.motionCooldownMs`),
       };
     }
 
@@ -330,7 +358,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
         username: cam.onvif.username,
         password: cam.onvif.password,
         pollIntervalMs: cam.onvif.pollIntervalMs ?? 60000,
-        motionCooldownMs: cam.onvif.motionCooldownMs ?? DEFAULT_MOTION_COOLDOWN_MS,
+        motionCooldownMs: checkMotionCooldown(cam.onvif.motionCooldownMs ?? motionCooldownMs, `cameras[${i}] "${cam.name}": onvif.motionCooldownMs`),
         notifyPort,
         notifyHost: cam.onvif.notifyHost,
       };
@@ -370,6 +398,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
 
   return {
     bridge,
+    motionCooldownMs,
     cameras,
     persistDir,
     persistDirOverridden:
