@@ -5,8 +5,17 @@
 # at runtime (see docker-compose.yml). Host networking is required for HomeKit
 # mDNS discovery.
 
+# Base image, pinned by tag AND digest (#6), used by both stages so they can't drift apart. The
+# digest is the multi-arch index digest of the tag, so a rebuild pulls the exact same bytes even if
+# the tag is re-pushed. To bump: pick the new tag, then read its index digest with
+#   docker buildx imagetools inspect node:<tag>        (the "Digest:" line)
+# or, without Docker, the Docker-Content-Digest header of the Docker Hub manifest (token from
+# auth.docker.io, then HEAD registry-1.docker.io/v2/library/node/manifests/<tag> with the OCI index
+# Accept header). Re-check the ffmpeg pin below whenever the Debian release changes.
+ARG NODE_IMAGE=node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da
+
 # ---- build stage -----------------------------------------------------------
-FROM node:22.11.0-bookworm-slim AS build
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 # Install deps against the lockfile for a reproducible build.
@@ -22,13 +31,20 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # ---- runtime stage ---------------------------------------------------------
-FROM node:22.11.0-bookworm-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
 
 # ffmpeg is required for live view, snapshots and recording. fonts-dejavu-core
 # supplies the font for drawtext on the "camera unavailable" placeholder (#64).
+# ffmpeg is pinned to an exact Debian bookworm version (#6); its libav* libraries come from the same
+# source package and follow it at the matching version. Debian drops a superseded version from the
+# mirror after a security/point update, so this build then FAILS loudly ("Version ... was not
+# found") rather than quietly installing something else. To bump: read the current version with
+#   docker run --rm <base image> sh -c 'apt-get update -qq && apt-cache policy ffmpeg'
+# or https://qa.debian.org/madison.php?package=ffmpeg&s=bookworm,bookworm-security&text=on
+ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends "ffmpeg=${FFMPEG_VERSION}" fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
@@ -38,6 +54,15 @@ ENV UNSCRYPTED_PERSIST_DIR=/data/persist
 COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+
+# Build stamp (#102): the git short sha the image was built from and the UTC build date, passed in
+# as build args by scripts/deploy.sh (and docker-compose's build.args). The release version comes
+# from package.json, so it needs no arg. Written to /app/BUILD as one line "<sha> <date>", which the
+# app reads at runtime (src/version.ts). Empty args are fine: a plain build writes a blank line and
+# the app falls back to "source". Never fails the build.
+ARG UNSCRYPTED_BUILD_SHA=
+ARG UNSCRYPTED_BUILD_DATE=
+RUN printf '%s %s\n' "${UNSCRYPTED_BUILD_SHA}" "${UNSCRYPTED_BUILD_DATE}" > /app/BUILD
 
 # ---- go2rtc (feed checks and previews in the admin pane, and the dashboard's live tiles).
 # Pinned version + checksum, never latest. The checksum is the release asset's SHA-256 as

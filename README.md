@@ -160,6 +160,8 @@ Once a host is set up (deploy key below), `scripts/deploy.sh` is the whole deplo
 - build `unscrypted:<package.json version>` and `docker compose up -d --build`
 - **refuses if that image tag already exists** — bump `"version"` in `package.json` for a new release (rollback = `--rollback <prior version>`)
 
+**Which build is running.** Every screen (admin pane footer, dashboard clock band) and both `/healthz` endpoints show the release version, the git short sha the image was built from, and the UTC build date — e.g. `unscrypted 0.1.16 - build 5a020c9 (2026-11-07)`. `deploy.sh` bakes the sha and date into the image (via the `UNSCRYPTED_BUILD_SHA`/`UNSCRYPTED_BUILD_DATE` build args); a plain `docker compose build` with no args shows `source` plus the working tree's git sha.
+
 ```bash
 ./scripts/deploy.sh                 # prod or test, read from COMPOSE_FILE in .env
 ./scripts/deploy.sh --rollback 0.1.14

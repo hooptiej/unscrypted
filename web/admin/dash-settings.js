@@ -576,6 +576,7 @@ async function init() {
     location.href = "/#/login";
   });
   const s = await api("GET", "/api/session");
+  if (s.build) $("build").textContent = s.build;   // the running build stamp (#102)
   if (s.error) { sayError(s.error); return; }
   if (!s.signedIn) { location.href = signInUrl(); return; }
   csrf = s.csrf;

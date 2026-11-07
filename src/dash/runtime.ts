@@ -13,6 +13,7 @@ import { PhotoLibrary } from "./photos";
 import { listFonts, fontOut } from "./fonts";
 import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
 import { PulseStore, BuildWatch, PulseApi, makePulseApi, viewOf } from "./pulse";
+import { BUILD_STRING } from "../version";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
 
@@ -178,7 +179,7 @@ export class DashRuntime {
     const s = this.settings;
     const f = this.fonts();
     return {
-      title: this.o.title, env: this.o.env, adminPort: this.o.adminPort,
+      title: this.o.title, env: this.o.env, adminPort: this.o.adminPort, build: BUILD_STRING,
       // The kiosk's Settings button. null = the page works it out (this host, the admin port).
       settingsUrl: this.o.adminUrl ? `${this.o.adminUrl}/dash-settings?from=dash` : null,
       idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes,

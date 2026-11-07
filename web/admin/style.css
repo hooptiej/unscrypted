@@ -63,6 +63,7 @@ nav a.active { text-decoration: underline; text-underline-offset: 4px; }
 .dot.bad { background: var(--bad); }
 
 main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.build { max-width: 1100px; margin: 0 auto; padding: 4px 16px 16px; font-size: 12px; }
 h1 { font-size: 22px; margin: 4px 0 12px; }
 h2 { font-size: 17px; margin: 18px 0 8px; }
 .muted { color: var(--muted); }

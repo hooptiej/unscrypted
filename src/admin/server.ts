@@ -25,6 +25,7 @@ import {
   loadAdminPassword, loadOrCreateSessionKey, checkPassword, issueSession, verifySession, csrfToken, checkCsrf, LoginLimiter, SESSION_DAYS,
 } from "./auth";
 import { Logger } from "../logger";
+import { BUILD_STRING, healthFields } from "../version";
 import { streamNames } from "./go2rtcConfig";
 import { loadSettings, saveSettings, applySettingsEdit, effectiveCameras, GRID_MAX, FONT_FILE } from "../dash/settings";
 import { listFonts, FONT_MIME, SYSTEM_FONTS } from "../dash/fonts";
@@ -302,7 +303,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
     const method = req.method ?? "GET";
     let attempted = `${method} ${url.pathname}`;
     try {
-      if (url.pathname === "/healthz") return json(res, 200, { ok: true });
+      if (url.pathname === "/healthz") return json(res, 200, { ok: true, ...healthFields() });
       if (url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
       if (method === "GET" && url.pathname.startsWith("/dash-fonts/")) {
         // The same font files the open dashboard serves, for the settings page's live preview.
@@ -356,7 +357,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         if (keyError) setupError = keyError.body;
         else try { loadAdminPassword(d.passwordFile); } catch (err) { setupError = toErrorJson(err, "Start the admin pane's sign-in").body.error; }
         // Where the dashboard is and its idle time: the kiosk's sign-in page idles back there. Nothing secret.
-        return json(res, 200, { signedIn: Boolean(s), csrf: s ? csrfToken(secret, s) : null, title: d.title, setupError,
+        return json(res, 200, { signedIn: Boolean(s), csrf: s ? csrfToken(secret, s) : null, title: d.title, setupError, build: BUILD_STRING,
           dash: { url: dashUrlFor(req), idleSeconds: loadSettings(dashSettingsFile).settings.idleSeconds } });
       }
 
