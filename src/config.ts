@@ -32,7 +32,7 @@ export interface FoscamConfig {
 }
 
 export interface OnvifConfig {
-  /** Camera host/IP for the ONVIF service, e.g. "10.0.1.3". */
+  /** Camera host/IP for the ONVIF service, e.g. "192.168.1.30". */
   host: string;
   /**
    * ONVIF service port. Default 80.

@@ -47,7 +47,7 @@ export class ConstructiconFonts {
 
   /** Why the feature can't work right now, or null when it can be tried. */
   availability(url: string): { available: boolean; reason: string | null } {
-    if (!url) return { available: false, reason: "no Constructicon address is set; enter it above (for example http://10.0.1.240) and save" };
+    if (!url) return { available: false, reason: "no Constructicon address is set; enter it above (for example http://192.168.1.20) and save" };
     const t = this.token();
     if ("reason" in t) return { available: false, reason: t.reason };
     return { available: true, reason: null };

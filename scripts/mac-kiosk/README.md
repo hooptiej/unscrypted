@@ -31,11 +31,11 @@ The dashboard should open fullscreen straight away. It reopens at every login. L
 The launcher's settings are baked into the LaunchAgent (its `EnvironmentVariables`) when you install,
 so set them on the install command:
 
-    HOMEDASH_URL=http://10.0.1.248 ./install.sh
+    HOMEDASH_URL=http://192.168.1.20 ./install.sh
 
 | Setting | Default | What it does |
 |---|---|---|
-| `HOMEDASH_URL` | `http://homedash.local` | The address to show. The dashboard keeps that name (and its own IP, `10.0.1.248`) after the move into unscrypted. |
+| `HOMEDASH_URL` | `http://homedash.local` | The address to show. Point it at wherever your dashboard lives. |
 | `HOMEDASH_WAIT` | `180` | Seconds to wait for the dashboard to answer before opening the browser anyway. `0` waits forever. |
 | `HOMEDASH_BROWSER` | first of Chrome, Edge, Brave, Chromium | A browser binary to use instead. |
 
@@ -66,8 +66,8 @@ These are system settings; they can't be done from the script.
   seconds (default 180) it opens the browser anyway, so a probe that can never succeed can't hold the
   display hostage (homedash#24).
 - **`.local` names and launchd.** On the Mac mini, a background launchd job couldn't resolve
-  `homedash.local` (curl: "Resolving timed out"), while the same probe to `http://10.0.1.248` worked
-  (homedash#24). If the log shows that, install with `HOMEDASH_URL=http://10.0.1.248`. The page itself
+  `homedash.local` (curl: "Resolving timed out"), while the same probe to `http://192.168.1.20` worked
+  (homedash#24). If the log shows that, install with `HOMEDASH_URL=http://192.168.1.20`. The page itself
   doesn't depend on the name.
 - **Dedicated browser profile, nothing syncs back.** Kept under
   `~/Library/Application Support/homedash-kiosk/`. It is never signed in, and the launcher also passes

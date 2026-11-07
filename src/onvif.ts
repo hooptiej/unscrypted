@@ -24,7 +24,7 @@
  *     XM/Sofia cameras that return "ActionNotSupported" for PullPoint.
  *
  * We try PullPoint first and fall back to push automatically, logging which
- * mode is active. Verified against a real XM camera (10.0.1.3): it rejects
+ * mode is active. Verified against a real XM camera (192.168.1.30): it rejects
  * PullPoint and delivers motion via push on topic
  * tns1:RuleEngine/CellMotionDetector/Motion with SimpleItem IsMotion=true/false.
  */

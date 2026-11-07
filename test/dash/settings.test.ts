@@ -103,31 +103,18 @@ test("a broken settings file's warning (served on the open dashboard) carries no
   assert.doesNotMatch(w, /SECRETTOKEN|10\.9\.8\.7|icloud/);
 });
 
-test("#11: a saved light still 'blocked' with the pre-shim placeholder becomes the default http check again, and says so", () => {
+test("#44: a saved light carrying the old pre-shim placeholder is left exactly as saved (no house defaults to restore it to)", () => {
   const f = path.join(tempDir("unscr-dash-"), "settings.json");
   const old = "can't be checked from the NAS's own network yet (it sits on the ipvlan LAN; tracked in hooptiej/unscrypted#11)";
-  fs.writeFileSync(f, JSON.stringify({ services: [
-    { id: "server", name: "Server", rollup: true, check: { kind: "alive", host: "10.0.1.78", port: 80 }, children: [
-      { id: "constructicon", name: "Constructicon", check: { kind: "blocked", reason: old }, children: [
-        { id: "constructicon-dev", name: "dev", check: { kind: "blocked", reason: old } },
-      ] },
-      // Set on purpose (an install without a shim): the new reason, left alone.
-      { id: "questlog", name: "Questlog", check: { kind: "blocked", reason: IPVLAN_REASON } },
-      // Not a default light: nothing to migrate to, left alone.
-      { id: "mine", name: "Mine", check: { kind: "blocked", reason: old } },
-    ] },
-  ] }));
+  const saved = [{ id: "server", name: "NAS", rollup: true, check: { kind: "bridge" }, children: [
+    { id: "constructicon", name: "Constructicon", check: { kind: "blocked", reason: old } },
+    { id: "questlog", name: "Questlog", check: { kind: "blocked", reason: IPVLAN_REASON } },
+  ] }];
+  fs.writeFileSync(f, JSON.stringify({ services: saved }));
   const r = loadSettings(f);
-  const kids = r.settings.services[0].children!;
-  assert.deepEqual(kids[0].check, { kind: "http", url: "http://10.0.1.240/", ok: "any" });
-  assert.deepEqual(kids[0].children![0].check, { kind: "http", url: "http://10.0.1.241/", ok: "any" });
-  assert.deepEqual(kids[1].check, { kind: "blocked", reason: IPVLAN_REASON });
-  assert.deepEqual(kids[2].check, { kind: "blocked", reason: old });
-  assert.equal(r.settings.services[0].name, "NAS", "the Server rename still happens");
-  assert.equal(r.migrated.length, 2);
-  assert.match(r.migrated[0], /"Constructicon" light.*default http check.*unscrypted#11/);
+  assert.deepEqual(r.settings.services, saved);
+  assert.deepEqual(r.migrated, []);
   assert.equal(r.warning, null);
-  assert.ok(JSON.parse(fs.readFileSync(f, "utf8")).services[0].children[0].check.kind === "blocked", "load never writes the file");
 });
 
 test("a settings file with no migration needed reports none", () => {

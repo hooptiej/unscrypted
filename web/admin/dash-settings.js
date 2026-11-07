@@ -252,9 +252,9 @@ function openPanel({ mode, id, row }) {
   for (const [v, t] of CHECK_KINDS) kind.append(opt(v, t));
 
   // fields per kind
-  const host = textInput("host, e.g. 10.0.1.78 or 127.0.0.1");
+  const host = textInput("host, e.g. 192.168.1.10 or 127.0.0.1");
   const port = document.createElement("input"); port.type = "number"; port.min = "1"; port.max = "65535"; port.placeholder = "port";
-  const urlIn = textInput("http://10.0.1.240/ or https://host/path");
+  const urlIn = textInput("http://192.168.1.20/ or https://host/path");
   const ok200 = document.createElement("input"); ok200.type = "checkbox";
   const reason = textInput("why it can't be checked from here");
   const build = textInput("build page address (optional, a JSON page with a build field)");

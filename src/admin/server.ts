@@ -52,7 +52,7 @@ export interface AdminDeps {
   };
   /**
    * The dashboard's settings folder, its port, and its public base URL when it isn't this host
-   * (UNSCRYPTED_DASH_URL, e.g. http://10.0.1.248/ once it has its own address). Defaults: /data/dash, 8180, derived.
+   * (UNSCRYPTED_DASH_URL, e.g. http://192.168.1.20/ once it has its own address). Defaults: /data/dash, 8180, derived.
    */
   dash?: { dir: string; port: number; url: string | null; host?: string };
   /** The Constructicon font list (#14): where the read-only token file is. Default /run/secrets/constructicon_token. */
@@ -291,10 +291,10 @@ export function createAdminServer(d: AdminDeps): http.Server {
         // The same font files the open dashboard serves, for the settings page's live preview.
         attempted = "Load a dashboard font for the preview";
         const name = url.pathname.slice("/dash-fonts/".length);
-        const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the NAS, then reload." }, 404);
+        const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing.", next: "Put the file in data/dash/fonts on the host (next to docker-compose.yml), then reload." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
         const body = readFontFile(path.join(dash.dir, "fonts"), name, { attempted, log, notThere: gone, changed: "Nothing.",
-          unreadableNext: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), then reload." });
+          unreadableNext: "Check the file's permissions in data/dash/fonts on the host (the container must be able to read it), then reload." });
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length) });
         return res.end(body);
       }
@@ -357,7 +357,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         const body = await readJson(req, attempted);
         if (!checkPassword(String(body?.password ?? ""), password)) {
           limiter.fail(ip);
-          throw new UserError({ attempted, happened: "Wrong password.", changed: "Nothing.", next: "Check ~/unscrypted/secrets/admin_password on the NAS if you've forgotten it. 5 wrong tries pause sign-in for 5 minutes." }, 401);
+          throw new UserError({ attempted, happened: "Wrong password.", changed: "Nothing.", next: "Check secrets/admin_password next to docker-compose.yml on the host if you've forgotten it. 5 wrong tries pause sign-in for 5 minutes." }, 401);
         }
         limiter.reset(ip);
         const session = issueSession(secret);
@@ -406,7 +406,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
           let backupPath: string | null;
           try { ({ backupPath } = saveSettings(dashSettingsFile, next)); } catch (err) {
             throw new UserError({ attempted, happened: `${dashSettingsFile} couldn't be written (${(err as Error).message}).`, changed: "Nothing was saved; the dashboard keeps its current settings.",
-              next: "Check that ./data/dash on the NAS exists and is writable by the container, then save again." }, 500);
+              next: "Check that ./data/dash on the host exists and is writable by the container, then save again." }, 500);
           }
           log.info(`dashboard settings saved (${Object.keys(edit).join(", ")})`);
           return json(res, 200, { saved: true, backupPath, settings: next, message: "Saved. The dashboard reloads with it within a few seconds." });
@@ -636,7 +636,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
         attempted = "Restart the bridge";
         const reply = await askBridge({ type: "restart-bridge" });
         if (!reply) {
-          throw new UserError({ attempted, happened: `The bridge didn't answer within ${APPLY_TIMEOUT_MS / 1000}s.`, changed: "Probably nothing; the bridge may be busy or stuck.", next: "Restart the container on the NAS: sudo docker restart unscrypted." }, 504);
+          throw new UserError({ attempted, happened: `The bridge didn't answer within ${APPLY_TIMEOUT_MS / 1000}s.`, changed: "Probably nothing; the bridge may be busy or stuck.", next: "Restart the unscrypted container on the host (docker compose restart, run in the folder that holds docker-compose.yml)." }, 504);
         }
         return reply.ok ? json(res, 200, { message: reply.message }) : json(res, 500, { error: reply.error });
       }

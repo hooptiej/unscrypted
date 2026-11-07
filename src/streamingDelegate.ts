@@ -38,7 +38,7 @@ import { closingConnection } from "./hapEventHold";
 const RTSP_TIMEOUT_US = "10000000";
 /**
  * Input flags that start on the first decodable frame instead of probing for seconds (#33).
- * Measured on a Boavision 1080p/15fps camera from the NAS: ffmpeg's default probing cost ~2.7 s
+ * Measured on a Boavision 1080p/15fps camera from the Docker host: ffmpeg's default probing cost ~2.7 s
  * on every live start (3.6 s vs 0.9 s to the first frame, direct). RTSP's SDP already carries
  * the H.264 parameter sets, so there is nothing to probe for.
  */

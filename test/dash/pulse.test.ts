@@ -352,12 +352,12 @@ test("a hand-edited pulse in settings.json is clamped on load, and the dashboard
 
 test("a light's build page is set, taken off, and refused by name when it's not a light or not an address", () => {
   const ctx = { cameras: [], fontFiles: [] };
-  const set = applySettingsEdit(DEFAULTS, { lampBuilds: { server: PAGE } }, ctx);
+  const set = applySettingsEdit(DEFAULTS, { lampBuilds: { homekit: PAGE } }, ctx);
   assert.deepEqual(set.services[0].build, { url: PAGE });
-  const cleared = applySettingsEdit(set, { lampBuilds: { server: "" } }, ctx);
+  const cleared = applySettingsEdit(set, { lampBuilds: { homekit: "" } }, ctx);
   assert.equal(cleared.services[0].build, undefined);
   assert.throws(() => applySettingsEdit(DEFAULTS, { lampBuilds: { ghost: PAGE } }, ctx), /there's no status light called "ghost"/);
-  assert.throws(() => applySettingsEdit(DEFAULTS, { lampBuilds: { server: "ftp://192.0.2.10/x" } }, ctx), /Build page for NAS/);
+  assert.throws(() => applySettingsEdit(DEFAULTS, { lampBuilds: { homekit: "ftp://192.0.2.10/x" } }, ctx), /Build page for HomeKit bridge/);
   assert.equal(DEFAULTS.services[0].build, undefined, "the defaults never carry a build page");
 });
 

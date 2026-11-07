@@ -236,7 +236,7 @@ export function makePulseApi(o: PulseApiOptions): PulseApi {
   const save = (attempted: string, id: string, rec: PulseRecord) => {
     try { o.store.set(id, rec); } catch (err) {
       throw new UserError({ attempted, happened: `${(err as Error).message}.`, changed: "Nothing; the pulse is as it was.",
-        next: "Check that data/dash on the NAS exists and is writable by the container, then try again." }, 500);
+        next: "Check that data/dash on the host exists and is writable by the container, then try again." }, 500);
     }
     o.changed();
   };
@@ -248,10 +248,10 @@ export function makePulseApi(o: PulseApiOptions): PulseApi {
         const code = (err as NodeJS.ErrnoException).code;
         const why = code === "ENOENT" ? `There's no token file at ${o.tokenFile}` : `The token file at ${o.tokenFile} couldn't be read (${code ?? "unknown error"})`;
         throw new UserError({ attempted, happened: `${why}, so the switch is off.`, changed: "Nothing.",
-          next: "Put the one-line token in secrets/dash_pulse_token on the NAS (see the README), then try again." }, 503);
+          next: "Put the one-line token in secrets/dash_pulse_token on the host (see the README), then try again." }, 503);
       }
       if (!expected) throw new UserError({ attempted, happened: `The token file at ${o.tokenFile} is empty, so the switch is off.`, changed: "Nothing.",
-        next: "Put the one-line token in secrets/dash_pulse_token on the NAS, then try again." }, 503);
+        next: "Put the one-line token in secrets/dash_pulse_token on the host, then try again." }, 503);
       if (!authorization) throw new UserError({ attempted, happened: "No token was sent.", changed: "Nothing.",
         next: "Send the token as Authorization: Bearer <token>; the README has the curl." }, 401);
       const m = /^Bearer\s+(\S+)\s*$/i.exec(authorization);
@@ -260,7 +260,7 @@ export function makePulseApi(o: PulseApiOptions): PulseApi {
       const a = Buffer.from(m[1]), b = Buffer.from(expected);
       if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new UserError({ attempted,
         happened: "The token doesn't match the one in secrets/dash_pulse_token.", changed: "Nothing.",
-        next: "Use the current token from secrets/dash_pulse_token on the NAS; it may have been changed." }, 403);
+        next: "Use the current token from secrets/dash_pulse_token on the host; it may have been changed." }, 403);
     },
 
     list() {

@@ -115,7 +115,7 @@ while :; do
   fi
   if [ "$WAIT" -gt 0 ] && [ "$waited" -ge "$WAIT" ]; then
     log "gave up waiting after ${WAIT}s (last: ${err:-no answer}). Opening the browser anyway."
-    log "If the name never resolves here (background launchd jobs can't always resolve .local names), set HOMEDASH_URL to the dashboard's IP, e.g. http://10.0.1.248, in the LaunchAgent."
+    log "If the name never resolves here (background launchd jobs can't always resolve .local names), set HOMEDASH_URL to the dashboard's IP, e.g. http://192.168.1.20, in the LaunchAgent."
     break
   fi
   sleep 5

@@ -238,10 +238,10 @@ export function createDashServer(d: DashDeps): http.Server {
         attempted = "Load a dashboard font";
         const name = url.pathname.slice("/fonts/".length);   // not decoded: a real font name has no % in it
         const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing; the page uses a system font instead.",
-          next: "Put the file in data/dash/fonts on the NAS, or pick another font in the dashboard settings." }, 404);
+          next: "Put the file in data/dash/fonts on the host, or pick another font in the dashboard settings." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
         const body = readFontFile(d.fontsDir, name, { attempted, log, notThere: gone, changed: "Nothing; the page uses a system font instead.",
-          unreadableNext: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), or pick another font in the dashboard settings." });
+          unreadableNext: "Check the file's permissions in data/dash/fonts on the host (the container must be able to read it), or pick another font in the dashboard settings." });
         // Fonts never change under the same name; a day's cache keeps the kiosk's reloads light.
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length), "cache-control": "public, max-age=86400" });
         return res.end(body);
@@ -257,7 +257,7 @@ export function createDashServer(d: DashDeps): http.Server {
           const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
           if (code === "ENOENT") throw notThere();
           log.warn(`slideshow photo ${id} couldn't be read (${code})`);
-          throw new UserError({ attempted, happened: `That photo is in the slideshow but couldn't be read (${code}).`, changed: "Nothing.", next: "Check the photo folder's permissions on the NAS; the slideshow moves on to the next photo." }, 500);
+          throw new UserError({ attempted, happened: `That photo is in the slideshow but couldn't be read (${code}).`, changed: "Nothing.", next: "Check the photo folder's permissions on the host; the slideshow moves on to the next photo." }, 500);
         }
         res.writeHead(200, { "content-type": PHOTO_EXT[path.extname(file).toLowerCase()] ?? "image/jpeg", "content-length": String(body.length) });
         return res.end(body);
@@ -328,7 +328,7 @@ export function describeListenError(host: string, port: number, err: NodeJS.Errn
   const changed = "The dashboard isn't running; the HomeKit bridge and the admin pane are unaffected. The bridge retries it with backoff (up to once a minute).";
   if (err.code === "EADDRNOTAVAIL") {
     return { attempted, changed, happened: `The address ${host} isn't on this machine (EADDRNOTAVAIL), so nothing can listen on it.`,
-      next: `Add ${host} to the NAS's network (or fix UNSCRYPTED_DASH_HOST; 0.0.0.0 means every address), then restart the container. It also starts on its own once the address appears.` };
+      next: `Add ${host} to the host's network (or fix UNSCRYPTED_DASH_HOST; 0.0.0.0 means every address), then restart the container. It also starts on its own once the address appears.` };
   }
   if (err.code === "EADDRINUSE") {
     return { attempted, changed, happened: `Something else is already listening on ${where} (EADDRINUSE).`,

@@ -1,5 +1,5 @@
 # Test instance: HomeKit OFF (no second bridge in the family's Home app), its own ports and its
-# own ./config, ./data and ./secrets (run it from a separate folder, ~/unscrypted-test on the NAS).
+# own ./config, ./data and ./secrets (run it from a separate folder, a sibling of the prod folder).
 # HAP off also keeps motion sources (and the ONVIF notify port) off, so it can't fight prod.
 #
 #   sudo docker compose -f docker-compose.yml -f docker-compose.test.yml -p unscrypted-test up -d --build
