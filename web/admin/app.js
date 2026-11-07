@@ -392,6 +392,7 @@ async function renderCameras() {
     } else {
       add("Motion source", MOTION_LABEL[s.motionKind] || s.motionKind);
       add("HKSV", s.hksv ? "on" : "off");
+      if (s.offline) add("Camera", el("span", { class: "badtext" }, `offline since ${new Date(s.offline.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} (${s.offline.reason}). Home shows a fault on it${s.hksv || s.motionKind !== "none" ? "" : ", if it has a motion sensor, which this camera doesn't"}.`));
       add("Video (go2rtc)", feedText(s.feed));
       if (s.subFeed) add("Sub stream (go2rtc)", feedText(s.subFeed));
       add("HomeKit reads", viaText(s));

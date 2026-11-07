@@ -9,7 +9,7 @@ import * as path from "path";
 import { createDashServer, listenDash } from "./server";
 import { UserError } from "../shared/errors";
 import { DashRuntime } from "./runtime";
-import { checkToDash } from "./ipc";
+import { checkToDash, FromDash } from "./ipc";
 import { Logger } from "../logger";
 import { parseBaseUrl } from "./settings";
 
@@ -46,7 +46,14 @@ let probing = false;
 const probeLoop = async (): Promise<void> => {
   if (!probing) {
     probing = true;
-    try { await rt.probeCameras(); }
+    try {
+      await rt.probeCameras();
+      // Every round, even an all-clear one: it tells the bridge which cameras Home should flag as faulted (#113), and that we're alive.
+      if (process.send && process.connected) {
+        const msg: FromDash = { type: "camera-reach", offline: rt.reachReport() };
+        process.send(msg, (err) => { if (err) log.warn(`couldn't tell the bridge which cameras are offline (Home's fault flags keep their last state): ${err.message}`); });
+      }
+    }
     catch (err) { log.error(`camera reachability check failed (tiles keep their last state): ${(err as Error).stack ?? err}`); }
     finally { probing = false; }
   }

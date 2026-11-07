@@ -21,7 +21,10 @@ import { cameraDirectText, SourceSelector, sourceText } from "./source";
 import { ApplyMode, BridgeStatus, CameraStatus, ToAdmin, checkToBridge, classifyChange, motionKindOf } from "./admin/ipc";
 import { UserError, toErrorJson } from "./shared/errors";
 import { resolveChildEntry } from "./shared/childEntry";
-import { dashCameras, ToDash } from "./dash/ipc";
+import { dashCameras, ToDash, checkCameraReach } from "./dash/ipc";
+
+/** How long the dashboard may go without reporting camera status before Home's fault flags are cleared (#113). */
+export const REACH_STALE_MS = 60_000;
 
 export interface RuntimeOptions {
   config: ResolvedConfig;
@@ -60,6 +63,9 @@ export class BridgeRuntime {
   private readonly startedAt = Date.now();
   private timers: NodeJS.Timeout[] = [];
   private lastStatusError: string | null = null;
+  /** When the dashboard last told us which cameras are offline (#113); null = never since it started. */
+  private reachAt: number | null = null;
+  private reachStaleWarned = false;
 
   constructor(private readonly o: RuntimeOptions) {
     this.config = o.config;
@@ -175,7 +181,10 @@ export class BridgeRuntime {
       log.info(`dashboard starting on ${dz.host}:${dz.port}`);
     }
 
-    this.timers.push(setInterval(() => { this.pushStatus(); this.pushDash(false); }, 2000));
+    if (!dz.enabled || !dashEntry) {
+      log.info("Home's camera-offline fault flags (StatusFault) come from the dashboard's camera checks, and the dashboard isn't running here, so Home won't show offline cameras as faulted.");
+    }
+    this.timers.push(setInterval(() => { this.pushStatus(); this.pushDash(false); this.expireStaleReach(Date.now()); }, 2000));
   }
 
   private go2rtcStatus(): ChildStatus {
@@ -189,11 +198,49 @@ export class BridgeRuntime {
   private onDashMessage(raw: unknown): void {
     const m = raw as { type?: unknown; error?: { happened?: unknown; next?: unknown } } | null;
     if (m?.type === "listening") { this.dashListenError = null; return; }
+    if (m?.type === "camera-reach") { this.onCameraReach(raw); return; }
     if (m?.type === "listen-failed" && m.error && typeof m.error.happened === "string") {
       this.dashListenError = `${m.error.happened} ${typeof m.error.next === "string" ? m.error.next : ""}`.trim();
       return;
     }
     this.o.log.warn(`ignored a malformed message from the dashboard: ${JSON.stringify(raw)?.slice(0, 200)}`);
+  }
+
+  /**
+   * #113: the dashboard's camera checks say which cameras have been offline for the whole grace. Set Home's
+   * StatusFault on those and clear it on the rest. The dashboard sends this every round, so a camera
+   * missing from the list is answering.
+   */
+  private onCameraReach(raw: unknown): void {
+    const r = checkCameraReach(raw);
+    if (typeof r === "string") {
+      this.o.log.warn(`ignored a malformed camera-status message from the dashboard: ${r}`);
+      return;
+    }
+    this.reachAt = Date.now();
+    this.reachStaleWarned = false;
+    for (const [name, cam] of this.cams) {
+      try { cam.setOffline(r.offline[name] ?? null); }
+      catch (err) { this.o.log.error(`couldn't update Home's fault flag for "${name}": ${(err as Error).stack ?? err}`); }
+    }
+  }
+
+  /**
+   * #113: the offline flags come from the dashboard's checks. If it stops reporting (crashed, restarting,
+   * switched off), a flag set earlier would never clear when the camera comes back, so after a minute of
+   * silence every flag is cleared and the log says so.
+   */
+  private expireStaleReach(now: number): void {
+    if (this.reachAt === null || now - this.reachAt < REACH_STALE_MS) return;
+    const flagged = [...this.cams.values()].filter((c) => c.snapshotStatus().offline);
+    if (flagged.length && !this.reachStaleWarned) {
+      this.o.log.warn(
+        `the dashboard hasn't reported camera status for ${Math.round((now - this.reachAt) / 1000)} s, so Home's offline fault flags on ${flagged.map((c) => `"${c.name}"`).join(", ")} are cleared ` +
+          "(they'd never clear on their own). They come back when the dashboard reports the camera offline again.",
+      );
+    }
+    this.reachStaleWarned = true;
+    for (const c of flagged) c.setOffline(null);
   }
 
   private dashStatus(): ChildStatus {
@@ -224,6 +271,7 @@ export class BridgeRuntime {
         prebuffer: s?.prebuffer ?? null,
         liveSessions: s?.liveSessions ?? 0, recordingActive: s?.recordingActive ?? false,
         motionActive: s?.motionActive ?? false, lastMotionAt: s?.lastMotionAt ?? null,
+        offline: s?.offline ?? null,
         pendingRestart: this.pendingRestart.has(rc.name) || !cam,
       };
     });

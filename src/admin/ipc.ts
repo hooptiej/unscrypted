@@ -21,6 +21,8 @@ export interface CameraStatus {
   direct: (CameraDirect & { text: string }) | null;
   prebuffer: { running: boolean; via: FeedVia | null; lastFragmentAt: number | null } | null;
   liveSessions: number; recordingActive: boolean; motionActive: boolean; lastMotionAt: number | null;
+  /** Offline for the whole grace (#113): Home shows a fault on this camera. null = answering (or not known). */
+  offline: { since: number; reason: string } | null;
   pendingRestart: boolean;   // saved change needs a bridge restart to take effect
 }
 
