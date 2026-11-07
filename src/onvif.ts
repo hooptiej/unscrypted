@@ -762,7 +762,7 @@ export class OnvifMotionSource {
 }
 
 /** Extract a SubscriptionReference / PullPoint address from a SOAP response. */
-function extractSubscriptionAddress(body: string): string | undefined {
+export function extractSubscriptionAddress(body: string): string | undefined {
   const m = /SubscriptionReference>[\s\S]*?<[^>]*:?Address[^>]*>([^<]+)<\/[^>]*:?Address>/i.exec(body);
   return m ? m[1].trim() : undefined;
 }

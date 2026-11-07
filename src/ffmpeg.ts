@@ -119,6 +119,16 @@ export function spawnFfmpeg(
   return { proc, done, kill, stderrTail: () => maskSecrets(stderrTail) };
 }
 
+/**
+ * How a long-lived pipeline (live view, recording buffer) finds and starts ffmpeg. Production
+ * leaves both unset and gets resolveFfmpeg/spawnFfmpeg; tests pass stand-ins (#47) so the session
+ * lifecycle can run against a fake ffmpeg (the node binary running a one-line script).
+ */
+export interface FfmpegDeps {
+  resolve?: typeof resolveFfmpeg;
+  spawn?: typeof spawnFfmpeg;
+}
+
 /** SRTP suite string ffmpeg expects for HomeKit. */
 export const SRTP_SUITE = "AES_CM_128_HMAC_SHA1_80";
 
