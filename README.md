@@ -244,7 +244,7 @@ These cameras handle one RTSP client well and several badly (stalls, dropped fra
 | Port | What | Where it listens |
 |---|---|---|
 | `51826/tcp` | HomeKit (HAP), `config.bridge.port` | all interfaces |
-| `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces |
+| `8190/tcp` | Admin pane (`UNSCRYPTED_ADMIN_PORT`) | all interfaces (`0.0.0.0`), or `UNSCRYPTED_ADMIN_HOST` |
 | `8180/tcp` | Dashboard, open and watch-only (`UNSCRYPTED_DASH_PORT`; own IP: port `80` on `UNSCRYPTED_DASH_HOST`) | all interfaces, or `UNSCRYPTED_DASH_HOST` |
 | `1986/tcp` | go2rtc API (`UNSCRYPTED_GO2RTC_API_PORT`) | `127.0.0.1` only |
 | `8557/tcp+udp` | go2rtc WebRTC video for the live preview (`UNSCRYPTED_GO2RTC_WEBRTC_PORT`; `UNSCRYPTED_GO2RTC_WEBRTC=off` turns the preview off) | all interfaces |

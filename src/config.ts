@@ -8,6 +8,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { parseLogLevel } from "./logger";
 
 export interface FoscamConfig {
   /**
@@ -368,7 +369,7 @@ export function resolveConfig(raw: Config, baseDir: string): ResolvedConfig {
     persistDirOverridden:
       configPersistDir && configPersistDir !== persistDir ? configPersistDir : undefined,
     ffmpegPath: raw.ffmpegPath ?? process.env.UNSCRYPTED_FFMPEG ?? "ffmpeg",
-    logLevel: raw.logLevel ?? (process.env.UNSCRYPTED_LOG_LEVEL as ResolvedConfig["logLevel"]) ?? "info",
+    logLevel: parseLogLevel(raw.logLevel ?? process.env.UNSCRYPTED_LOG_LEVEL),
   };
 }
 

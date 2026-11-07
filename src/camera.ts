@@ -13,7 +13,6 @@ import {
   AudioStreamingSamplerate,
   CameraController,
   CameraControllerOptions,
-  Categories,
   Characteristic,
   H264Level,
   H264Profile,
@@ -81,7 +80,7 @@ export class UnscryptedCamera {
 
   constructor(
     private readonly camera: ResolvedCamera,
-    private readonly ffmpegPath: string,
+    ffmpegPath: string,
     parentLog: Logger,
     sources?: SourceSelector,
   ) {
@@ -243,7 +242,6 @@ export class UnscryptedCamera {
           username: camera.foscam.username,
           password: camera.foscam.password,
         },
-        log.child("foscam"),
       );
       return new MotionPoller(
         client,

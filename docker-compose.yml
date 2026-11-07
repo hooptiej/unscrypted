@@ -36,6 +36,7 @@ services:
       - UNSCRYPTED_PERSIST_DIR=/data/persist
       - UNSCRYPTED_LOG_LEVEL=info
       - UNSCRYPTED_ADMIN_PORT=8190
+      # UNSCRYPTED_ADMIN_HOST picks the one address the admin pane listens on (default 0.0.0.0, every address).
       - UNSCRYPTED_GO2RTC_API_PORT=1986
       # go2rtc WebRTC media (tcp+udp, all interfaces) for the pane's live preview and the dashboard's
       # tiles. UNSCRYPTED_GO2RTC_WEBRTC=off turns just those off; HomeKit streaming never uses it.

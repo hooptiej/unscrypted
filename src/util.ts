@@ -30,12 +30,27 @@ export function reserveUdpPort(
   });
 }
 
+/** A scheme://user:password@ URL. The password runs greedy to the LAST '@' in the token, so a password holding '@' or '/' is still covered. */
+const URL_CREDS_RE = /([a-z][a-z0-9+.-]*:\/\/[^:/@\s]+:)[^\s]*@/gi;
+/** Foscam CGI credentials carried in a query string. */
+const CGI_CREDS_RE = /([?&](?:pwd|usr)=)[^&\s]*/gi;
+
+/**
+ * Mask every credential in a piece of text bound for a log: the password in any
+ * scheme://user:password@host URL, and Foscam usr=/pwd= query values. Safe on text with
+ * neither (returned unchanged). Use it on anything a camera URL or ffmpeg/go2rtc output
+ * may have ended up in.
+ */
+export function maskSecrets(text: string): string {
+  return text.replace(URL_CREDS_RE, "$1***@").replace(CGI_CREDS_RE, "$1***");
+}
+
 /** Redact credentials embedded in an rtsp:// (or any) URL for safe logging. */
 export function redactUrl(url: string): string {
-  return url.replace(/\/\/([^:/@]+):([^@/]+)@/, "//$1:***@");
+  return maskSecrets(url);
 }
 
 /** Redact a query string carrying usr=/pwd= (Foscam CGI) for safe logging. */
 export function redactCgi(url: string): string {
-  return url.replace(/([?&](?:pwd|usr)=)[^&]*/gi, "$1***");
+  return maskSecrets(url);
 }

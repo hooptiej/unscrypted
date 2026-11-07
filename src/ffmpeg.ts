@@ -7,6 +7,7 @@
 
 import { ChildProcessWithoutNullStreams, spawn } from "child_process";
 import { Logger } from "./logger";
+import { maskSecrets } from "./util";
 
 let cachedPath: string | null | undefined;
 
@@ -70,7 +71,7 @@ export function spawnFfmpeg(
   log: Logger,
   opts: { label: string; logStderr?: boolean } = { label: "ffmpeg" },
 ): SpawnedFfmpeg {
-  log.debug(`spawn ${opts.label}: ffmpeg ${args.join(" ")}`);
+  log.debug(maskSecrets(`spawn ${opts.label}: ffmpeg ${args.join(" ")}`));
   const proc = spawn(ffmpegPath, args) as ChildProcessWithoutNullStreams;
   let killed = false;
 
@@ -79,7 +80,7 @@ export function spawnFfmpeg(
     const text = chunk.toString();
     stderrTail = (stderrTail + text).slice(-4000);
     if (opts.logStderr) {
-      log.debug(`[${opts.label}] ${text.trimEnd()}`);
+      log.debug(maskSecrets(`[${opts.label}] ${text.trimEnd()}`));
     }
   });
 
@@ -93,7 +94,9 @@ export function spawnFfmpeg(
         log.debug(`[${opts.label}] exited (signal=${signal})`);
       } else if (code !== 0) {
         log.warn(
-          `[${opts.label}] ffmpeg exited with code ${code}. Last stderr:\n${stderrTail.trimEnd()}`,
+          maskSecrets(
+            `[${opts.label}] ffmpeg exited with code ${code}. Last stderr:\n${stderrTail.trimEnd()}`,
+          ),
         );
       } else {
         log.debug(`[${opts.label}] exited cleanly`);
@@ -113,7 +116,7 @@ export function spawnFfmpeg(
     }
   };
 
-  return { proc, done, kill, stderrTail: () => stderrTail };
+  return { proc, done, kill, stderrTail: () => maskSecrets(stderrTail) };
 }
 
 /** SRTP suite string ffmpeg expects for HomeKit. */
