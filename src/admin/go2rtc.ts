@@ -13,14 +13,39 @@ import { Logger } from "../logger";
 import { ResolvedConfig } from "../config";
 import { Supervisor, ChildStatus } from "./supervisor";
 import { buildGo2rtcYaml, Go2rtcPorts } from "./go2rtcConfig";
+import { maskSecrets } from "../util";
 
 export interface Go2rtcOptions { binary: string; runtimeDir: string; ports: Go2rtcPorts; log: Logger; onState?: (s: ChildStatus) => void }
 
-const URL_PASSWORD = /([a-z][a-z0-9+.-]*:\/\/[^:/@\s]+:)[^@\s]*@/gi;
-
 /** go2rtc sometimes logs a stream's source URL; keep camera passwords out of `docker logs`. */
-export function maskSecretsInLine(line: string): string {
-  return line.replace(URL_PASSWORD, "$1***@");
+export const maskSecretsInLine = maskSecrets;
+
+/**
+ * Line-buffer a child's output stream. A chunk can end mid-line (even mid-URL: "rtsp://us" then
+ * "er:pw@host"), so masking per chunk would miss the password. Feed this the raw chunk: it returns
+ * the COMPLETE lines so far and the partial last line to hold back until the next chunk (or flush).
+ */
+export function splitLines(tail: string, chunk: string): { lines: string[]; tail: string } {
+  const parts = (tail + chunk).split(/\r?\n/);
+  const rest = parts.pop() ?? "";
+  return { lines: parts.filter(Boolean), tail: rest };
+}
+
+/** Per-stream buffer around splitLines: push() chunks, flush() when the stream ends. Emits masked lines. */
+export function lineMasker(emit: (maskedLine: string) => void): { push: (chunk: Buffer | string) => void; flush: () => void } {
+  let tail = "";
+  return {
+    push(chunk) {
+      const r = splitLines(tail, chunk.toString());
+      tail = r.tail;
+      r.lines.forEach((l) => emit(maskSecrets(l)));
+    },
+    flush() {
+      const last = tail;
+      tail = "";
+      if (last) emit(maskSecrets(last));
+    },
+  };
 }
 
 const PRODUCER_ERR = /producer\.go:\d+ > error=("[^"]*"|\S+) url=(\S+)/;
@@ -49,9 +74,12 @@ export class Go2rtcManager {
       onState: o.onState,
       start: () => {
         const p = spawn(o.binary, ["-config", this.yamlPath], { stdio: ["ignore", "pipe", "pipe"] });
-        const pipe = (b: Buffer) => b.toString().split(/\r?\n/).filter(Boolean).forEach((l) => o.log.info(maskSecretsInLine(l)));
-        p.stdout?.on("data", pipe);
-        p.stderr?.on("data", pipe);
+        // One buffer per stream: a chunk boundary can fall inside a URL, so only whole lines are masked and logged.
+        for (const stream of [p.stdout, p.stderr]) {
+          const lm = lineMasker((l) => o.log.info(l));
+          stream?.on("data", lm.push);
+          stream?.on("end", lm.flush);
+        }
         return p;
       },
     });

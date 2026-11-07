@@ -16,7 +16,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import QRCode from "qrcode";
-import { BridgeStatus, ToAdmin, ToBridge } from "./ipc";
+import { BridgeStatus, ToAdmin } from "./ipc";
 import { UserError, toErrorJson } from "./errors";
 import { readRawConfig, redactConfig, applyCameraEdit, writeConfigAtomic, CameraEdit, removeCameraFromConfig, keepRemovedCamera, cameraLogins } from "./configStore";
 import { Config, ResolvedCamera, resolveConfig } from "../config";
@@ -101,6 +101,17 @@ function crossSite(req: http.IncomingMessage): string | null {
   }
   if (req.headers["sec-fetch-site"] === "cross-site") return "the browser marked it as coming from another site";
   return null;
+}
+
+/** decodeURIComponent for a route's name segment: a bad %-escape ("%zz") is the caller's 400, not a naked 500. */
+function decodeParam(raw: string, attempted: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch (err) {
+    if (!(err instanceof URIError)) throw err;
+    throw new UserError({ attempted, happened: "The camera name in the address has bad percent-encoding, so it couldn't be read.", changed: "Nothing.",
+      next: "Reload the page and try again." }, 400);
+  }
 }
 
 function resolvedCamera(raw: Config, name: string): ResolvedCamera | undefined {
@@ -473,7 +484,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
       // CSRF token and the Origin check like any write; the camera list above stays redacted.
       const credMatch = /^\/api\/cameras\/([^/]+)\/credentials$/.exec(url.pathname);
       if (credMatch && method === "POST") {
-        const name = decodeURIComponent(credMatch[1]);
+        const name = decodeParam(credMatch[1], "Show a camera's logins");
         attempted = `Show the logins for "${name}"`;
         const cam = readRawConfig(d.configPath).cameras.find((c) => c.name === name);
         if (!cam) {
@@ -487,7 +498,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
       const checkDel = /^\/api\/cameras\/check\/([^/]+)$/.exec(url.pathname);
       if (checkDel && method === "DELETE") {
         attempted = "Stop the feed-check preview";
-        const stream = decodeURIComponent(checkDel[1]);
+        const stream = decodeParam(checkDel[1], attempted);
         const t = tempStreams.get(stream);
         if (!t || !g2) return json(res, 200, { ok: true, message: "That preview had already been cleaned up." });
         clearTimeout(t);
@@ -540,7 +551,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
 
       const camMatch = /^\/api\/cameras\/([^/]+)$/.exec(url.pathname);
       if ((url.pathname === "/api/cameras" && method === "POST") || (camMatch && method === "PUT")) {
-        const original = camMatch ? decodeURIComponent(camMatch[1]) : null;
+        const original = camMatch ? decodeParam(camMatch[1], "Save a camera") : null;
         attempted = original ? `Save camera "${original}"` : "Add a camera";
         const edit = (await readJson(req, attempted)) as CameraEdit;
         if (!edit || typeof edit !== "object" || Array.isArray(edit)) {
@@ -577,7 +588,7 @@ export function createAdminServer(d: AdminDeps): http.Server {
       // #8: remove a camera. The body must repeat the name (the pane's warning box sends it), so a
       // stray DELETE can't take a camera out of Home by accident.
       if (camMatch && method === "DELETE") {
-        const name = decodeURIComponent(camMatch[1]);
+        const name = decodeParam(camMatch[1], "Remove a camera");
         attempted = `Remove camera "${name}"`;
         const body = (await readJson(req, attempted)) as { confirm?: unknown } | null;
         if (!body || body.confirm !== name) {

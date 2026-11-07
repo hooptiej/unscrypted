@@ -458,6 +458,23 @@ test("credentials: an unknown camera is a 404 in the four-part shape", async () 
   assert.match(e.happened, /Nope/);
 });
 
+test("a bad percent-escape in a camera name is a 400 in the four-part shape, not a 500 (#48)", async () => {
+  const s = await login();
+  const cases: Array<[string, string, unknown]> = [
+    ["POST", "/api/cameras/%zz/credentials", {}],
+    ["PUT", "/api/cameras/%zz", {}],
+    ["DELETE", "/api/cameras/%zz", { confirm: "x" }],
+    ["DELETE", "/api/cameras/check/%zz", {}],
+  ];
+  for (const [method, p, body] of cases) {
+    const r = await send(method, p, body, s);
+    assert.equal(r.status, 400, `${method} ${p}`);
+    const e = (await r.json()).error;
+    for (const k of ["attempted", "happened", "changed", "next"]) assert.ok(e[k].length > 0, `${method} ${p}: ${k}`);
+    assert.match(e.happened, /percent/i, `${method} ${p}`);
+  }
+});
+
 test("credentials: each reveal is logged by name, with no value in the log", async () => {
   const lines: string[] = [];
   const rec = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };

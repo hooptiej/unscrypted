@@ -13,7 +13,7 @@ import { UserError } from "./errors";
 export const SESSION_DAYS = 30;
 export const SESSION_KEY_BYTES = 32;
 
-function badKey(file: string, happened: string, next: string): UserError {
+function badKey(happened: string, next: string): UserError {
   return new UserError({
     attempted: "Load the admin pane's sign-in key",
     happened,
@@ -36,7 +36,7 @@ export function loadOrCreateSessionKey(file: string): { key: Buffer; created: bo
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code !== "ENOENT") {
-      throw badKey(file, `The sign-in key file couldn't be read (${e.code ?? e.message}).`, `Check its owner and permissions. ${fix}`);
+      throw badKey(`The sign-in key file couldn't be read (${e.code ?? e.message}).`, `Check its owner and permissions. ${fix}`);
     }
     const fresh = crypto.randomBytes(SESSION_KEY_BYTES);
     try {
@@ -45,13 +45,13 @@ export function loadOrCreateSessionKey(file: string): { key: Buffer; created: bo
     } catch (werr) {
       const w = werr as NodeJS.ErrnoException;
       if (w.code === "EEXIST") return loadOrCreateSessionKey(file);   // another start made it first
-      throw badKey(file, `There was no sign-in key yet, and a new one couldn't be saved at ${file} (${w.code ?? w.message}).`,
+      throw badKey(`There was no sign-in key yet, and a new one couldn't be saved at ${file} (${w.code ?? w.message}).`,
         "Make sure the container's /data folder is mounted and writable (./data in docker-compose.yml), then restart the container. Set UNSCRYPTED_ADMIN_KEY_FILE to use another path.");
     }
     return { key: fresh, created: true };
   }
   if (key.length !== SESSION_KEY_BYTES) {
-    throw badKey(file, `The sign-in key file at ${file} is ${key.length} bytes; it must be exactly ${SESSION_KEY_BYTES}.`, fix);
+    throw badKey(`The sign-in key file at ${file} is ${key.length} bytes; it must be exactly ${SESSION_KEY_BYTES}.`, fix);
   }
   return { key, created: false };
 }

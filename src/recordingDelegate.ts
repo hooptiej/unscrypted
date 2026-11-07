@@ -129,11 +129,13 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     try {
       const svc = this.controller?.recordingManagement?.operatingModeService;
       if (!svc) {
+        this.log.debug("isAudioActive: no operating-mode service yet; assuming audio is active");
         return true;
       }
       const value = svc.getCharacteristic(Characteristic.RecordingAudioActive).value;
       return value !== 0 && value !== false;
-    } catch {
+    } catch (err) {
+      this.log.debug(`isAudioActive: couldn't read RecordingAudioActive (${(err as Error).message}); assuming audio is active`);
       return true;
     }
   }

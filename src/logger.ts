@@ -12,11 +12,30 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 40,
 };
 
-let currentLevel: LogLevel =
-  (process.env.UNSCRYPTED_LOG_LEVEL as LogLevel | undefined) ?? "info";
+/**
+ * Turn a raw level (env var, config value) into a LogLevel. Unset/empty gives "info" quietly;
+ * an unknown value (say "verbose") also gives "info" but warns once, naming the bad value, so a
+ * typo can't silently turn logging off or on.
+ */
+export function parseLogLevel(v: unknown): LogLevel {
+  if (v === undefined || v === null || v === "") {
+    return "info";
+  }
+  const s = String(v).trim().toLowerCase();
+  if (s in LEVEL_ORDER) {
+    return s as LogLevel;
+  }
+  console.error(
+    `[${ts()}] [WARN] [unscrypted:logger] unknown log level "${String(v)}"; using "info". ` +
+      `Valid levels: ${Object.keys(LEVEL_ORDER).join(", ")}.`,
+  );
+  return "info";
+}
+
+let currentLevel: LogLevel = parseLogLevel(process.env.UNSCRYPTED_LOG_LEVEL);
 
 export function setLogLevel(level: LogLevel): void {
-  currentLevel = level;
+  currentLevel = parseLogLevel(level);
 }
 
 function ts(): string {

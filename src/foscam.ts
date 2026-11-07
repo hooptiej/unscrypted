@@ -34,7 +34,6 @@ export class FoscamClient {
 
   constructor(
     private readonly opts: FoscamClientOptions,
-    private readonly log: Logger,
   ) {
     this.timeoutMs = opts.timeoutMs ?? 5000;
   }
