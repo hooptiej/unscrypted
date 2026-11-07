@@ -515,6 +515,7 @@ function render(data) {
   $("idle").value = s.idleSeconds;
   $("reload").value = s.reloadMinutes;
   $("poll").value = s.pollSeconds;
+  $("grace").value = s.offlineGraceSeconds;
   const glow = s.glow || { intensity: 0, size: 0 };
   for (const [id, key] of GLOW_KNOBS) { $(id).value = glow[key] ?? 0; showKnob(id); }
   const pulse = s.pulse || { speed: 0, strength: 0 };
@@ -540,7 +541,7 @@ function payload() {
     })),
     photos: { source: $("phSource").value, icloudUrl: $("phUrl").value, folder: $("phFolder").value, rotateSeconds: $("phSecs").value, caption: $("phCap").value },
     weather: wx,
-    idleSeconds: $("idle").value, reloadMinutes: $("reload").value, pollSeconds: $("poll").value,
+    idleSeconds: $("idle").value, reloadMinutes: $("reload").value, pollSeconds: $("poll").value, offlineGraceSeconds: $("grace").value,
     glow: { intensity: $("glowIntensity").value, size: $("glowSize").value },
     pulse: { speed: $("pulseSpeed").value, strength: $("pulseStrength").value },
     // #109: the whole edited status-light tree (it carries each light's build page and link)

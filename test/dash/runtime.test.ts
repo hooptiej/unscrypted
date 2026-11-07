@@ -18,14 +18,14 @@ function closedPort(): Promise<number> {
   });
 }
 
-function runtime(services = DEFAULTS.services) {
+function runtime(services = DEFAULTS.services, now?: () => number) {
   const dir = tempDir("unscr-dashrt-");
   saveSettings(path.join(dir, "settings.json"), { ...DEFAULTS, services, cameras: [
     { camera: "DogCamTest", label: "DogCam", shown: true, stream: "main" },
     { camera: "GarageCamTest", label: "Garagecam", shown: true, stream: "sub" },
     { camera: "Couch Cam", label: "Couch", shown: false, stream: "main" },
   ] });
-  return new DashRuntime({ dir, title: "Homedash - TEST", env: "test", adminPort: 8191, log });
+  return new DashRuntime({ dir, title: "Homedash - TEST", env: "test", adminPort: 8191, log, now });
 }
 
 test("config says which stream each tile actually plays, for the 'live · main/sub' tag (#22)", () => {
@@ -44,29 +44,33 @@ test("config says which stream each tile actually plays, for the 'live · main/s
   assert.deepEqual((rt.publicConfig() as any).cameras.map((c: any) => [c.which, c.stream]), [["main", "garagecamtest"]]);
 });
 
-test("probes shown cameras: up, and down with a plain reason but no address", async () => {
+test("probes cameras: up, and down (after the grace, #113) with a plain reason but no address", async () => {
   const live = net.createServer((s) => s.destroy());
   await new Promise<void>((r) => live.listen(0, "127.0.0.1", () => r()));
   const upPort = (live.address() as net.AddressInfo).port;
   const downPort = await closedPort();
   try {
-    const rt = runtime();
+    let clock = 1_000_000;
+    const rt = runtime(DEFAULTS.services, () => clock);
     rt.cameras = [
       { name: "DogCamTest", main: "dogcamtest", sub: null, probe: { host: "127.0.0.1", port: upPort } },
       { name: "GarageCamTest", main: "garagecamtest", sub: "garagecamtest_sub", probe: { host: "127.0.0.1", port: downPort } },
       { name: "Couch Cam", main: "couch_cam", sub: null, probe: null },
     ];
     await rt.probeCameras();
+    assert.equal((rt.state() as any).cameras.garagecamtest, undefined, "a camera that has never answered is 'checking', not offline, on the first miss");
+    clock += 25_000;   // past the 20 s grace
+    await rt.probeCameras();
     const st = rt.state() as any;
     assert.deepEqual({ up: st.cameras.dogcamtest.up, reason: st.cameras.dogcamtest.reason }, { up: true, reason: null });
     assert.equal(st.cameras.garagecamtest.up, false);
     assert.match(st.cameras.garagecamtest.reason, /not answering at its RTSP port \(connection refused/);
-    assert.equal(typeof st.cameras.garagecamtest.since, "number");
-    assert.equal(st.cameras.couch_cam, undefined, "a hidden camera isn't probed");
+    assert.equal(st.cameras.garagecamtest.since, 1_000_000, "'since' is when it first stopped answering, not when the grace ran out");
+    assert.equal(st.cameras.couch_cam, undefined, "a camera switched off here isn't in the open API");
 
     // since only moves when up/down flips
     const since = st.cameras.garagecamtest.since;
-    await new Promise((r) => setTimeout(r, 5));
+    clock += 5_000;
     await rt.probeCameras();
     assert.equal((rt.state() as any).cameras.garagecamtest.since, since);
 
@@ -83,8 +87,11 @@ test("probes shown cameras: up, and down with a plain reason but no address", as
 });
 
 test("a camera whose address can't be read says so", async () => {
-  const rt = runtime();
+  let clock = 1_000_000;
+  const rt = runtime(DEFAULTS.services, () => clock);
   rt.cameras = [{ name: "DogCamTest", main: "dogcamtest", sub: null, probe: null }];
+  await rt.probeCameras();
+  clock += 25_000;
   await rt.probeCameras();
   assert.match((rt.state() as any).cameras.dogcamtest.reason, /address in config\.json can't be read/);
 });

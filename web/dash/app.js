@@ -73,20 +73,26 @@ function makeStream(cam) {
   return el;
 }
 
-/* tiles: no blank tile ever; a dark tile always says why */
+/* tiles: no blank tile ever; a dark tile always says why. A tile that has shown a picture keeps its
+   last decoded frame (#113): through a blip you see nothing but that frame, and when the camera has
+   really been gone a while the banner goes over the dimmed frame, never a black box. */
 const NO_PICTURE_MS = 15000, RECREATE_MS = 60000;
+const graceMs = (cfg.offlineGraceSeconds || 20) * 1000;
+const HELD_W = 960, PERSIST_MS = 30000;
 const tiles = {};
 for (const cam of cfg.cameras) {
   const tile = document.createElement("div");
   tile.className = "cam is-off";
   tile.tabIndex = 0;
   tile.setAttribute("role", "button");
-  tile.innerHTML = `<div class="off">Checking the camera&hellip;</div><span class="s">checking&hellip;</span><span class="n"></span>`;
+  tile.innerHTML = `<div class="off">Checking the camera&hellip;</div><span class="s">checking&hellip;</span><span class="n"></span><canvas class="held gone" aria-hidden="true"></canvas>`;
   tile.querySelector(".n").textContent = cam.label;
   tile.addEventListener("click", () => openFull(cam));
   tile.addEventListener("keydown", (e) => { if (e.key === "Enter") openFull(cam); });
   $("cams").appendChild(tile);
-  tiles[cam.id] = { tile, cam, el: null, made: 0, playing: false, camSt: null };
+  tiles[cam.id] = { tile, cam, el: null, made: 0, playing: false, everPlayed: false, lastPlayingAt: 0, lastTime: -1,
+    camSt: null, canvas: tile.querySelector(".held"), frame: null, dirty: false, persistedAt: 0, trouble: null, view: null };
+  restoreFrame(tiles[cam.id]);
 }
 if (!cfg.cameras.length) {
   const empty = document.createElement("div");
@@ -103,49 +109,142 @@ function startStream(t) {
   if (t.el) t.el.remove();
   t.el = makeStream(t.cam);
   t.made = Date.now();
-  t.playing = false;
+  t.playing = false; t.everPlayed = false; t.lastTime = -1;
   t.tile.prepend(t.el);
 }
 function stopStream(t) {
   if (t.el) { t.el.remove(); t.el = null; }
-  t.playing = false;
+  t.playing = false; t.everPlayed = false; t.lastTime = -1;
 }
 const videoOf = (el) => (el ? el.querySelector("video") : null);
 
 const liveLabel = (cam) => `live · ${cam.which === "sub" ? "sub" : "main"}`;
 
-function render(t) {
-  const st = t.camSt;
-  // "live · main" / "live · sub" (#22): on a small tile 1080p and 360p look alike, so say which.
-  let why = null, badge = liveLabel(t.cam);
-  if (!st) {
-    why = "Checking the camera…"; badge = "checking…";
-  } else if (!st.up) {
-    stopStream(t);
-    why = `${st.reason || "Camera not answering"} since ${clockTime(st.since)}.`;
-    badge = "offline";
-  } else {
-    if (!t.el) startStream(t);
-    const v = videoOf(t.el);
-    if (v && v.readyState >= 2) t.playing = true;
-    if (!playerReady) {
-      why = "The camera player didn't load; the page retries in a minute."; badge = "no player";
-    } else if (go2rtc && go2rtc.state !== "running" && go2rtc.state !== "unknown") {
-      // Keep the stream element: go2rtc's player reconnects on its own when the server is back.
-      why = `Video server restarting: ${go2rtc.lastError || go2rtc.state}.`; badge = "reconnecting…";
-    } else if (!t.playing && Date.now() - t.made > NO_PICTURE_MS) {
-      why = "Video didn't start: no picture from the camera within 15 s. Retrying."; badge = "no picture";
-      if (Date.now() - t.made > RECREATE_MS) startStream(t);   // once a minute until a frame arrives
-    }
+/* "9:37 AM" today, "Tue 9:37 AM" on another day (a kept picture can be days old after a reload) */
+function whenOf(ms, nowMs) {
+  const d = new Date(ms), n = new Date(nowMs);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === n.toDateString() ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+/* What one tile shows (#113). Pure: everything it needs comes in as `i`, so a test can run it.
+   i.st: the server's verdict (null = not known yet; else {up, reason, since}); the server has already
+   waited out its grace before it says up:false. i.playing: a live frame is advancing right now.
+   i.prev: the {kind, since} this returned last time, so a trouble's age survives between calls.
+   Returns { stream: "start"|"stop"|"keep", why, badge, held: "none"|"plain"|"dim", trouble, recreate }.
+   `held` = show the kept frame (plain = no banner, a blip; dim = under a banner). */
+function tileView(i) {
+  const label = `live · ${i.which === "sub" ? "sub" : "main"}`;
+  const kept = i.hasFrame ? ` Showing the last picture, from ${i.whenOf(i.frameAt, i.now)}.` : "";
+  if (!i.st) {
+    // Nothing known yet. A kept frame is better than words; the badge still says we're checking.
+    return { stream: "keep", why: i.hasFrame ? null : "Checking the camera…", badge: "checking…", held: i.hasFrame && !i.playing ? "plain" : "none", trouble: null, recreate: false };
   }
+  if (!i.st.up) {
+    // Offline past the grace: the banner goes over the dimmed last picture, "since" being when it stopped answering.
+    return { stream: "stop", why: `${i.st.reason || "Camera not answering"} since ${i.clock(i.st.since)}.${kept}`, badge: "offline",
+      held: i.hasFrame ? "dim" : "none", trouble: null, recreate: false };
+  }
+  // Up as far as the server knows. What can still be wrong is on this side of the wire.
+  let kind = null, onset = null;
+  if (!i.playerReady) kind = "player";
+  else if (i.go2rtc && i.go2rtc.state !== "running" && i.go2rtc.state !== "unknown") kind = "server";
+  else if (!i.everPlayed) { kind = "nopicture"; onset = i.madeAt; }
+  else if (!i.playing) { kind = "stalled"; onset = i.lastPlayingAt; }
+  if (kind && onset === null) onset = i.prev && i.prev.kind === kind ? i.prev.since : i.now;
+  const trouble = kind ? { kind, since: onset } : null;
+  const aged = kind ? i.now - onset : 0;
+  const held = i.hasFrame && !i.playing ? "plain" : "none";
+  if (!kind || aged < i.graceMs) return { stream: "start", why: null, badge: label, held, trouble, recreate: false };   // fine, or a blip: nothing but the kept frame
+  const secs = Math.round(aged / 1000);
+  const says = {
+    player: ["The camera player didn't load; the page retries in a minute.", "no player"],
+    // Keep the stream element: go2rtc's player reconnects on its own when the server is back.
+    server: [`Video server restarting: ${i.go2rtc && (i.go2rtc.lastError || i.go2rtc.state)}.`, "reconnecting…"],
+    nopicture: [`Video didn't start: no picture from the camera within ${secs} s. Retrying.`, "no picture"],
+    stalled: [`Video stopped: no new picture for ${secs} s. Reconnecting.`, "reconnecting…"],
+  }[kind];
+  return { stream: "start", why: says[0] + kept, badge: says[1], held: i.hasFrame ? "dim" : "none", trouble,
+    recreate: (kind === "nopicture" || kind === "stalled") && aged > i.recreateMs };   // once a minute until a frame arrives
+}
+
+/* the kept frame: copied from the playing video, remembered in this browser across reloads */
+function captureFrame(t, v) {
+  const w = v.videoWidth, h = v.videoHeight;
+  if (!w || !h) return;
+  const cw = Math.min(HELD_W, w), ch = Math.max(1, Math.round((h * cw) / w));
+  if (t.canvas.width !== cw || t.canvas.height !== ch) { t.canvas.width = cw; t.canvas.height = ch; }
+  try {
+    t.canvas.getContext("2d").drawImage(v, 0, 0, cw, ch);
+    t.frame = { at: Date.now() };
+    t.dirty = true;
+  } catch (err) {
+    setNotice(`frame-${t.cam.id}`, `Couldn't keep the last picture of ${t.cam.label} (${err.message}). Its tile will go dark if the camera drops.`);
+  }
+}
+const frameKey = (t) => `unscrypted.dash.frame.${t.cam.id}`;
+function persistFrame(t) {
+  if (!t.frame || !t.dirty) return;
+  try {
+    localStorage.setItem(frameKey(t), JSON.stringify({ at: t.frame.at, data: t.canvas.toDataURL("image/jpeg", 0.7) }));
+    t.dirty = false;
+    t.persistedAt = Date.now();
+    setNotice(`save-${t.cam.id}`, null);
+  } catch (err) {
+    t.dirty = false;   // say it once, not every 30 s
+    t.persistedAt = Date.now();
+    setNotice(`save-${t.cam.id}`, `Couldn't save the last picture of ${t.cam.label} in this browser (${err.message}). It's still kept while this page stays open, but a page reload would lose it.`);
+  }
+}
+function restoreFrame(t) {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(frameKey(t)) || "null"); } catch { saved = null; }
+  if (!saved || typeof saved.data !== "string" || !saved.data.startsWith("data:image/jpeg;base64,") || typeof saved.at !== "number") return;
+  const img = new Image();
+  img.onload = () => {
+    if (t.frame) return;   // a live frame beat it
+    t.canvas.width = img.naturalWidth; t.canvas.height = img.naturalHeight;
+    t.canvas.getContext("2d").drawImage(img, 0, 0);
+    t.frame = { at: saved.at };
+    render(t);
+  };
+  img.onerror = () => setNotice(`restore-${t.cam.id}`, `The saved last picture of ${t.cam.label} couldn't be read, so it starts without one.`);
+  img.src = saved.data;
+}
+
+function render(t) {
+  const now = Date.now();
+  // Is a live frame advancing? currentTime moving is the proof; a frozen or blanked video isn't.
+  const v = videoOf(t.el);
+  const time = v && v.readyState >= 2 ? v.currentTime : -1;
+  t.playing = time >= 0 && time !== t.lastTime;
+  t.lastTime = time;
+  if (t.playing) {
+    t.everPlayed = true; t.lastPlayingAt = now;
+    captureFrame(t, v);
+    if (now - t.persistedAt > PERSIST_MS) persistFrame(t);
+  }
+  const view = tileView({ st: t.camSt, playerReady, go2rtc, playing: t.playing, everPlayed: t.everPlayed, madeAt: t.el ? t.made : now, lastPlayingAt: t.lastPlayingAt || now,
+    hasFrame: Boolean(t.frame), frameAt: t.frame ? t.frame.at : 0, which: t.cam.which, now, graceMs, recreateMs: RECREATE_MS,
+    prev: t.trouble, clock: clockTime, whenOf });
+  t.trouble = view.trouble;
+  t.view = view;
+  if (view.stream === "stop") stopStream(t);
+  else if (view.stream === "start" && (!t.el || view.recreate)) startStream(t);
+  const why = view.why;
+  // "live · main" / "live · sub" (#22): on a small tile 1080p and 360p look alike, so say which.
   t.tile.classList.toggle("is-off", why !== null);
-  t.tile.querySelector(".s").textContent = badge;
+  t.tile.querySelector(".s").textContent = view.badge;
   const off = t.tile.querySelector(".off");
   if (why !== null) off.textContent = why;
   off.classList.toggle("gone", why === null);
+  off.classList.toggle("over", view.held === "dim");   // translucent over the dimmed frame; solid when there's no frame to show
+  t.canvas.classList.toggle("gone", view.held === "none");
+  t.canvas.classList.toggle("dim", view.held === "dim");
 }
-const renderAll = () => Object.values(tiles).forEach(render);
-setInterval(renderAll, 2000);   // the no-picture watchdog
+const renderAll = () => { Object.values(tiles).forEach(render); renderFullHeld(); };
+setInterval(renderAll, 1000);   // the frame-advancing check and the no-picture watchdog
+addEventListener("pagehide", () => Object.values(tiles).forEach(persistFrame));
 
 /* which lights' full reasons are open, so a re-render (a changed poll) keeps them open */
 const openReasons = {};
@@ -425,7 +524,7 @@ pollState();
 setInterval(pollState, pollMs);
 
 /* fullscreen with idle return */
-let left = 0, timer = null, fullEl = null;
+let left = 0, timer = null, fullEl = null, fullHeld = null, fullTile = null, fullLastTime = -1;
 const TOTAL = cfg.idleSeconds || 30;
 function paint() {
   $("fbar").style.width = Math.round((left / TOTAL) * 100) + "%";
@@ -435,6 +534,9 @@ function closeFull() {
   clearInterval(timer);
   timer = null;
   if (fullEl) { fullEl.remove(); fullEl = null; }
+  if (fullHeld) { fullHeld.remove(); fullHeld = null; }
+  fullTile = null;
+  $("fnote").classList.add("gone");
   $("full").classList.add("gone");
   if (reloadWhenClosed) location.reload();
 }
@@ -446,6 +548,13 @@ function openFull(cam) {
     fullEl = makeStream(cam);
     $("fullv").prepend(fullEl);
   }
+  // The tile's kept picture (#113) shows here too while this view has no live picture of its own.
+  fullTile = tiles[cam.id] || null;
+  fullLastTime = -1;
+  fullHeld = document.createElement("canvas");
+  fullHeld.className = "held gone";
+  fullHeld.setAttribute("aria-hidden", "true");
+  $("fullv").append(fullHeld);
   left = TOTAL;
   paint();
   $("full").classList.remove("gone");
@@ -453,6 +562,27 @@ function openFull(cam) {
     left -= 1;
     if (left <= 0) closeFull(); else paint();
   }, 1000);
+}
+/* The fullscreen view's kept picture and its reason (#113): while its own video isn't advancing, show the tile's last frame and say why. */
+function renderFullHeld() {
+  if (!fullEl || !fullHeld || !fullTile) return;
+  const v = videoOf(fullEl);
+  const time = v && v.readyState >= 2 ? v.currentTime : -1;
+  const playing = time >= 0 && time !== fullLastTime;
+  fullLastTime = time;
+  const t = fullTile;
+  const show = !playing && Boolean(t.frame) && t.canvas.width > 0;
+  if (show) {
+    if (fullHeld.width !== t.canvas.width || fullHeld.height !== t.canvas.height) { fullHeld.width = t.canvas.width; fullHeld.height = t.canvas.height; }
+    fullHeld.getContext("2d").drawImage(t.canvas, 0, 0);
+  }
+  const dim = show && t.view && t.view.held === "dim";
+  fullHeld.classList.toggle("gone", !show);
+  fullHeld.classList.toggle("dim", Boolean(dim));
+  const note = $("fnote");
+  const text = !playing && t.view && t.view.why ? t.view.why : "";
+  note.textContent = text;
+  note.classList.toggle("gone", !text);
 }
 $("full").addEventListener("click", () => { left = TOTAL; paint(); });
 $("fback").addEventListener("click", (e) => { e.stopPropagation(); closeFull(); });

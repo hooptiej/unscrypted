@@ -11,6 +11,27 @@ export interface DashCamera { name: string; main: string; sub: string | null; pr
 export interface DashBridgeInfo { hapEnabled: boolean; paired: boolean; go2rtc: { state: string; lastError: string | null; nextRetryAt: number | null } }
 export type ToDash = { type: "cameras"; cameras: DashCamera[] } | { type: "bridge"; bridge: DashBridgeInfo };
 
+/**
+ * Dash child -> bridge: which cameras have been offline for the whole grace (#113), by camera name, sent after every
+ * reachability round (an empty list is the all-clear and also says the dashboard is alive). The bridge turns this into
+ * HomeKit's StatusFault. No addresses: a reason is plain words.
+ */
+export type FromDash = { type: "camera-reach"; offline: Record<string, { since: number; reason: string }> };
+
+/** Shape-check the camera-reach message. Returns a reason string when it's malformed, else null. */
+export function checkCameraReach(m: unknown): { offline: Record<string, { since: number; reason: string }> } | string {
+  const o = m as { type?: unknown; offline?: unknown } | null;
+  if (!o || o.type !== "camera-reach") return "not a camera-reach message";
+  if (!o.offline || typeof o.offline !== "object" || Array.isArray(o.offline)) return "camera-reach has no offline list";
+  const out: Record<string, { since: number; reason: string }> = {};
+  for (const [name, v] of Object.entries(o.offline as Record<string, unknown>)) {
+    const e = v as { since?: unknown; reason?: unknown } | null;
+    if (!e || typeof e.since !== "number" || !Number.isFinite(e.since) || typeof e.reason !== "string") return `camera-reach entry for "${name}" is malformed`;
+    out[name] = { since: e.since, reason: e.reason };
+  }
+  return { offline: out };
+}
+
 function probeOf(url: string): DashCamera["probe"] {
   try {
     const u = new URL(url);

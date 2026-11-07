@@ -14,8 +14,11 @@ import { listFonts, fontOut } from "./fonts";
 import { Weather, FetchJson, defaultFetchJson, resolveLocation, fetchWeather } from "./weather";
 import { PulseStore, BuildWatch, PulseApi, makePulseApi, viewOf } from "./pulse";
 import { BUILD_STRING } from "../version";
+import { CamGrace } from "./camGrace";
 
 export interface CamState { up: boolean; reason: string | null; since: number }
+/** The cameras that have been offline for the whole grace, by camera name: what the bridge turns into Home's fault flag (#113). */
+export type CamReach = Record<string, { since: number; reason: string }>;
 
 /** Where the token for the token switch lives (a secrets file, read on every call), unless the environment moves it. */
 export const PULSE_TOKEN_FILE_DEFAULT = "/run/secrets/dash_pulse_token";
@@ -26,6 +29,9 @@ export interface DashRuntimeOptions {
   adminUrl?: string | null; adminUrlError?: string | null;
   /** The new-build switch's token file (UNSCRYPTED_DASH_PULSE_TOKEN_FILE). Default /run/secrets/dash_pulse_token. */
   pulseTokenFile?: string;
+  /** Tests: how a camera's RTSP port is checked (null = answering, else the plain reason) and what time it is. */
+  probe?: (host: string, port: number) => Promise<string | null>;
+  now?: () => number;
 }
 
 export class DashRuntime {
@@ -37,8 +43,11 @@ export class DashRuntime {
   settingsWarning: string | null;
   settingsMtime: number;
   readonly settingsFile: string;
-  /** Per tile (keyed by the camera's main stream name): can we reach its RTSP port? */
+  /** Per camera (keyed by its main stream name): can we reach its RTSP port? Only after the grace says it can't (#113). */
   private camState = new Map<string, CamState>();
+  /** Camera name -> since/why, for the cameras offline past the grace (the bridge shows these to Home as a fault, #113). */
+  private reach: CamReach = {};
+  private readonly grace = new CamGrace(() => this.settings.offlineGraceSeconds * 1000);
   /** The service-light tree from the last status round, and when it finished (null = not yet). */
   services: LightNode[] = [];
   servicesAt: number | null = null;
@@ -102,19 +111,33 @@ export class DashRuntime {
       });
   }
 
-  /** TCP-probe every shown camera's RTSP port. Never throws; a reason never names an address. */
+  /**
+   * TCP-probe every camera's RTSP port (the shown ones for the wall, and the rest so Home's fault flag
+   * covers every camera). Never throws; a reason never names an address. A missed check is only a blip
+   * until the camera has been unanswered for the whole grace (#113): the tile's state changes then, not before.
+   */
   async probeCameras(): Promise<void> {
-    const shown = this.shown();
-    await Promise.all(shown.map(async ({ cam }) => {
-      const why = cam.probe ? await tcpProbe(cam.probe.host, cam.probe.port) : "the camera's address in config.json can't be read";
-      const up = why === null;
-      const prev = this.camState.get(cam.main);
-      this.camState.set(cam.main, { up, reason: up ? null : cam.probe ? `Camera not answering at its RTSP port (${why})` : `Camera can't be checked: ${why}`,
-        since: prev && prev.up === up ? prev.since : Date.now() });
+    const probe = this.o.probe ?? tcpProbe;
+    const now = this.o.now ?? Date.now;
+    const verdicts = await Promise.all(this.cameras.map(async (cam) => {
+      const why = cam.probe ? await probe(cam.probe.host, cam.probe.port) : "the camera's address in config.json can't be read";
+      const reason = why === null ? null : cam.probe ? `Camera not answering at its RTSP port (${why})` : `Camera can't be checked: ${why}`;
+      return [cam, this.grace.observe(cam.main, reason, now())] as const;
     }));
-    const keep = new Set(shown.map((x) => x.cam.main));
-    for (const k of [...this.camState.keys()]) if (!keep.has(k)) this.camState.delete(k);
+    const next = new Map<string, CamState>();
+    const reach: CamReach = {};
+    for (const [cam, v] of verdicts) {
+      if (v.state === "checking") continue;   // nothing known yet: the tile keeps saying "checking"
+      next.set(cam.main, { up: v.state === "up", reason: v.reason, since: v.since });
+      if (v.state === "down") reach[cam.name] = { since: v.since, reason: v.reason ?? "the camera isn't answering" };
+    }
+    this.camState = next;
+    this.reach = reach;
+    this.grace.keepOnly(new Set(this.cameras.map((c) => c.main)));
   }
+
+  /** The cameras offline past the grace, by camera name. Sent to the bridge after every round (#113). */
+  reachReport(): CamReach { return { ...this.reach }; }
 
   /** One round of service checks. Never throws (every check turns its failure into a reason). */
   async pollServices(): Promise<void> {
@@ -182,7 +205,7 @@ export class DashRuntime {
       title: this.o.title, env: this.o.env, adminPort: this.o.adminPort, build: BUILD_STRING,
       // The kiosk's Settings button. null = the page works it out (this host, the admin port).
       settingsUrl: this.o.adminUrl ? `${this.o.adminUrl}/dash-settings?from=dash` : null,
-      idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes,
+      idleSeconds: s.idleSeconds, pollSeconds: s.pollSeconds, reloadMinutes: s.reloadMinutes, offlineGraceSeconds: s.offlineGraceSeconds,
       cameras: this.shown().map((x) => ({ id: x.cam.main, label: x.label, stream: x.stream, which: x.which })),
       fonts: { ui: f.ui, clock: f.clock },
       glow: { intensity: s.glow.intensity, size: s.glow.size },
@@ -191,8 +214,11 @@ export class DashRuntime {
   }
 
   state(): Record<string, unknown> {
+    // Only the cameras on the wall: the open API doesn't list the ones switched off here.
+    const shown = new Set(this.shown().map((x) => x.cam.main));
     return { updated: Date.now(), settingsVersion: this.settingsMtime, settingsWarning: this.settingsWarning,
-      bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null, cameras: Object.fromEntries(this.camState),
+      bridgeKnown: this.bridge !== null, go2rtc: this.bridge?.go2rtc ?? null,
+      cameras: Object.fromEntries([...this.camState].filter(([k]) => shown.has(k))),
       services: this.services, servicesAt: this.servicesAt,
       weather: this.weather, weatherError: this.weatherError, weatherErrorSince: this.weatherErrorSince,
       notices: [...(this.o.adminUrlError ? [this.o.adminUrlError] : []), ...(this.pulse.warning ? [this.pulse.warning] : []), ...this.fonts().notices] };

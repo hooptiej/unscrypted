@@ -31,6 +31,7 @@ import { directPicker, FeedFailure, FeedPicker, FeedVia, SourceSelector } from "
 import { FoscamClient, MotionPoller } from "./foscam";
 import { OnvifClient, OnvifMotionSource } from "./onvif";
 import { redactUrl } from "./util";
+import { CameraFault, Offline } from "./homekitFault";
 
 /** A pluggable motion source: anything with a start/stop lifecycle. */
 interface MotionSource {
@@ -68,6 +69,8 @@ export class UnscryptedCamera {
   private readonly prebuffer?: Prebuffer;
   private motionSource?: MotionSource;
   private controller!: CameraController;
+  /** Home's fault flag for this camera being offline (#113). */
+  private readonly fault: CameraFault;
   private readonly log: Logger;
   private started = false;
   private motionActive = false;
@@ -186,6 +189,7 @@ export class UnscryptedCamera {
     }
 
     this.accessory.configureController(this.controller);
+    this.fault = new CameraFault(this.controller.motionService, camera.name, log);
 
     const motionKind = camera.foscam ? "foscam-cgi" : camera.onvif ? "onvif" : "none";
     log.info(
@@ -295,6 +299,14 @@ export class UnscryptedCamera {
     return this.camera.name;
   }
 
+  /**
+   * The dashboard's camera checks say this camera has been offline for the whole grace (since/why), or
+   * that it's answering (null). Sets or clears Home's StatusFault (#113). Idempotent.
+   */
+  setOffline(offline: Offline | null): void {
+    this.fault.set(offline);
+  }
+
   get resolved(): ResolvedCamera {
     return this.camera;
   }
@@ -308,6 +320,8 @@ export class UnscryptedCamera {
     lastMotionAt: number | null;
     prebuffer: PrebufferStatus | null;
     via: FeedVia | null;
+    /** Offline past the grace (Home shows a fault), or null (#113). */
+    offline: Offline | null;
   } {
     return {
       hksv: this.camera.hksv,
@@ -318,6 +332,7 @@ export class UnscryptedCamera {
       lastMotionAt: this.lastMotionAt,
       prebuffer: this.prebuffer?.status() ?? null,
       via: this.pick("main")?.via ?? null,
+      offline: this.fault.current(),
     };
   }
 

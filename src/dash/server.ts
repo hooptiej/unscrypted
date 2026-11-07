@@ -25,6 +25,8 @@ export interface PublicConfig {
   /** The running build stamp (#102), e.g. "unscrypted 0.1.16 - build 5a020c9 (2026-11-07)". */
   build: string;
   idleSeconds: number; pollSeconds: number; reloadMinutes: number;
+  /** How long a tile may trouble-shoot quietly (holding its last picture) before it shows a banner, in seconds (#113). */
+  offlineGraceSeconds?: number;
   /** `which`: the stream the tile actually plays (a "sub" pick on a camera with no sub plays main). */
   cameras: { id: string; label: string; stream: string; which: "main" | "sub" }[];
   fonts: { ui: unknown; clock: unknown };
