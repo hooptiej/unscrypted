@@ -1,55 +1,70 @@
 # unscrypted — docker compose deployment (e.g. on the TrueNAS Docker host).
 #
-# HomeKit discovery relies on mDNS/Bonjour, which does not cross Docker's bridge
-# network — so host networking is REQUIRED. The container shares the host's
-# network stack; config.bridge.port is the TCP port the HAP server listens on.
+# HomeKit discovery relies on mDNS/Bonjour, which does not cross Docker's bridge network — so host
+# networking is REQUIRED. The container shares the host's network stack.
 #
-# Bring up:   docker compose up -d --build
-# Logs / pairing code:   docker compose logs -f
-# Redeploy: copy the new files in, then docker compose up -d --build
-# Admin pane: http://<host>:8190 (password in ./secrets/admin_password).
-# Dashboard: http://<host>:8180 (watch-only, no sign-in).
+# Per-install settings come from `.env` next to this file (copy `.env.example`). Nothing here is
+# specific to one host, network or house: the install's version, bind addresses and dashboard URL
+# all come from `.env`, so this file is byte-for-byte the same on every install.
+#
+#   cp .env.example .env            # set UNSCRYPTED_VERSION (and any install-specific values)
+#   docker compose up -d --build
+#   docker compose logs -f          # logs / HomeKit pairing code
+# Admin pane:  http://<host>:8190 (or UNSCRYPTED_ADMIN_PORT); password in ./secrets/admin_password.
+# Dashboard:   http://<host>:8180 (or UNSCRYPTED_DASH_PORT); watch-only, no sign-in.
+#
+# A second instance on the same host (the test install) adds docker-compose.test.yml through
+# COMPOSE_FILE in its own folder's `.env`; see docker-compose.test.yml.
 
 services:
   unscrypted:
     build:
       context: .
       dockerfile: Dockerfile
-    image: unscrypted:0.1.9
+    # The version has no default on purpose: compose refuses to start until `.env` names a release,
+    # so nobody runs an unknown build. Images are never tagged `latest`.
+    image: "unscrypted:${UNSCRYPTED_VERSION:?set UNSCRYPTED_VERSION to a release (e.g. 0.1.15) in .env}"
     container_name: unscrypted
     restart: unless-stopped
     # REQUIRED for HomeKit mDNS discovery. Linux host only.
     network_mode: host
     volumes:
-      # Config folder: ./config/config.json holds camera passwords (gitignored, never commit it).
-      # A folder, not a single file, so it can be saved atomically later (admin pane, #2).
+      # ./config/config.json holds camera passwords (gitignored, never committed). A folder, not a
+      # single file, so it can be saved atomically later (admin pane, #2).
       - ./config:/config
-      # HAP pairing state lives in ./data/persist. NEVER delete ./data: losing it means
-      # re-adding every camera in the Home app.
+      # HAP pairing state lives in ./data/persist. NEVER delete ./data: losing it means re-adding
+      # every camera in the Home app.
       - ./data:/data
-      # Admin pane password: one line in ./secrets/admin_password (gitignored, mode 600).
-      # The folder is mounted, not the file, so a missing file is a clear "no password" message
-      # in the pane instead of Docker quietly creating a folder named admin_password.
+      # Admin pane password: one line in ./secrets/admin_password (gitignored, mode 600). The folder
+      # is mounted, not the file, so a missing file is a clear "no password" message in the pane.
       - ./secrets:/run/secrets:ro
     environment:
+      # --- structural: the same on every install --------------------------------------------------
       - UNSCRYPTED_CONFIG=/config/config.json
       - UNSCRYPTED_PERSIST_DIR=/data/persist
-      - UNSCRYPTED_LOG_LEVEL=info
-      - UNSCRYPTED_ADMIN_PORT=8190
-      # UNSCRYPTED_ADMIN_HOST picks the one address the admin pane listens on (default 0.0.0.0, every address).
-      - UNSCRYPTED_GO2RTC_API_PORT=1986
-      # go2rtc WebRTC media (tcp+udp, all interfaces) for the pane's live preview and the dashboard's
-      # tiles. UNSCRYPTED_GO2RTC_WEBRTC=off turns just those off; HomeKit streaming never uses it.
-      - UNSCRYPTED_GO2RTC_WEBRTC_PORT=8557
-      # go2rtc's RTSP restream on 127.0.0.1: the one camera session HomeKit's recording buffers and
-      # snapshots read from (one connection per camera, #16). UNSCRYPTED_GO2RTC_RTSP=off = read the
-      # cameras directly. UNSCRYPTED_LIVE_SOURCE=camera (default) | go2rtc picks the live view's source.
-      - UNSCRYPTED_GO2RTC_RTSP_PORT=8554
       - UNSCRYPTED_ADMIN_PASSWORD_FILE=/run/secrets/admin_password
       - UNSCRYPTED_ADMIN_KEY_FILE=/data/admin-session.key
-      # The open, watch-only living-room dashboard (no sign-in). Its settings live in ./data/dash.
-      # UNSCRYPTED_DASH_HOST picks one address (default 0.0.0.0, every address); UNSCRYPTED_DASH=off turns it off.
-      # Its settings page is <admin>/dash-settings (admin password). When the dash and the admin pane
-      # live on different addresses, set UNSCRYPTED_ADMIN_URL (the Settings button's target, e.g.
-      # http://10.0.1.78:8190) and UNSCRYPTED_DASH_URL (e.g. http://10.0.1.248/). Unset = same host.
-      - UNSCRYPTED_DASH_PORT=8180
+      - UNSCRYPTED_LOG_LEVEL=${UNSCRYPTED_LOG_LEVEL:-info}
+      # Ports on the host network. Override in `.env` only to avoid a clash with something else.
+      - UNSCRYPTED_ADMIN_PORT=${UNSCRYPTED_ADMIN_PORT:-8190}
+      - UNSCRYPTED_GO2RTC_API_PORT=${UNSCRYPTED_GO2RTC_API_PORT:-1986}
+      # go2rtc WebRTC media (the admin pane's live preview and the dashboard tiles).
+      - UNSCRYPTED_GO2RTC_WEBRTC_PORT=${UNSCRYPTED_GO2RTC_WEBRTC_PORT:-8557}
+      # go2rtc's RTSP restream on 127.0.0.1: the one camera session HomeKit's recording buffers and
+      # snapshots read from (one connection per camera, #16).
+      - UNSCRYPTED_GO2RTC_RTSP_PORT=${UNSCRYPTED_GO2RTC_RTSP_PORT:-8554}
+      - UNSCRYPTED_DASH_PORT=${UNSCRYPTED_DASH_PORT:-8180}
+      # The live view's source: camera (default, ~1 s start) or go2rtc (one shared connection, #33).
+      - UNSCRYPTED_LIVE_SOURCE=${UNSCRYPTED_LIVE_SOURCE:-camera}
+      # --- install-specific: set in `.env`; empty = the app's own default -------------------------
+      # Pin the HAP server + mDNS advertisement to one host address (empty = every address). Set it
+      # where the host has more than one address and HomeKit should advertise a specific one.
+      - UNSCRYPTED_HAP_BIND=${UNSCRYPTED_HAP_BIND:-}
+      # Give the watch-only dashboard its own address/URL when it lives apart from the admin pane
+      # (empty = same host, every address). UNSCRYPTED_ADMIN_URL is the admin pane's URL when the
+      # dashboard is elsewhere. See .env.example.
+      - UNSCRYPTED_DASH_HOST=${UNSCRYPTED_DASH_HOST:-}
+      - UNSCRYPTED_DASH_URL=${UNSCRYPTED_DASH_URL:-}
+      - UNSCRYPTED_ADMIN_URL=${UNSCRYPTED_ADMIN_URL:-}
+      # Extra debug logging (empty = off), e.g. HAP-NodeJS:Camera*,HAP-NodeJS:EventedHTTPServer*.
+      - DEBUG=${UNSCRYPTED_DEBUG:-}
