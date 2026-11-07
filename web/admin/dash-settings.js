@@ -138,60 +138,243 @@ function tickPreview() {
   $("previewTime").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-/* ---------- status lights: each one's full reason (the wall shows a short label), and its build page (#103) ---------- */
-function renderLights(l, savedServices) {
-  const box = $("lights");
-  if (!l || l.error || !Array.isArray(l.services)) {
-    const p = document.createElement("p");
-    p.className = "hint warn";
-    p.textContent = (l && l.error) || "The server sent no status lights (an older version?). Reload the page.";
-    box.replaceChildren(p);
-    return;
+/* ---------- status lights editor (#109): add/remove/relabel any light, edit its check, build page
+   and link, pick a parent for a new one, and test a check live. The wall shows a short label; the
+   full reason shows here. ids are generated once from the label on Add and never change. ---------- */
+const clone = (v) => JSON.parse(JSON.stringify(v));
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const opt = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; return o; };
+
+/* The working tree the page edits; the live states come from data.lights, matched by id. */
+let services = [];
+/* Check kinds, in the order the picker lists them, with the words the owner reads. */
+const CHECK_KINDS = [
+  ["tcp", "Port reachable (TCP connects)"],
+  ["alive", "Host answers (a refused TCP port still counts)"],
+  ["http", "Web page (HTTP)"],
+  ["bridge", "HomeKit bridge"],
+  ["blocked", "Can't check here (show a reason)"],
+];
+
+const slugify = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-");
+const allIds = (ns) => ns.flatMap((n) => [n.id, ...allIds(n.children || [])]);
+function uniqueId(base) {
+  const taken = new Set(allIds(services));
+  const root = base || "light";
+  if (!taken.has(root)) return root;
+  let i = 2;
+  while (taken.has(`${root}-${i}`)) i++;
+  return `${root}-${i}`;
+}
+function findNode(id, ns = services) {
+  for (let i = 0; i < ns.length; i++) {
+    if (ns[i].id === id) return { node: ns[i], siblings: ns, index: i };
+    if (ns[i].children) { const r = findNode(id, ns[i].children); if (r) return r; }
   }
-  // The build-page addresses come from the saved settings: the open dashboard never sends them.
-  const addresses = new Map();
-  const saved = (ns) => ns.forEach((n) => { if (n.build && n.build.url) addresses.set(n.id, n.build.url); saved(n.children || []); });
-  saved(savedServices || []);
+  return null;
+}
+
+/* id -> the live light node (state/reason/pulse/buildError), from the open dashboard's own report. */
+function liveMap(lights) {
+  const m = new Map();
+  const walk = (ns) => (ns || []).forEach((n) => { m.set(n.id, n); walk(n.children); });
+  if (lights && Array.isArray(lights.services)) walk(lights.services);
+  return m;
+}
+
+function renderLights(lights, model) {
+  const box = $("lights");
   const rows = [];
-  const walk = (ns, depth) => ns.forEach((n) => {
-    const row = document.createElement("div");
-    row.className = "l";
-    row.style.paddingLeft = `calc(${depth * 26}*var(--u))`;
-    const dot = document.createElement("span");
-    dot.className = `dot ${n.state}`;
-    const full = document.createElement("span");
-    full.className = "full";
-    full.textContent = n.state === "ok" ? "" : (n.reason || n.short || "no reason given (a bug: please report it)");
-    const build = document.createElement("input");
-    build.type = "text";
-    build.className = "build";
-    build.maxLength = 300;
-    build.spellcheck = false;
-    build.autocomplete = "off";
-    build.placeholder = "build page address (optional)";
-    build.value = addresses.get(n.id) || "";
-    build.dataset.lamp = n.id;
-    build.setAttribute("aria-label", `Build page address for ${n.name}`);
-    row.append(dot, n.name, full, build);
-    if (n.pulse) {
-      const pulse = document.createElement("span");
-      pulse.className = "full acc";
-      pulse.textContent = n.pulse.build ? `new build ${n.pulse.build} is waiting on test` : "something is waiting on test";
-      row.append(pulse);
-    }
-    if (n.buildError) {
-      const err = document.createElement("span");
-      err.className = "full warn";
-      err.textContent = `build page: ${n.buildError}`;
-      row.append(err);
-    }
-    rows.push(row);
-    walk(n.children || [], depth + 1);
-  });
-  walk(l.services, 0);
-  if (!rows.length) { const p = document.createElement("p"); p.className = "hint"; p.textContent = "No status lights are set up."; rows.push(p); }
+  if (lights && lights.error) {
+    rows.push(el("p", "hint warn", `${lights.error} You can still edit the lights below; their live state will show once the dashboard answers.`));
+  }
+  const live = liveMap(lights);
+  const walk = (ns, depth) => (ns || []).forEach((n) => { rows.push(lightRow(n, depth, live)); walk(n.children, depth + 1); });
+  walk(model, 0);
+  if (!allIds(model).length) rows.push(el("p", "hint", "No status lights yet. Add one below."));
+  const add = el("div", "ladd");
+  const addBtn = el("button", null, "+ Add status light");
+  addBtn.type = "button";
+  addBtn.addEventListener("click", () => openPanel({ mode: "add" }));
+  add.append(addBtn);
+  rows.push(add);
   box.replaceChildren(...rows);
 }
+
+function lightRow(n, depth, live) {
+  const s = live.get(n.id);
+  const state = s ? s.state : "unknown";
+  const row = el("div", "l");
+  row.style.paddingLeft = `calc(${depth * 26}*var(--u))`;
+  const dot = el("span", `dot ${state}`);
+  dot.title = s ? "" : "not checked yet; save to start checking it";
+  const name = el("span", "nm", n.name);
+  row.append(dot, name);
+  if (s && state !== "ok" && (s.reason || s.short)) row.append(el("span", "full", s.reason || s.short));
+  if (!s) row.append(el("span", "full", "new; save to start checking"));
+  if (s && s.pulse) row.append(el("span", "full acc", s.pulse.build ? `new build ${s.pulse.build} is waiting on test` : "something is waiting on test"));
+  if (s && s.buildError) row.append(el("span", "full warn", `build page: ${s.buildError}`));
+  const btns = el("span", "lbtns");
+  const edit = el("button", null, "✎");
+  edit.type = "button"; edit.title = "Edit"; edit.setAttribute("aria-label", `Edit ${n.name}`);
+  edit.addEventListener("click", () => openPanel({ mode: "edit", id: n.id, row }));
+  const del = el("button", null, "🗑");
+  del.type = "button"; del.title = "Remove"; del.setAttribute("aria-label", `Remove ${n.name}`);
+  del.addEventListener("click", () => removeLight(n.id));
+  btns.append(edit, del);
+  row.append(btns);
+  return row;
+}
+
+function removeLight(id) {
+  const f = findNode(id);
+  if (!f) return;
+  const kids = allIds(f.node.children || []).length;
+  const msg = kids ? `Remove "${f.node.name}" and its ${kids} nested light${kids === 1 ? "" : "s"}? (applied when you save)` : `Remove "${f.node.name}"? (applied when you save)`;
+  if (!window.confirm(msg)) return;
+  f.siblings.splice(f.index, 1);
+  dirty = true;
+  renderLights(loaded.lights, services);
+}
+
+/* Build the add/edit panel, inserted after the row (edit) or before the Add button (add). */
+let openPanelEl = null;
+function openPanel({ mode, id, row }) {
+  if (openPanelEl) { openPanelEl.remove(); openPanelEl = null; }
+  const existing = mode === "edit" ? findNode(id).node : null;
+  const p = el("div", "lpanel");
+
+  const label = document.createElement("input");
+  label.type = "text"; label.maxLength = 60; label.autocomplete = "off"; label.spellcheck = false;
+  label.value = existing ? existing.name : "";
+  const idOut = el("span", "lid", existing ? existing.id : "(from the label)");
+  const kind = document.createElement("select");
+  for (const [v, t] of CHECK_KINDS) kind.append(opt(v, t));
+
+  // fields per kind
+  const host = textInput("host, e.g. 10.0.1.78 or 127.0.0.1");
+  const port = document.createElement("input"); port.type = "number"; port.min = "1"; port.max = "65535"; port.placeholder = "port";
+  const urlIn = textInput("http://10.0.1.240/ or https://host/path");
+  const ok200 = document.createElement("input"); ok200.type = "checkbox";
+  const reason = textInput("why it can't be checked from here");
+  const build = textInput("build page address (optional, a JSON page with a build field)");
+  build.maxLength = 300;
+  if (existing && existing.build && existing.build.url) build.value = existing.build.url;
+  const link = textInput("link opened from the wall (optional, http(s)://)");
+  link.maxLength = 300;
+  if (existing && existing.link) link.value = existing.link;
+
+  // seed check fields from the existing node
+  const ec = existing ? existing.check : { kind: "tcp" };
+  kind.value = ec.kind || "tcp";
+  if (ec.kind === "tcp" || ec.kind === "alive") { host.value = ec.host || ""; port.value = ec.port != null ? ec.port : ""; }
+  if (ec.kind === "http") { urlIn.value = ec.url || ""; ok200.checked = ec.ok === "200"; }
+  if (ec.kind === "blocked") reason.value = ec.reason || "";
+
+  const gTcp = field("Host", host); const gPort = field("Port", port);
+  const gUrl = field("Address", urlIn);
+  const gOk = fieldRow("Require a 200", labelWrap(ok200, "the page must answer 200 (otherwise any answer counts)"));
+  const gReason = field("Reason", reason);
+  const groups = { tcp: [gTcp, gPort], alive: [gTcp, gPort], http: [gUrl, gOk], bridge: [], blocked: [gReason] };
+  const showKind = () => { for (const g of [gTcp, gPort, gUrl, gOk, gReason]) g.hidden = true; for (const g of groups[kind.value] || []) g.hidden = false; };
+  kind.addEventListener("change", showKind);
+
+  // live id preview on Add
+  if (mode === "add") label.addEventListener("input", () => { idOut.textContent = uniqueId(slugify(label.value)) || "(from the label)"; });
+
+  let parentSel = null;
+  if (mode === "add") {
+    parentSel = document.createElement("select");
+    parentSel.append(opt("", "— top level —"));
+    const walk = (ns, depth) => ns.forEach((n) => { parentSel.append(opt(n.id, `${"   ".repeat(depth)}${n.name}`)); walk(n.children || [], depth + 1); });
+    walk(services, 0);
+  }
+
+  const msg = el("div", "ltest");
+  const testBtn = el("button", "ghost", "Test"); testBtn.type = "button";
+  const saveBtn = el("button", null, mode === "add" ? "Add" : "Save"); saveBtn.type = "button";
+  const cancelBtn = el("button", "ghost", "Cancel"); cancelBtn.type = "button";
+
+  const buildCheck = () => {
+    const k = kind.value;
+    if (k === "tcp" || k === "alive") return { kind: k, host: host.value.trim(), port: port.value === "" ? "" : Number(port.value) };
+    if (k === "http") return { kind: "http", url: urlIn.value.trim(), ok: ok200.checked ? "200" : "any" };
+    if (k === "bridge") return { kind: "bridge" };
+    return { kind: "blocked", reason: reason.value.trim() };
+  };
+  const clientError = () => {
+    if (!label.value.trim()) return "Give the light a name.";
+    const k = kind.value;
+    if ((k === "tcp" || k === "alive")) { if (!host.value.trim()) return "Enter a host."; const n = Number(port.value); if (!Number.isInteger(n) || n < 1 || n > 65535) return "Enter a port from 1 to 65535."; }
+    if (k === "http" && !urlIn.value.trim()) return "Enter the web address to check.";
+    if (k === "blocked" && !reason.value.trim()) return "Enter the reason to show.";
+    return null;
+  };
+
+  testBtn.addEventListener("click", async () => {
+    const err = clientError();
+    if (err) { msg.className = "ltest warn"; msg.textContent = err; return; }
+    msg.className = "ltest"; msg.textContent = "Checking…";
+    const bu = build.value.trim();
+    const r = await api("POST", "/api/dash/check", { check: buildCheck(), build: bu ? { url: bu } : undefined });
+    if (r.error) { msg.className = "ltest err"; msg.textContent = `${r.error.happened} ${r.error.next || ""}`.trim(); return; }
+    const bits = [r.reachable ? "Reachable" : "Not reachable", `state: ${r.state}`];
+    if (r.reason) bits.push(r.reason);
+    if (bu) bits.push(r.buildError ? `build page: ${r.buildError}` : `build: ${r.build == null ? "(none found)" : r.build}`);
+    msg.className = `ltest ${r.reachable ? "ok" : "warn"}`;
+    msg.textContent = bits.join(" — ");
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const err = clientError();
+    if (err) { msg.className = "ltest warn"; msg.textContent = err; return; }
+    const check = buildCheck();
+    const bu = build.value.trim();
+    const ln = link.value.trim();
+    if (mode === "add") {
+      const node = { id: uniqueId(slugify(label.value)), name: label.value.trim(), check };
+      if (bu) node.build = { url: bu };
+      if (ln) node.link = ln;
+      const parentId = parentSel.value;
+      if (!parentId) services.push(node);
+      else { const f = findNode(parentId); (f.node.children = f.node.children || []).push(node); }
+    } else {
+      const node = findNode(id).node;
+      node.name = label.value.trim();
+      // keep a blocked check's existing short label if the kind and reason are unchanged
+      if (check.kind === "blocked" && node.check && node.check.kind === "blocked" && node.check.short && node.check.reason === check.reason) check.short = node.check.short;
+      node.check = check;
+      if (bu) node.build = { url: bu }; else delete node.build;
+      if (ln) node.link = ln; else delete node.link;
+    }
+    dirty = true;
+    openPanelEl = null;
+    renderLights(loaded.lights, services);
+  });
+  cancelBtn.addEventListener("click", () => { p.remove(); openPanelEl = null; });
+
+  const buttons = el("div", "lbuttons");
+  buttons.append(saveBtn, cancelBtn, testBtn, msg);
+  p.append(
+    field("Label", label),
+    fieldRow("Light id", idOut),
+    field("Check type", kind),
+    gTcp, gPort, gUrl, gOk, gReason,
+    field("Build page", build),
+    field("Link", link),
+    ...(parentSel ? [field("Parent", parentSel)] : []),
+    buttons,
+  );
+  showKind();
+  openPanelEl = p;
+  if (mode === "edit" && row) row.after(p); else $("lights").querySelector(".ladd").before(p);
+  label.focus();
+}
+
+function textInput(placeholder) { const i = document.createElement("input"); i.type = "text"; i.autocomplete = "off"; i.spellcheck = false; if (placeholder) i.placeholder = placeholder; return i; }
+function field(labelText, control) { const f = el("div", "lf"); const l = el("label", null, labelText); f.append(l, control); return f; }
+function fieldRow(labelText, control) { const f = el("div", "lf"); f.append(el("label", null, labelText), control); return f; }
+function labelWrap(control, text) { const w = el("label", "chk"); w.append(control, document.createTextNode(" " + text)); return w; }
 
 /* ---------- cameras ---------- */
 function updateGrid() {
@@ -286,7 +469,8 @@ function render(data) {
   fontSelect($("fontClock"), "clock", s.fonts.clock);
   void updatePreview();
   $("cams").replaceChildren(...data.cameras.map(camRow));
-  renderLights(data.lights, s.services);
+  services = clone(s.services || []);
+  renderLights(data.lights, services);
   updateGrid();
   $("phSource").value = s.photos.source;
   $("phUrl").value = s.photos.icloudUrl;
@@ -328,8 +512,8 @@ function payload() {
     idleSeconds: $("idle").value, reloadMinutes: $("reload").value, pollSeconds: $("poll").value,
     glow: { intensity: $("glowIntensity").value, size: $("glowSize").value },
     pulse: { speed: $("pulseSpeed").value, strength: $("pulseStrength").value },
-    // every light's build-page box as shown; an empty one takes its build page off
-    lampBuilds: Object.fromEntries([...document.querySelectorAll("#lights input[data-lamp]")].map((i) => [i.dataset.lamp, i.value.trim()])),
+    // #109: the whole edited status-light tree (it carries each light's build page and link)
+    services,
   };
 }
 

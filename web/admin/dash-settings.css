@@ -77,3 +77,31 @@ a.btn:hover,a.btn:focus-visible{border-color:var(--acc);color:var(--acc)}
 .idle .txt.warn{color:var(--warn)}
 .idle .track{margin-top:calc(6*var(--u));height:calc(8*var(--u));background:var(--line);border-radius:calc(4*var(--u))}
 .idle .fill{height:100%;width:100%;background:var(--olive);border-radius:calc(4*var(--u))}
+/* status lights editor (#109) */
+.lights .l{display:flex;align-items:center;gap:calc(10*var(--u));flex-wrap:wrap}
+.lights .l .nm{color:var(--text)}
+.lights .l .dot.unknown{background:var(--mute)}
+.lights .l .lbtns{margin-left:auto;display:flex;gap:calc(8*var(--u))}
+.lights .l .lbtns button{background:var(--bg);color:var(--text);border:calc(2*var(--u)) solid var(--line);
+  border-radius:calc(6*var(--u));padding:calc(4*var(--u)) calc(13*var(--u));font-size:calc(22*var(--u));font-weight:400}
+.lights .l .lbtns button:hover{border-color:var(--acc);color:var(--acc)}
+.ladd{margin-top:calc(12*var(--u))}
+.ladd button{background:var(--bg);color:var(--acc);border:calc(2*var(--u)) solid var(--line);
+  border-radius:calc(8*var(--u));padding:calc(9*var(--u)) calc(22*var(--u));font-size:calc(24*var(--u));font-weight:500}
+.ladd button:hover{border-color:var(--acc)}
+.lpanel{background:var(--bg);border:calc(2*var(--u)) solid var(--line);border-radius:calc(8*var(--u));
+  padding:calc(14*var(--u)) calc(16*var(--u));margin:calc(8*var(--u)) 0;display:flex;flex-direction:column;gap:calc(8*var(--u))}
+.lpanel .lf{display:grid;grid-template-columns:calc(200*var(--u)) 1fr;gap:calc(8*var(--u)) calc(14*var(--u));align-items:center}
+.lpanel .lf>label{color:var(--mute);font-size:calc(24*var(--u))}
+.lpanel .lid{color:var(--acc);font-size:calc(24*var(--u));font-variant-numeric:tabular-nums}
+.lpanel input[type=text],.lpanel input[type=number],.lpanel select{font-size:calc(26*var(--u));padding:calc(8*var(--u)) calc(12*var(--u))}
+.lpanel .chk{display:flex;align-items:center;gap:calc(8*var(--u));color:var(--mute);font-size:calc(23*var(--u))}
+.lpanel .chk input[type=checkbox]{flex:0 0 auto}
+.lpanel .lbuttons{display:flex;gap:calc(12*var(--u));align-items:center;flex-wrap:wrap;margin-top:calc(4*var(--u))}
+.lpanel .lbuttons button{font-size:calc(26*var(--u));padding:calc(10*var(--u)) calc(26*var(--u))}
+.lpanel .lbuttons .ghost{background:var(--bg);color:var(--text);border:calc(2*var(--u)) solid var(--line)}
+.lpanel .lbuttons .ghost:hover{border-color:var(--acc);color:var(--acc)}
+.ltest{font-size:calc(23*var(--u));color:var(--mute);flex:1;min-width:calc(200*var(--u))}
+.ltest.ok{color:var(--acc)}
+.ltest.warn{color:var(--warn)}
+.ltest.err{color:var(--bad)}

@@ -265,6 +265,121 @@ function font(v: any, role: "ui" | "clock", fontFiles: string[]): FontSpec {
   throw bad(label, "must be a system font or a font file");
 }
 
+/** A status light's id: lowercase letters, numbers and hyphens, starting with a letter or number. */
+export const SERVICE_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/** How a validator reports a bad field: the caller supplies this so the same checks serve both the full-tree save and the on-demand check. */
+export type BadField = (field: string, msg: string) => UserError;
+
+/** null when a web address is usable (http or https with a host); otherwise the plain reason. A path is fine. */
+function httpUrlReason(u: string): string | null {
+  try { const p = new URL(u); return (p.protocol === "http:" || p.protocol === "https:") && Boolean(p.host) ? null : "must be a web address (http:// or https:// with a host)"; }
+  catch { return "must be a web address (http:// or https:// with a host)"; }
+}
+
+/** A whole-number port in 1..65535, from a number or a numeric string; null when it isn't one. */
+function portOf(v: unknown): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
+}
+
+/**
+ * One status light's check, validated by kind. Unknown kinds and unknown fields are refused by name,
+ * never silently dropped (#109). `where` names the light in the error. Returns a clean ServiceCheck.
+ */
+export function validateServiceCheck(raw: unknown, bad: BadField, where = "A status light"): ServiceCheck {
+  const label = `${where} check`;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw bad(label, "must be an object with a kind (tcp, alive, http, bridge or blocked)");
+  const c = raw as Record<string, unknown>;
+  const only = (allowed: string[]) => { for (const k of Object.keys(c)) if (!allowed.includes(k)) throw bad(label, `has a field "${k}" that a ${String(c.kind)} check doesn't use`); };
+  switch (c.kind) {
+    case "tcp":
+    case "alive": {
+      only(["kind", "host", "port"]);
+      if (typeof c.host !== "string" || !c.host.trim()) throw bad(label, "needs a host");
+      const port = portOf(c.port);
+      if (port === null) throw bad(label, "needs a port (a whole number from 1 to 65535)");
+      return { kind: c.kind, host: c.host.trim(), port };
+    }
+    case "http": {
+      only(["kind", "url", "ok"]);
+      const u = typeof c.url === "string" ? c.url.trim() : "";
+      const why = u ? httpUrlReason(u) : "needs a url";
+      if (why) throw bad(label, `url ${why}`);
+      if (c.ok !== "any" && c.ok !== "200") throw bad(label, 'ok must be "any" (answers at all) or "200" (answers 200)');
+      return { kind: "http", url: u, ok: c.ok };
+    }
+    case "bridge": {
+      only(["kind"]);
+      return { kind: "bridge" };
+    }
+    case "blocked": {
+      only(["kind", "reason", "short"]);
+      if (typeof c.reason !== "string" || !c.reason.trim()) throw bad(label, "needs a reason (the words the wall shows)");
+      const out: ServiceCheck = { kind: "blocked", reason: c.reason.trim() };
+      if (c.short !== undefined && c.short !== null && c.short !== "") {
+        if (typeof c.short !== "string") throw bad(label, "its short label must be text");
+        out.short = c.short.trim();
+      }
+      return out;
+    }
+    default:
+      throw bad(label, `has an unknown kind ${JSON.stringify(c.kind)} (use tcp, alive, http, bridge or blocked)`);
+  }
+}
+
+/** One status light, validated in place. Collects ids into `ids` to enforce uniqueness across the whole tree. */
+function validateServiceNode(raw: unknown, ids: Set<string>, bad: BadField): ServiceNode {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw bad("A status light", "must be an object with a name, an id and a check");
+  const o = raw as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!["id", "name", "link", "rollup", "check", "children", "build"].includes(k)) throw bad("A status light", `has a field "${k}" that a status light doesn't use`);
+  if (typeof o.name !== "string" || !o.name.trim()) throw bad("A status light", "needs a name");
+  const name = o.name.trim();
+  if (name.length > 60) throw bad(`Status light "${name}"`, "name is too long (at most 60 characters)");
+  if (typeof o.id !== "string" || !SERVICE_ID.test(o.id)) throw bad(`Status light "${name}"`, `needs an id of lowercase letters, numbers and hyphens starting with a letter or number (not ${JSON.stringify(o.id)})`);
+  if (ids.has(o.id)) throw bad(`Status light "${name}"`, `has the id "${o.id}", which another light already uses (every light's id must be unique)`);
+  ids.add(o.id);
+  const node: ServiceNode = { id: o.id, name, check: validateServiceCheck(o.check, bad, `Status light "${name}"`) };
+  if (o.rollup !== undefined && o.rollup !== false) {
+    if (o.rollup !== true) throw bad(`Status light "${name}"`, "rollup must be true or false");
+    node.rollup = true;
+  }
+  if (o.link !== undefined && o.link !== null && o.link !== "") {
+    if (typeof o.link !== "string") throw bad(`Status light "${name}"`, "its link must be a web address");
+    const link = o.link.trim();
+    const why = httpUrlReason(link);
+    if (why) throw bad(`Status light "${name}"`, `its link ${why}`);
+    node.link = link;
+  }
+  if (o.build !== undefined && o.build !== null) {
+    if (typeof o.build !== "object" || Array.isArray(o.build)) throw bad(`Status light "${name}"`, "its build must be an object with a url");
+    for (const k of Object.keys(o.build as object)) if (k !== "url") throw bad(`Build page for "${name}"`, `has a field "${k}" that a build watch doesn't use`);
+    const bu = typeof (o.build as Record<string, unknown>).url === "string" ? ((o.build as Record<string, unknown>).url as string).trim() : "";
+    if (bu) {
+      if (bu.length > 300) throw bad(`Build page for "${name}"`, "is too long (at most 300 characters)");
+      const why = checkBuildUrl(bu);
+      if (why) throw bad(`Build page for "${name}"`, `"${bu}" ${why}`);
+      node.build = { url: bu };
+    }
+  }
+  if (o.children !== undefined && o.children !== null) {
+    if (!Array.isArray(o.children)) throw bad(`Status light "${name}"`, "its children must be a list of lights");
+    if (o.children.length) node.children = o.children.map((c) => validateServiceNode(c, ids, bad));
+  }
+  return node;
+}
+
+/**
+ * A full replacement status-light tree (#109): validated recursively (names, unique ids of the right
+ * charset, each check by kind, optional build url and link), returning the clean tree. Throws on the
+ * first bad field, never writes.
+ */
+export function validateServiceTree(input: unknown, bad: BadField): ServiceNode[] {
+  if (!Array.isArray(input)) throw bad("Status lights", "must be a list of lights");
+  const ids = new Set<string>();
+  return input.map((n) => validateServiceNode(n, ids, bad));
+}
+
 /** Validates a partial edit and returns the whole new settings. Throws UserError; never writes. */
 export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: string[]; fontFiles: string[]; withSub?: string[] }): DashSettings {
   if (!edit || typeof edit !== "object" || Array.isArray(edit)) throw bad("Request", "wasn't a settings object");
@@ -360,6 +475,11 @@ export function applySettingsEdit(cur: DashSettings, edit: any, ctx: { cameras: 
     };
     if ("speed" in p) s.pulse.speed = pct(p.speed, "Pulse speed (%)");
     if ("strength" in p) s.pulse.strength = pct(p.strength, "Pulse strength (%)");
+  }
+  if ("services" in edit) {
+    // #109: the whole status-light tree, edited on the settings page. Validated recursively; the
+    // ids the deploy pulse config references are kept stable by the UI (it never edits an id).
+    s.services = validateServiceTree(edit.services, bad);
   }
   if ("lampBuilds" in edit) {
     // Each light's build page (#103): "" takes it off; a name that isn't a light is refused, nothing saved.

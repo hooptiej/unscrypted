@@ -109,7 +109,7 @@ const server = createDashServer({
   go2rtcApi: process.env.UNSCRYPTED_GO2RTC_API ?? "",
   publicConfig: () => rt.publicConfig(), state: () => rt.state(), allowedStreams: () => rt.allowedStreams(), camerasLoaded: () => rt.camerasLoaded,
   go2rtcInfo: () => rt.bridge?.go2rtc ?? { state: "unknown", lastError: "the bridge hasn't reported yet", nextRetryAt: null },
-  photos: () => rt.photoList(), photoFile: (id) => rt.photos.file(id), fontsDir: path.join(dir, "fonts"), pulse: rt.pulseApi(), log,
+  photos: () => rt.photoList(), photoFile: (id) => rt.photos.file(id), fontsDir: path.join(dir, "fonts"), pulse: rt.pulseApi(), bridge: () => rt.bridge, log,
 });
 listenDash(server, host, port).then(
   () => {

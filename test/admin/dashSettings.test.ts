@@ -191,6 +191,45 @@ test("GET also carries the dashboard's own status lights, with full reasons, for
   fake.close();
 });
 
+test("#109: /api/dash/check needs sign-in + CSRF, then forwards the check (with the x-dash-action header) to the dashboard", async () => {
+  // auth gating needs no dashboard behind it
+  assert.equal((await fetch(base + "/api/dash/check", { method: "POST", body: "{}" })).status, 401);
+  const s0 = await login();
+  const noCsrf = await fetch(base + "/api/dash/check", { method: "POST", headers: { "content-type": "application/json", cookie: s0.cookie }, body: "{}" });
+  assert.equal(noCsrf.status, 403);
+
+  // a fake dashboard that answers /api/check only when the proxy's header is present, echoing the body
+  const fake = http.createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/api/check" && req.headers["x-dash-action"] === "check") {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ reachable: true, state: "ok", reason: null, short: null, echo: JSON.parse(body || "{}") })); });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+  const fakePort = (fake.address() as AddressInfo).port;
+  const a = createAdminServer({
+    configPath: path.join(dir, "config.json"), passwordFile: path.join(dir, "pw"), go2rtcApi: "",
+    sessionKeyFile: path.join(dir, "admin-session.key"), webRoot: path.join(__dirname, "../../web/admin"), title: "unscrypted admin - TEST",
+    dash: { dir: dashDir, port: fakePort, url: null, host: "127.0.0.1" },
+    bridge: { status: () => null, request: async () => null },
+  });
+  await new Promise<void>((r) => a.listen(0, "127.0.0.1", () => r()));
+  const b = `http://127.0.0.1:${(a.address() as AddressInfo).port}`;
+  try {
+    const lr = await fetch(b + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "letmein" }) });
+    const hdr = { cookie: lr.headers.get("set-cookie")!.split(";")[0], "x-csrf-token": (await lr.json()).csrf as string, "content-type": "application/json" };
+    const r = await fetch(b + "/api/dash/check", { method: "POST", headers: hdr, body: JSON.stringify({ check: { kind: "bridge" }, build: { url: "http://x/healthz" } }) });
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.reachable, true);
+    assert.deepEqual(j.echo.check, { kind: "bridge" });
+    assert.deepEqual(j.echo.build, { url: "http://x/healthz" });
+  } finally { a.closeAllConnections(); a.close(); fake.closeAllConnections(); fake.close(); }
+});
+
 test("owner eye-check: live clock preview, 'Dashboard stream' with its hint, a status-lights list, labels that fit", () => {
   const web = path.join(__dirname, "../../web/admin");
   const html = fs.readFileSync(path.join(web, "dash-settings.html"), "utf8");

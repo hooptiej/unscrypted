@@ -15,8 +15,10 @@ import { Logger } from "../logger";
 import { ClientFrameFilter } from "./wsFilter";
 import { PHOTO_EXT } from "./photos";
 import { FONT_MIME } from "./fonts";
-import { FONT_FILE } from "./settings";
-import { PulseApi } from "./pulse";
+import { FONT_FILE, ServiceCheck, validateServiceCheck, checkBuildUrl } from "./settings";
+import { PulseApi, readBuild } from "./pulse";
+import { runCheckDetailed } from "./services";
+import { DashBridgeInfo } from "./ipc";
 
 export interface PublicConfig {
   title: string; env: "prod" | "test"; adminPort: number; settingsUrl: string | null;
@@ -53,6 +55,8 @@ export interface DashDeps {
   camerasLoaded?: () => boolean;
   /** The new-build pulse (#103): the open clear and the token switch. Absent = those routes say so. */
   pulse?: PulseApi;
+  /** The bridge's last status (#109): the on-demand check needs it to answer a "bridge" check. Absent = "no report yet". */
+  bridge?: () => DashBridgeInfo | null;
   log?: Logger;
 }
 
@@ -155,7 +159,9 @@ export function createDashServer(d: DashDeps): http.Server {
       const pulsePath = PULSE_PATH.exec(url.pathname);
       // The only writes here are the two pulse calls (a POST to a light, or to a light's clear).
       const pulseWrite = Boolean(pulsePath?.[1]) && method === "POST";
-      if (method !== "GET" && method !== "HEAD" && !pulseWrite) {
+      // #109: the on-demand check is a POST too (it changes nothing, but runs a probe the settings page asked for).
+      const checkPost = url.pathname === "/api/check" && method === "POST";
+      if (method !== "GET" && method !== "HEAD" && !pulseWrite && !checkPost) {
         throw new UserError({ attempted, happened: "The dashboard is watch-only: it never changes anything.", changed: "Nothing.",
           next: "Change dashboard settings in the admin pane (needs the admin password)." }, 405);
       }
@@ -196,6 +202,41 @@ export function createDashServer(d: DashDeps): http.Server {
         const build = optionalText(body, "build", 80, attempted);
         const note = optionalText(body, "note", 200, attempted);
         return json(res, 200, { ok: true, lamp, ...api.set(lamp, body.on, { build, note }) });
+      }
+      if (url.pathname === "/api/check") {
+        // #109: run one status-light check as entered on the admin settings page's Test button, and
+        // (optionally) read a build page, so the owner sees reachable/state/reason before saving. It
+        // is reached only through the admin proxy, which sets the header below; a cross-site form can't.
+        attempted = "Check a status light";
+        if (method !== "POST") throw new UserError({ attempted, happened: "A check is a POST with a JSON body.", changed: "Nothing.", next: "Use the Test button on the dashboard settings page." }, 405);
+        if (req.headers["x-dash-action"] !== "check") {
+          throw new UserError({ attempted, happened: "This address only runs a check asked for by the admin settings page (the x-dash-action: check header is missing).",
+            changed: "Nothing.", next: "Use the Test button on the dashboard settings page; the admin pane sends it." }, 400);
+        }
+        const body = await readJsonBody(req, attempted);
+        const bad = (field: string, msg: string) => new UserError({ attempted, happened: `${field}: ${msg}`, changed: "Nothing was checked.", next: "Fix the check and try again." }, 400);
+        const check: ServiceCheck = validateServiceCheck(body.check, bad, "The");
+        const reason = await runCheckDetailed(check, d.bridge ?? (() => null), 3000);
+        const out: Record<string, unknown> = {
+          reachable: reason === null, state: reason === null ? "ok" : "down",
+          reason: reason?.full ?? null, short: reason?.short ?? null,
+        };
+        if (body.build !== undefined && body.build !== null) {
+          if (typeof body.build !== "object" || Array.isArray(body.build) || typeof (body.build as Record<string, unknown>).url !== "string") {
+            throw bad("Build page", "must be an object with a url");
+          }
+          const bu = String((body.build as Record<string, unknown>).url).trim();
+          if (bu) {
+            const why = checkBuildUrl(bu);
+            if (why) { out.build = null; out.buildError = `the build page address ${why}`; }
+            else {
+              const got = await readBuild(bu);
+              if (got.ok) { out.build = got.build; out.buildError = null; }
+              else { out.build = null; out.buildError = `couldn't read its build page (${got.reason})`; }
+            }
+          }
+        }
+        return json(res, 200, out);
       }
       if (STATIC[url.pathname]) {
         attempted = "Load the dashboard";

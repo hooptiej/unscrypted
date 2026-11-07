@@ -369,6 +369,57 @@ test("#12: a font that's there but unreadable says so (with the error code), not
   } finally { s.close(); }
 });
 
+// ---------- #109: the on-demand status-light check ----------
+const checkHdr = { "content-type": "application/json", "x-dash-action": "check" };
+const postCheck = (b: string, body: unknown, headers: Record<string, string> = checkHdr) =>
+  fetch(b + "/api/check", { method: "POST", headers, body: JSON.stringify(body) });
+
+test("#109: a check without the x-dash-action header is refused (not callable cross-site)", async () => {
+  const r = await postCheck(base, { check: { kind: "bridge" } }, { "content-type": "application/json" });
+  assert.equal(r.status, 400);
+  const j = await r.json();
+  assert.ok(j.error.attempted && j.error.happened && j.error.changed && j.error.next);
+  assert.match(j.error.happened, /x-dash-action: check header is missing/);
+});
+
+test("#109: a blocked check comes back down with its reason; a bad kind is a 400", async () => {
+  const r = await postCheck(base, { check: { kind: "blocked", reason: "on an ipvlan LAN" } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { reachable: false, state: "down", reason: "on an ipvlan LAN", short: "can't check yet" });
+  const bad = await postCheck(base, { check: { kind: "nope" } });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error.happened, /unknown kind/);
+});
+
+test("#109: a bridge check with no bridge wired says the bridge hasn't reported", async () => {
+  const r = await postCheck(base, { check: { kind: "bridge" } });
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.reachable, false);
+  assert.match(j.reason, /bridge hasn't reported/);
+});
+
+test("#109: a reachable tcp check is reachable; an optional build page is read and its result reported", async () => {
+  const port = Number(new URL(base).port);
+  const r = await postCheck(base, { check: { kind: "tcp", host: "127.0.0.1", port }, build: { url: base + "/api/state" } });
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.reachable, true);
+  assert.equal(j.state, "ok");
+  // /api/state answers JSON with no `build` field, so the build read reports that plainly (never silently)
+  assert.equal(j.build, null);
+  assert.match(j.buildError, /no build field/);
+});
+
+test("#109: a bridge check reflects a wired bridge's paired state", async () => {
+  const s = createDashServer(deps({ bridge: () => ({ hapEnabled: true, paired: true, go2rtc: { state: "running", lastError: null, nextRetryAt: null } }) }));
+  const b = await listen(s);
+  try {
+    const r = await postCheck(b, { check: { kind: "bridge" } });
+    assert.deepEqual(await r.json(), { reachable: true, state: "ok", reason: null, short: null });
+  } finally { s.close(); }
+});
+
 test("the open dashboard has no camera-logins route (#18): GET is a 404, POST a 405, no secret either way", async () => {
   const p = "/api/cameras/Garage/credentials";
   const g = await fetch(base + p);
