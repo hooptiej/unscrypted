@@ -8,7 +8,7 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { UserError } from "./errors";
+import { UserError } from "../shared/errors";
 
 export const SESSION_DAYS = 30;
 export const SESSION_KEY_BYTES = 32;

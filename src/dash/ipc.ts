@@ -5,7 +5,7 @@
  */
 
 import { ResolvedConfig } from "../config";
-import { streamNames } from "../admin/go2rtcConfig";
+import { streamNames } from "../shared/streams";
 
 export interface DashCamera { name: string; main: string; sub: string | null; probe: { host: string; port: number } | null }
 export interface DashBridgeInfo { hapEnabled: boolean; paired: boolean; go2rtc: { state: string; lastError: string | null; nextRetryAt: number | null } }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as http from "http";
 import * as net from "net";
 import { describeListenError, listenDash } from "../../src/dash/server";
-import { UserError } from "../../src/admin/errors";
+import { UserError } from "../../src/shared/errors";
 
 test("an address that isn't on this machine is refused in plain words", async () => {
   const s = http.createServer();

@@ -8,7 +8,7 @@ import {
   checkPassword, issueSession, verifySession, LoginLimiter, loadAdminPassword, csrfToken, checkCsrf, SESSION_DAYS,
   loadOrCreateSessionKey, SESSION_KEY_BYTES,
 } from "../../src/admin/auth";
-import { UserError } from "../../src/admin/errors";
+import { UserError } from "../../src/shared/errors";
 
 const key = crypto.randomBytes(32);
 

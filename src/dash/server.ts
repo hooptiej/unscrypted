@@ -6,11 +6,10 @@
  */
 
 import * as http from "http";
-import * as net from "net";
 import * as fs from "fs";
 import * as path from "path";
-import { UserError, UserErrorBody, toErrorJson } from "../admin/errors";
-import { securityHeaders } from "../admin/server";
+import { UserError, UserErrorBody, toErrorJson } from "../shared/errors";
+import { securityHeaders, sendJson, readFontFile, proxyGo2rtcFile, proxyGo2rtcSocket, STREAM_NAME } from "../shared/http";
 import { Logger } from "../logger";
 import { healthFields } from "../version";
 import { ClientFrameFilter } from "./wsFilter";
@@ -67,7 +66,6 @@ const STATIC: Record<string, string> = { "/": "index.html", "/index.html": "inde
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 /** The only go2rtc files the open page gets: its player. Its API (streams, frames, config) never passes. */
 const GO2RTC_FILES = new Set(["/video-stream.js", "/video-rtc.js"]);
-const STREAM_NAME = /^[a-z0-9_]{1,64}$/;
 /** /api/pulse (the list), /api/pulse/<light> (the token switch), /api/pulse/<light>/clear (the open clear). */
 const PULSE_PATH = /^\/api\/pulse(?:\/([^/]+)(\/clear)?)?$/;
 const PULSE_BODY_MAX = 4096;
@@ -116,10 +114,7 @@ function optionalText(body: Record<string, unknown>, key: string, max: number, a
 
 export function createDashServer(d: DashDeps): http.Server {
   const log = d.log ?? new Logger("dash");
-  const json = (res: http.ServerResponse, status: number, body: unknown) => {
-    res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(body));
-  };
+  const json = sendJson;
 
   /** go2rtc's state in words, for the 503s. */
   const go2rtcWhy = (): string => {
@@ -132,26 +127,9 @@ export function createDashServer(d: DashDeps): http.Server {
   // "unknown" = the bridge hasn't reported yet (first 2 s after a start): try go2rtc anyway.
   const go2rtcUp = () => Boolean(d.go2rtcApi) && ["running", "unknown"].includes(d.go2rtcInfo().state);
 
-  /** Stream one of go2rtc's player files to the browser. 20 s timeout; failures are the four-part error. */
-  const pipeGet = (target: string, res: http.ServerResponse, attempted: string) => new Promise<void>((resolve) => {
-    const upstream = http.request(d.go2rtcApi + target, { method: "GET", timeout: 20_000 }, (up) => {
-      res.writeHead(up.statusCode ?? 502, { "content-type": up.headers["content-type"] ?? "application/octet-stream" });
-      up.pipe(res);
-      up.on("end", resolve);
-      up.on("error", (err) => { log.warn(`go2rtc player file broke off: ${err.message}`); res.destroy(); resolve(); });
-    });
-    upstream.on("timeout", () => upstream.destroy(new Error("go2rtc didn't answer within 20 s")));
-    upstream.on("error", (err) => {
-      if (!res.headersSent) {
-        const down = go2rtcDown(attempted);
-        json(res, 503, { error: { ...down.body, happened: `${down.body.happened} (${err.message})` } });
-      } else {
-        res.destroy();
-      }
-      resolve();
-    });
-    upstream.end();
-  });
+  /** Stream one of go2rtc's player files to the browser. */
+  const pipeGet = (target: string, res: http.ServerResponse, attempted: string) =>
+    proxyGo2rtcFile({ go2rtcApi: d.go2rtcApi, target, res, attempted, log, label: "player file", down: go2rtcDown });
 
   const server = http.createServer(async (req, res) => {
     for (const [k, v] of Object.entries(securityHeaders(req))) res.setHeader(k, v);
@@ -262,15 +240,8 @@ export function createDashServer(d: DashDeps): http.Server {
         const gone = () => new UserError({ attempted, happened: `The font file "${name}" isn't in the dashboard's fonts folder.`, changed: "Nothing; the page uses a system font instead.",
           next: "Put the file in data/dash/fonts on the NAS, or pick another font in the dashboard settings." }, 404);
         if (!FONT_FILE.test(name)) throw gone();
-        let body: Buffer;
-        try { body = fs.readFileSync(path.join(d.fontsDir, name)); } catch (err) {
-          const code = (err as NodeJS.ErrnoException).code ?? "unknown error";
-          if (code === "ENOENT") throw gone();
-          // #12: not "isn't in the folder" when it is; say what the read actually hit (EACCES, EISDIR, ...).
-          log.warn(`font "${name}" is in the fonts folder but couldn't be read (${code})`);
-          throw new UserError({ attempted, happened: `The font file "${name}" is in the dashboard's fonts folder but couldn't be read (${code}).`, changed: "Nothing; the page uses a system font instead.",
-            next: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), or pick another font in the dashboard settings." }, 500);
-        }
+        const body = readFontFile(d.fontsDir, name, { attempted, log, notThere: gone, changed: "Nothing; the page uses a system font instead.",
+          unreadableNext: "Check the file's permissions in data/dash/fonts on the NAS (the container must be able to read it), or pick another font in the dashboard settings." });
         // Fonts never change under the same name; a day's cache keeps the kiosk's reloads light.
         res.writeHead(200, { "content-type": FONT_MIME[path.extname(name).toLowerCase()], "content-length": String(body.length), "cache-control": "public, max-age=86400" });
         return res.end(body);
@@ -344,39 +315,8 @@ export function createDashServer(d: DashDeps): http.Server {
       const left = (openByIp.get(ip) ?? 1) - 1;
       if (left > 0) openByIp.set(ip, left); else openByIp.delete(ip);
     };
-    const target = new URL(d.go2rtcApi);
-    const filter = new ClientFrameFilter();
-    let upgraded = false;
-    const up = net.connect(Number(target.port), target.hostname, () => {
-      const lines = [`GET /api/ws?src=${encodeURIComponent(src)} HTTP/1.1`];
-      for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        // the admin cookie never leaves; no compression either, so the filter reads plain frames
-        if (/^(host|cookie|origin|authorization|sec-websocket-extensions)$/i.test(req.rawHeaders[i])) continue;
-        lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
-      }
-      lines.push(`Host: ${target.host}`, "", "");
-      up.write(lines.join("\r\n"));
-      const feed = (chunk: Buffer) => {
-        const r = filter.push(chunk);
-        if ("reject" in r) { log.warn(`closed a dashboard video connection for "${src}": the browser sent ${r.reject}`); socket.destroy(); up.destroy(); return; }
-        if (r.forward.length) up.write(r.forward);
-      };
-      if (head.length) feed(head);
-      socket.on("data", feed);
-      up.once("data", () => { upgraded = true; });
-      up.pipe(socket);
-    });
-    up.on("error", (err) => {
-      log.warn(`dashboard video: couldn't reach go2rtc at ${target.host} for "${src}": ${err.message}`);
-      if (!upgraded && socket.writable) socket.end(`HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\nthe video server (go2rtc) didn't answer: ${err.message}\n`);
-      else socket.destroy();
-      done();
-    });
-    // http.Server sockets are half-open: a browser hanging up sends "end", and "close" only follows
-    // once our side ends too. Without this the live-view slot (and go2rtc's session) would leak.
-    socket.on("end", () => { up.destroy(); socket.destroy(); done(); });
-    socket.on("close", () => { up.destroy(); done(); });
-    up.on("close", () => { socket.destroy(); done(); });
+    // The browser's frames are checked against the WebRTC-only filter; its cookie never leaves.
+    proxyGo2rtcSocket({ req, socket, head, go2rtcApi: d.go2rtcApi, src, log, label: "dashboard video", filter: new ClientFrameFilter(), onGone: done });
   });
   return server;
 }

@@ -5,7 +5,7 @@
 
 import { ResolvedCamera } from "../config";
 import { ChildStatus } from "./supervisor";
-import { UserErrorBody } from "./errors";
+import { UserErrorBody } from "../shared/errors";
 import type { FeedStatus } from "./go2rtcWatch";
 import type { CameraDirect, FeedVia, SourceState } from "../source";
 

@@ -6,7 +6,7 @@ import * as path from "path";
 import {
   redactCamera, applyCameraEdit, writeConfigAtomic, readRawConfig, removeCameraFromConfig, keepRemovedCamera, cameraLogins,
 } from "../../src/admin/configStore";
-import { UserError } from "../../src/admin/errors";
+import { UserError } from "../../src/shared/errors";
 import { tempDir } from "../helpers/tmp";
 
 const cfg = () => ({

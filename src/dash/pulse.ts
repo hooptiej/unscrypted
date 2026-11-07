@@ -12,7 +12,7 @@ import * as path from "path";
 import * as http from "http";
 import * as https from "https";
 import * as crypto from "crypto";
-import { UserError } from "../admin/errors";
+import { UserError } from "../shared/errors";
 import { Logger } from "../logger";
 import { ServiceNode, flatLamps, checkBuildUrl } from "./settings";
 

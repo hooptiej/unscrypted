@@ -7,7 +7,10 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Config, CameraConfig, FoscamConfig, OnvifConfig, resolveConfig, ConfigError } from "../config";
-import { UserError } from "./errors";
+import { UserError } from "../shared/errors";
+import { readRawConfig } from "../shared/rawConfig";
+
+export { readRawConfig };
 
 export type Secret = { set: boolean };
 export type PublicCamera = Omit<CameraConfig, "rtspPassword" | "foscam" | "onvif"> & {
@@ -94,30 +97,6 @@ export function cameraLogins(cam: CameraConfig): CameraLogins {
 
 export function redactConfig(raw: Config): { cameras: PublicCamera[] } {
   return { cameras: raw.cameras.map(redactCamera) };
-}
-
-export function readRawConfig(file: string): Config {
-  let text: string;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (err) {
-    throw new UserError({
-      attempted: `Read ${file}`,
-      happened: `The config file couldn't be read: ${(err as Error).message}`,
-      changed: "Nothing was changed.",
-      next: "Check the ./config folder is mounted and readable by the container, then reload.",
-    }, 500);
-  }
-  try {
-    return JSON.parse(text) as Config;
-  } catch (err) {
-    throw new UserError({
-      attempted: `Read ${file}`,
-      happened: `config.json isn't valid JSON: ${(err as Error).message}`,
-      changed: "Nothing was changed.",
-      next: "Fix the file by hand (or restore the newest copy from ./config/backups), then reload.",
-    }, 500);
-  }
 }
 
 /** A secret field from the browser: a string replaces, anything else (absent, {set:...}) keeps. */

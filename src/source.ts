@@ -19,7 +19,8 @@
  */
 import { Logger } from "./logger";
 import { ResolvedCamera } from "./config";
-import { restreamUrl, streamNames } from "./admin/go2rtcConfig";
+import { restreamUrl } from "./admin/go2rtcConfig";
+import { streamNames } from "./shared/streams";
 
 export type FeedVia = "go2rtc" | "camera";
 export type SourceMode = "go2rtc" | "direct" | "off";
