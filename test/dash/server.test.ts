@@ -17,7 +17,7 @@ const webRoot = tempDir("unscr-dashweb-");
 function deps(over: Partial<DashDeps> = {}): DashDeps {
   return {
     webRoot, title: "Homedash - TEST", go2rtcApi: "",
-    publicConfig: () => ({ title: "Homedash - TEST", env: "test", adminPort: 8191, settingsUrl: null, idleSeconds: 30, pollSeconds: 4, reloadMinutes: 20, cameras: [], fonts: { ui: { family: "x" }, clock: { inherit: true } } }),
+    publicConfig: () => ({ title: "Homedash - TEST", env: "test", adminPort: 8191, settingsUrl: null, build: "unscrypted 0.1.16 - build source", idleSeconds: 30, pollSeconds: 4, reloadMinutes: 20, cameras: [], fonts: { ui: { family: "x" }, clock: { inherit: true } } }),
     state: () => ({ updated: 1 }),
     allowedStreams: () => new Set<string>(),
     go2rtcInfo: () => ({ state: "running", lastError: null, nextRetryAt: null }),
@@ -51,8 +51,13 @@ test("page has the title and the security headers, and sets no cookie", async ()
   assert.equal(r.headers.get("set-cookie"), null);
 });
 
-test("healthz answers for the kiosk's wait probe", async () => {
-  assert.deepEqual(await (await fetch(base + "/healthz")).json(), { ok: true });
+test("healthz answers for the kiosk's wait probe, and carries the build stamp (#102)", async () => {
+  const b = await (await fetch(base + "/healthz")).json();
+  assert.equal(b.ok, true);
+  assert.equal(typeof b.version, "string");
+  assert.ok(b.version.length > 0);
+  assert.equal(typeof b.build, "string");
+  assert.ok("built_at" in b);   // null on a plain checkout, a date in a baked image
 });
 
 test("watch only: every non-GET is refused with the four-part error", async () => {

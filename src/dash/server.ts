@@ -12,6 +12,7 @@ import * as path from "path";
 import { UserError, UserErrorBody, toErrorJson } from "../admin/errors";
 import { securityHeaders } from "../admin/server";
 import { Logger } from "../logger";
+import { healthFields } from "../version";
 import { ClientFrameFilter } from "./wsFilter";
 import { PHOTO_EXT } from "./photos";
 import { FONT_MIME } from "./fonts";
@@ -22,6 +23,8 @@ import { DashBridgeInfo } from "./ipc";
 
 export interface PublicConfig {
   title: string; env: "prod" | "test"; adminPort: number; settingsUrl: string | null;
+  /** The running build stamp (#102), e.g. "unscrypted 0.1.16 - build 5a020c9 (2026-11-07)". */
+  build: string;
   idleSeconds: number; pollSeconds: number; reloadMinutes: number;
   /** `which`: the stream the tile actually plays (a "sub" pick on a camera with no sub plays main). */
   cameras: { id: string; label: string; stream: string; which: "main" | "sub" }[];
@@ -165,7 +168,7 @@ export function createDashServer(d: DashDeps): http.Server {
         throw new UserError({ attempted, happened: "The dashboard is watch-only: it never changes anything.", changed: "Nothing.",
           next: "Change dashboard settings in the admin pane (needs the admin password)." }, 405);
       }
-      if (url.pathname === "/healthz") return json(res, 200, { ok: true });
+      if (url.pathname === "/healthz") return json(res, 200, { ok: true, ...healthFields() });
       if (url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
       if (pulsePath) {
         if (!d.pulse) throw new UserError({ attempted, happened: "The new-build switch isn't running in this dashboard.", changed: "Nothing.",

@@ -24,6 +24,12 @@ function el(tag, attrs = {}, ...kids) {
   return e;
 }
 
+// The running build stamp (#102), shown in the footer on every screen. Set once we know it.
+function showBuild(build) {
+  const f = document.getElementById("build");
+  if (f && build) f.textContent = build;
+}
+
 function networkError(method, path, err) {
   return {
     attempted: `${method} ${path}`,
@@ -144,6 +150,7 @@ async function route() {
   if (h === "#/login") return renderLogin();
   if (!csrf) {
     const s = await api("GET", "/api/session");
+    showBuild(s.build);
     if (!s.signedIn) { location.hash = "#/login"; return renderLogin(s.setupError); }
     csrf = s.csrf;
   }
@@ -190,6 +197,7 @@ async function renderLogin(setupError) {
   banners.replaceChildren();
   document.getElementById("g2dot").hidden = true;
   const s = await api("GET", "/api/session");
+  showBuild(s.build);
   if (s.signedIn) { csrf = s.csrf; if (NEXT) location.href = NEXT; else location.hash = "#/cameras"; return; }
   if (setupError === undefined) setupError = s.setupError;
   const out = el("div");

@@ -87,6 +87,26 @@ set_env_version() {
   if grep -q '^UNSCRYPTED_VERSION=' "$ENV_FILE"; then sed -i "s/^UNSCRYPTED_VERSION=.*/UNSCRYPTED_VERSION=$v/" "$ENV_FILE"; else printf 'UNSCRYPTED_VERSION=%s\n' "$v" >> "$ENV_FILE"; fi
 }
 
+# Write one KEY=VALUE into .env (replace if present, append if not). For the build stamp vars, which
+# docker-compose's build.args read from .env — `sudo docker compose` would otherwise not see them in
+# this script's environment. Mirrors set_env_version.
+set_env_kv() {
+  local k="$1" v="$2"; [ -f "$ENV_FILE" ] || return 0
+  if grep -q "^$k=" "$ENV_FILE"; then sed -i "s/^$k=.*/$k=$v/" "$ENV_FILE"; else printf '%s=%s\n' "$k" "$v" >> "$ENV_FILE"; fi
+}
+
+# Build stamp (#102): the git short sha the build is cut from and today's UTC date, into .env so the
+# compose build.args bake them into the image. A detached/odd git state still gives a usable sha or
+# an empty one (the image then shows "source"); never fatal.
+set_env_build() {
+  local sha date
+  sha="$(git rev-parse --short HEAD 2>/dev/null || true)"
+  date="$(date -u +%Y-%m-%d)"
+  set_env_kv UNSCRYPTED_BUILD_SHA "$sha"
+  set_env_kv UNSCRYPTED_BUILD_DATE "$date"
+  echo "Build stamp: sha ${sha:-<none>}, date $date (baked into the image)."
+}
+
 # --- pre-deploy pairing backup (prod only; test's data is disposable) ---------------------------
 do_backup() {
   [ -n "$SNAPSHOT" ] || { echo "Pre-deploy backup: skipped (--no-snapshot)."; return 0; }
@@ -174,6 +194,7 @@ fi
 
 do_backup
 set_env_version "$VERSION"
+set_env_build
 if hap_on; then
   echo "⚠ Building + recreating PROD — the HomeKit bridge restarts now (a few seconds of 'No Response', recording stops)."
 fi

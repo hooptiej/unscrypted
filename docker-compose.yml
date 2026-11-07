@@ -21,6 +21,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Build stamp (#102): the git short sha + UTC build date baked into the image. Empty by default
+      # (a plain build shows "source"); scripts/deploy.sh fills these in via .env on a real deploy.
+      args:
+        UNSCRYPTED_BUILD_SHA: ${UNSCRYPTED_BUILD_SHA:-}
+        UNSCRYPTED_BUILD_DATE: ${UNSCRYPTED_BUILD_DATE:-}
     # The version has no default on purpose: compose refuses to start until `.env` names a release,
     # so nobody runs an unknown build. Images are never tagged `latest`.
     image: "unscrypted:${UNSCRYPTED_VERSION:?set UNSCRYPTED_VERSION to a release (e.g. 0.1.15) in .env}"

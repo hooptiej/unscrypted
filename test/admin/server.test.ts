@@ -114,10 +114,15 @@ test("shipped pane files exist and contain nothing the CSP would block", () => {
   assert.match(css, /--accent:\s*#7a8a2e/);
 });
 
-test("healthz needs no sign-in", async () => {
+test("healthz needs no sign-in, and carries the build stamp (#102)", async () => {
   const r = await fetch(base + "/healthz");
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { ok: true });
+  const b = await r.json();
+  assert.equal(b.ok, true);
+  assert.equal(typeof b.version, "string");
+  assert.ok(b.version.length > 0);
+  assert.equal(typeof b.build, "string");
+  assert.ok("built_at" in b);   // null on a plain checkout, a date in a baked image
 });
 
 test("unauthenticated API is refused with a clear message", async () => {

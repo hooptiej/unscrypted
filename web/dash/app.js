@@ -26,6 +26,12 @@ try {
   throw err;   // stops this module; the notice says why and the page retries
 }
 
+/* the running build stamp (#102): a tiny, unobtrusive line in the clock band, never on a tile */
+{
+  const buildEl = $("build");
+  if (buildEl && cfg.build) buildEl.textContent = cfg.build;
+}
+
 /* fonts: a system stack, or a font file registered with the FontFace API (the CSP blocks inline <style>) */
 async function applyFonts(fonts) {
   const root = document.documentElement.style;

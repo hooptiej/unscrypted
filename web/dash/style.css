@@ -35,6 +35,7 @@ video-stream .info,video-stream .controls,video-stream .mode,video-stream .statu
 .clock{font-size:calc(104*var(--u));line-height:1;white-space:nowrap;font-family:var(--font-clock,var(--font-ui,inherit))}
 .day{font-size:calc(50*var(--u));line-height:1.15}
 .date{font-size:calc(38*var(--u))}
+.buildstamp{font-size:calc(18*var(--u));line-height:1.2;align-self:end;padding-bottom:calc(6*var(--u))}
 .wx{margin-left:auto;text-align:right}
 .wx .wxt{font-size:calc(60*var(--u));line-height:1}
 .wx .wxl{font-size:calc(26*var(--u));color:#8b9275;line-height:1.25}

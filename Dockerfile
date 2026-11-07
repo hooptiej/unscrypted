@@ -39,6 +39,15 @@ COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
+# Build stamp (#102): the git short sha the image was built from and the UTC build date, passed in
+# as build args by scripts/deploy.sh (and docker-compose's build.args). The release version comes
+# from package.json, so it needs no arg. Written to /app/BUILD as one line "<sha> <date>", which the
+# app reads at runtime (src/version.ts). Empty args are fine: a plain build writes a blank line and
+# the app falls back to "source". Never fails the build.
+ARG UNSCRYPTED_BUILD_SHA=
+ARG UNSCRYPTED_BUILD_DATE=
+RUN printf '%s %s\n' "${UNSCRYPTED_BUILD_SHA}" "${UNSCRYPTED_BUILD_DATE}" > /app/BUILD
+
 # ---- go2rtc (feed checks and previews in the admin pane, and the dashboard's live tiles).
 # Pinned version + checksum, never latest. The checksum is the release asset's SHA-256 as
 # published by GitHub for v1.9.14 (and re-hashed on the NAS). ADD --checksum fails the build on

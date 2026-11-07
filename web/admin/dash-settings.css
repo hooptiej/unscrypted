@@ -72,6 +72,7 @@ a.btn:hover,a.btn:focus-visible{border-color:var(--acc);color:var(--acc)}
 #msg.ok{color:var(--acc)}
 #msg.err{color:var(--bad)}
 #msg p{margin:0}
+.build{color:var(--mute);font-size:calc(18*var(--u));white-space:nowrap}
 .idle{width:calc(900*var(--u))}
 .idle .txt{display:flex;justify-content:space-between;gap:calc(12*var(--u));font-size:calc(24*var(--u));color:var(--mute)}
 .idle .txt.warn{color:var(--warn)}
