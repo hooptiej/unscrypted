@@ -36,15 +36,25 @@ WORKDIR /app
 
 # ffmpeg is required for live view, snapshots and recording. fonts-dejavu-core
 # supplies the font for drawtext on the "camera unavailable" placeholder (#64).
-# ffmpeg is pinned to an exact Debian bookworm version (#6); its libav* libraries come from the same
-# source package and follow it at the matching version. Debian drops a superseded version from the
-# mirror after a security/point update, so this build then FAILS loudly ("Version ... was not
-# found") rather than quietly installing something else. To bump: read the current version with
-#   docker run --rm <base image> sh -c 'apt-get update -qq && apt-cache policy ffmpeg'
+# Both are pinned to exact Debian bookworm versions (#6, #124); ffmpeg's libav* libraries come from
+# the same source package and follow it at the matching version. Debian drops a superseded version
+# from the mirror after a security/point update, so this build then FAILS loudly rather than quietly
+# installing something else, and prints the versions the mirror has now (#124). To bump: put the
+# "Candidate" version it prints into the matching ARG below. Or look it up with
+#   docker run --rm <base image> sh -c 'apt-get update -qq && apt-cache policy ffmpeg fonts-dejavu-core'
 # or https://qa.debian.org/madison.php?package=ffmpeg&s=bookworm,bookworm-security&text=on
 ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
+ARG FONTS_DEJAVU_VERSION=2.37-6
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends "ffmpeg=${FFMPEG_VERSION}" fonts-dejavu-core \
+    && { apt-get install -y --no-install-recommends \
+            "ffmpeg=${FFMPEG_VERSION}" "fonts-dejavu-core=${FONTS_DEJAVU_VERSION}" \
+        || { echo; \
+             echo "unscrypted build: a pinned apt package is no longer on the Debian mirror (#124)."; \
+             echo "Pinned: ffmpeg=${FFMPEG_VERSION}  fonts-dejavu-core=${FONTS_DEJAVU_VERSION}"; \
+             echo "Versions the mirror has now (use the Candidate line):"; \
+             apt-cache policy ffmpeg fonts-dejavu-core; \
+             echo "Fix: set ARG FFMPEG_VERSION / FONTS_DEJAVU_VERSION in the Dockerfile to the Candidate, rebuild."; \
+             exit 1; }; } \
     && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
